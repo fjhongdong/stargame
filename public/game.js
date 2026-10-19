@@ -32,6 +32,8 @@
   const seenImpacts = new Map();
   const predictedContactEffects = new Map();
   const waveVisuals = new Map();
+  const cancelledWaves = new Map(), seenWaveClashes = new Map();
+  let clashBaselinePending = true, clashBaselineTime = null;
   const combatFeedback = new Map(), seenCombatEvents = new Map();
   let combatMarkerTimer;
   const remoteContactPositions = new Map();
@@ -202,7 +204,7 @@
     currentOptions = { ...options, mode };
     active = true; joined = false; reconnecting = false; intentionalClose = false; retries = 0;
     resetHeldInputs(false);
-    resetWaveFeedback();
+    resetWaveFeedback(); resetWaveClashes();
     renderTimeline = null;
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
@@ -275,14 +277,14 @@
   function attemptReconnect() {
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
-    reconnecting = true; retries += 1; resetHeldInputs(false); resetWaveFeedback();
+    reconnecting = true; retries += 1; resetHeldInputs(false); resetWaveFeedback(); resetWaveClashes();
     predictedCells.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); inputHistory.length = 0; waveVisuals.clear(); renderTimeline = null;
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
 
   function showConnectionError(message) {
-    reconnecting = false; clearTimeout(retryTimer); resetWaveFeedback();
+    reconnecting = false; clearTimeout(retryTimer); resetWaveFeedback(); resetWaveClashes();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); renderTimeline = null;
     resetHeldInputs(false);
@@ -302,7 +304,7 @@
 
   function send(data) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); }
   function closeSession(notify = true) {
-    intentionalClose = true; active = false; resetWaveFeedback();
+    intentionalClose = true; active = false; resetWaveFeedback(); resetWaveClashes();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); remoteContactPositions.clear(); renderTimeline = null;
     clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
@@ -332,12 +334,14 @@
     room = next;
     if (!Array.isArray(room.players)) room.players = [];
     room.dust ||= []; room.blasts ||= [];
-    cacheWaveVisuals(room, old);
     const me = room.players.find((p) => p.id === myId);
     if (me?.shatteredAt > lastShatteredAt) { lastShatteredAt = me.shatteredAt; toast('撞击碎裂！守住核心，抢回碎片'); }
     emitContactEffects(room, old);
     receiveWaveFeedback(room, old);
+    receiveWaveClashes(room, old);
+    cacheWaveVisuals(room, old);
     for (const blast of room.blasts) {
+      if (cancelledWaves.has(blast.id)) continue;
       if (!seenBlasts.has(blast.id)) {
         seenBlasts.add(blast.id);
         if (blast.ownerId === myId && !window.StarAudio) playTone(100, .22, .04, 'sine');
@@ -359,6 +363,50 @@
   function resetWaveFeedback() {
     combatFeedback.clear(); seenCombatEvents.clear(); clearTimeout(combatMarkerTimer);
     const marker = $('sgWaveFeedback'); if (marker) marker.hidden = true;
+  }
+  function resetWaveClashes() {
+    cancelledWaves.clear(); seenWaveClashes.clear(); clashBaselinePending = true; clashBaselineTime = null;
+    for (let i = particles.length - 1; i >= 0; i--) if (particles[i].clashId) particles.splice(i, 1);
+  }
+  function receiveWaveClashes(current, previous) {
+    const sameRoom = previous?.code === current.code && previous?.round === current.round;
+    if (!sameRoom) resetWaveClashes();
+    const baseline = clashBaselinePending || !sameRoom || previous?.status !== 'playing';
+    if (clashBaselinePending) { clashBaselineTime = current.time; clashBaselinePending = false; }
+    const now = performance.now();
+    for (const clash of current.waveClashes || []) {
+      if (!clash?.id) continue;
+      // Cancellation has no presentation delay: even an interpolated remote
+      // front and its cached tail cease as soon as authority cancels them.
+      for (const id of clash.waveIds || []) { cancelledWaves.set(id, clash.at); waveVisuals.delete(id); }
+      if (seenWaveClashes.has(clash.id)) continue;
+      seenWaveClashes.set(clash.id, clash.at);
+      const age = current.time - clash.at;
+      if (baseline || current.status !== 'playing' || clash.at < clashBaselineTime || !Number.isFinite(age) || age < -.02 || age > .8 || !Number.isFinite(clash.x) || !Number.isFinite(clash.y)) continue;
+      const colors = [safeColor(clash.colors?.[0]), safeColor(clash.colors?.at(-1))];
+      const radius = clamp(clash.radius || 28, 18, 48), duration = .42;
+      particles.push({ kind: 'wave-clash', clashId: clash.id, x: clash.x, y: clash.y, radius, colors, duration, life: duration - clamp(age, 0, duration - .1), updatedAt: now });
+      for (let i = 0; i < 6; i++) {
+        const life = .2 + i % 2 * .06;
+        if (age >= life) continue;
+        const angle = i * Math.PI / 3 + .3, speed = 35 + i % 3 * 14, vx = Math.cos(angle) * speed, vy = Math.sin(angle) * speed;
+        const elapsed = Math.max(0, age), decay = Math.exp(-3 * elapsed), travel = (1 - decay) / 3;
+        particles.push({ kind: 'chip', clashId: clash.id, x: clash.x + vx * travel, y: clash.y + vy * travel, vx: vx * decay, vy: vy * decay, rotation: angle, size: 1.2, duration: life, life: life - elapsed, updatedAt: now, color: colors[i % 2] });
+      }
+      const latestHit = Math.max(-Infinity, ...current.players.filter(player => player.id === myId || player.lastWaveHit?.ownerId === myId).map(player => player.lastWaveHit?.at ?? -Infinity));
+      if (clash.ownerIds?.includes(myId) && clash.at >= latestHit) {
+        const marker = $('sgWaveFeedback');
+        if (marker) {
+          marker.dataset.kind = 'clash'; marker.dataset.mode = 'clash'; marker.dataset.tone = 'shooter'; marker.textContent = '引力波抵消'; marker.hidden = false;
+          clearTimeout(combatMarkerTimer); combatMarkerTimer = setTimeout(() => { marker.hidden = true; }, 1100);
+        }
+      }
+    }
+    for (const [id, at] of seenWaveClashes) if (current.time - at > 5) seenWaveClashes.delete(id);
+    for (const [id, at] of cancelledWaves) if (current.time - at > 5) cancelledWaves.delete(id);
+    while (seenWaveClashes.size > 128) seenWaveClashes.delete(seenWaveClashes.keys().next().value);
+    while (cancelledWaves.size > 512) cancelledWaves.delete(cancelledWaves.keys().next().value);
+    if (particles.length > 180) particles.splice(0, particles.length - 180);
   }
   function receiveWaveFeedback(current, previous) {
     if (previous?.code !== current.code || previous?.round !== current.round) resetWaveFeedback();
@@ -1367,6 +1415,16 @@
           if (!visible(p.x, p.y, 10, view)) continue;
           ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rotation); ctx.globalAlpha = p.life / p.duration * .8; ctx.fillStyle = p.color;
           ctx.beginPath(); ctx.moveTo(-p.size, -p.size * .35); ctx.lineTo(p.size * .7, -p.size); ctx.lineTo(p.size, p.size * .6); ctx.closePath(); ctx.fill(); ctx.restore();
+        } else if (p.kind === 'wave-clash') {
+          const progress = 1 - p.life / p.duration, radius = 5 + p.radius * progress;
+          if (!visible(p.x, p.y, radius + 8, view)) continue;
+          ctx.save(); ctx.translate(p.x, p.y); ctx.globalAlpha = (1 - progress) ** 3; ctx.fillStyle = '#f5ffff';
+          ctx.beginPath(); ctx.arc(0, 0, 2 + 6 * (1 - progress), 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = (1 - progress) * .85; ctx.lineWidth = (1.8 - progress) / camera.scale;
+          for (let side = 0; side < 2; side++) {
+            ctx.strokeStyle = p.colors[side]; ctx.beginPath(); ctx.arc(0, 0, radius, side * Math.PI - 1.25, side * Math.PI + 1.25); ctx.stroke();
+          }
+          ctx.restore();
         } else if (p.kind === 'contact') {
           const progress = 1 - p.life / p.duration, radius = 2 + p.radius * progress;
           if (!visible(p.x, p.y, radius, view)) continue;
@@ -1471,6 +1529,7 @@
     if (previous?.code !== current.code || previous?.round !== current.round) waveVisuals.clear();
     const present = new Set();
     for (const blast of current.blasts) {
+      if (cancelledWaves.has(blast.id)) { waveVisuals.delete(blast.id); continue; }
       present.add(blast.id);
       const previousVisual = waveVisuals.get(blast.id);
       waveVisuals.set(blast.id, { blast, receivedAt: current._receivedAt, simulationAt: current._renderTime, missingSince: null, timeline: previousVisual?.timeline, completed: previousVisual?.completed || false });
@@ -1498,9 +1557,10 @@
     const renderedTravel = travel + speed * elapsed, front = clamp(renderedTravel, 0, distance);
     const originX = blast.originX ?? blast.x - directionX * travel, originY = blast.originY ?? blast.y - directionY * travel;
     if (visual && renderedTravel >= distance) visual.completed = true;
-    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
+    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: !cancelledWaves.has(blast.id) && !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
   }
   function drawBlast(blast, time, pose = wavePose(blast, time)) {
+    if (!pose.active) return;
     const color = safeColor(blast.color || room.players.find((p) => p.id === blast.ownerId)?.color), halfWidth = (blast.width || 160) / 2, thickness = blast.thickness || 20, curve = blast.curvature || 30;
     const opacity = Math.min(1, (1 - pose.progress) * 5);
     ctx.save(); ctx.translate(pose.x, pose.y); ctx.rotate(Math.atan2(pose.directionY, pose.directionX)); ctx.lineCap = 'round';

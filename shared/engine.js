@@ -8,7 +8,7 @@ export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, rest
   baseSpeed: 210, referenceMass: 36, speedExponent: 0.22 });
 export const SIBLING = Object.freeze({ launchGrace: 0.9, rangeBase: 600, rangeScale: 2,
   attraction: 900, radialDamping: 12, maxAcceleration: 4000, fusionDuration: 1.2 });
-export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55 });
+export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, clashRetention: 1.5, clashLimit: 64 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];
 export const UPGRADE_POOL = [
   { id: 'speed', title: '光速引擎', description: '移动速度提升 10%', icon: '⚡' },
@@ -105,7 +105,7 @@ export function skinColor(skin, fallback = 0) {
 
 export function createArena({ random = Math.random, endless = false } = {}) {
   return { endless: endless === true, status: 'lobby', time: 0, remaining: endless === true ? null : ROUND_DURATION, round: 0, winnerId: null,
-    players: new Map(), dust: [], blasts: [], serial: 0, random,
+    players: new Map(), dust: [], blasts: [], waveClashes: [], clashSerial: 0, serial: 0, random,
     dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0 };
 }
 
@@ -377,6 +377,8 @@ export function startRound(arena) {
   arena.naturalDustCount = 0;
   arena.activeDust = new Set();
   arena.blasts = [];
+  arena.waveClashes = [];
+  arena.clashSerial = 0;
   arena.bodyContacts = new Set();
   arena.fractureContacts = new Map();
   arena.impactSerial = 0;
@@ -1129,58 +1131,195 @@ function segmentDistanceSquared(ax, ay, bx, by, cx, cy, dx, dy) {
     pointSegmentDistanceSquared(dx, dy, ax, ay, bx, by));
 }
 
-function advanceWaves(arena, dt) {
-  for (const wave of arena.blasts) {
-    const previousX = wave.x, previousY = wave.y;
-    const remaining = wave.distance - wave.travel;
-    const activeFraction = dt > 0 ? Math.min(1, remaining / (wave.speed * dt)) : 1;
-    wave.travel = Math.min(wave.distance, wave.travel + wave.speed * dt);
-    wave.x = wave.originX + wave.directionX * wave.travel;
-    wave.y = wave.originY + wave.directionY * wave.travel;
-    const deltaX = wave.x - previousX, deltaY = wave.y - previousY;
-    const arc = [];
-    for (let i = 0; i <= WAVE.segments; i++) {
-      const point = waveArcPoint(wave, -1 + 2 * i / WAVE.segments);
-      arc.push({ x: point.x - deltaX, y: point.y - deltaY });
-    }
-    for (const player of arena.players.values()) {
-      if (player.id === wave.ownerId || player.respawnIn > 0 || player.invulnerable > 0 || wave.hit.has(player.id)) continue;
-      const hitCells = player.cells.filter(cell => {
-        const radiusSquared = (cell.radius + wave.thickness / 2) ** 2;
-        const startX = cell._frameX ?? cell._stepX ?? cell.x, startY = cell._frameY ?? cell._stepY ?? cell.y;
-        const endX = startX + (cell.x - startX) * activeFraction - deltaX;
-        const endY = startY + (cell.y - startY) * activeFraction - deltaY;
-        for (let i = 1; i < arc.length; i++) {
-          if (segmentDistanceSquared(startX, startY, endX, endY,
-            arc[i - 1].x, arc[i - 1].y, arc[i].x, arc[i].y) <= radiusSquared) return true;
-        }
-        return false;
-      });
-      if (hitCells.length) {
-        wave.hit.add(player.id);
-        const eventId = `${wave.id}:${player.id}`;
-        const primary = hitCells[0];
-        const impulseFor = cell => clamp(WAVE.knockback * Math.pow(START_MASS / cell.mass, 0.35), WAVE.minKnockback, WAVE.maxKnockback);
-        const primaryImpulse = impulseFor(primary);
-        const point = { x: primary.x - wave.directionX * primary.radius,
-          y: primary.y - wave.directionY * primary.radius };
-        let lostMass = 0;
-        for (const cell of hitCells) {
-          const impulse = impulseFor(cell);
-          cell.lastWaveHitId = eventId;
-          cell.vx += wave.directionX * impulse;
-          cell.vy += wave.directionY * impulse;
-          lostMass += chipWaveCell(arena, player, cell, wave);
-        }
-        player.collisionRevision++;
-        player.lastWaveHit = { id: eventId, waveId: wave.id, at: arena.time,
-          ownerId: wave.ownerId, cellId: primary.id, ...point, directionX: wave.directionX, directionY: wave.directionY,
-          mode: wave.mode, lostMass, hitCells: hitCells.length, hitCellIds: hitCells.map(cell => cell.id), impulse: primaryImpulse };
-        syncPlayer(player);
-      }
+const WAVE_TIME_EPSILON = 1e-8;
+
+function waveArc(wave) {
+  return Array.from({ length: WAVE.segments + 1 }, (_, i) => waveArcPoint(wave, -1 + 2 * i / WAVE.segments));
+}
+
+function waveLiveTime(wave, duration) {
+  if (!(wave.distance > wave.travel)) return -1;
+  return Math.min(duration, (wave.distance - wave.travel) / wave.speed);
+}
+
+// Exact time of a moving point entering a finite rounded line segment.
+function pointCapsuleTOI(px, py, vx, vy, a, b, radius, duration) {
+  if (pointSegmentDistanceSquared(px, py, a.x, a.y, b.x, b.y) <= radius * radius + 1e-8) return 0;
+  let earliest = Infinity;
+  const accept = time => {
+    if (time >= -WAVE_TIME_EPSILON && time <= duration + WAVE_TIME_EPSILON) earliest = Math.min(earliest, clamp(time, 0, duration));
+  };
+  const speedSquared = vx * vx + vy * vy;
+  if (speedSquared < 1e-16) return earliest;
+  for (const endpoint of [a, b]) {
+    const qx = px - endpoint.x, qy = py - endpoint.y;
+    const linear = 2 * (qx * vx + qy * vy);
+    const constant = qx * qx + qy * qy - radius * radius;
+    const discriminant = linear * linear - 4 * speedSquared * constant;
+    if (discriminant >= 0) accept((-linear - Math.sqrt(discriminant)) / (2 * speedSquared));
+  }
+  const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy);
+  if (length > 1e-12) {
+    const tx = dx / length, ty = dy / length, nx = -ty, ny = tx;
+    const qx = px - a.x, qy = py - a.y;
+    const normal = qx * nx + qy * ny, normalSpeed = vx * nx + vy * ny;
+    if (Math.abs(normalSpeed) > 1e-12) for (const side of [-1, 1]) {
+      const time = (side * radius - normal) / normalSpeed;
+      const along = (qx + vx * time) * tx + (qy + vy * time) * ty;
+      if (along >= -1e-8 && along <= length + 1e-8) accept(time);
     }
   }
-  arena.blasts = arena.blasts.filter(wave => wave.travel < wave.distance);
+  return earliest;
+}
+
+function closestSegmentPoints(a, b, c, d) {
+  const rx = b.x - a.x, ry = b.y - a.y, sx = d.x - c.x, sy = d.y - c.y;
+  const determinant = rx * sy - ry * sx;
+  if (Math.abs(determinant) > 1e-12) {
+    const qx = c.x - a.x, qy = c.y - a.y;
+    const t = (qx * sy - qy * sx) / determinant, u = (qx * ry - qy * rx) / determinant;
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+      const point = { x: a.x + t * rx, y: a.y + t * ry };
+      return { a: point, b: point, squared: 0 };
+    }
+  }
+  let result = null;
+  for (const [point, from, to, reverse] of [[a, c, d, false], [b, c, d, false], [c, a, b, true], [d, a, b, true]]) {
+    const dx = to.x - from.x, dy = to.y - from.y, length = dx * dx + dy * dy;
+    const t = length > 0 ? clamp(((point.x - from.x) * dx + (point.y - from.y) * dy) / length, 0, 1) : 0;
+    const projected = { x: from.x + t * dx, y: from.y + t * dy };
+    const squared = (point.x - projected.x) ** 2 + (point.y - projected.y) ** 2;
+    if (!result || squared < result.squared) result = { a: reverse ? projected : point, b: reverse ? point : projected, squared };
+  }
+  return result;
+}
+
+/** Same-time collision of two translating thick arcs; duration is measured in seconds. */
+export function wavePairTOI(a, b, duration) {
+  if (a.ownerId === b.ownerId) return null;
+  const active = Math.min(waveLiveTime(a, duration), waveLiveTime(b, duration));
+  if (active < 0) return null;
+  const avx = a.directionX * a.speed, avy = a.directionY * a.speed;
+  const bvx = b.directionX * b.speed, bvy = b.directionY * b.speed;
+  const vx = avx - bvx, vy = avy - bvy;
+  const bound = a.radius + b.radius;
+  if (pointSegmentDistanceSquared(0, 0, a.x - b.x, a.y - b.y,
+    a.x - b.x + vx * active, a.y - b.y + vy * active) > bound * bound) return null;
+  const arcA = waveArc(a), arcB = waveArc(b), radius = (a.thickness + b.thickness) / 2;
+  let earliest = Infinity, segmentA, segmentB;
+  for (let i = 1; i < arcA.length; i++) for (let j = 1; j < arcB.length; j++) {
+    const ap = arcA[i - 1], aq = arcA[i], bp = arcB[j - 1], bq = arcB[j];
+    let time = segmentDistanceSquared(ap.x, ap.y, aq.x, aq.y, bp.x, bp.y, bq.x, bq.y) <= radius * radius + 1e-8 ? 0 : Infinity;
+    if (time !== 0) time = Math.min(
+      pointCapsuleTOI(ap.x, ap.y, vx, vy, bp, bq, radius, active),
+      pointCapsuleTOI(aq.x, aq.y, vx, vy, bp, bq, radius, active),
+      pointCapsuleTOI(bp.x, bp.y, -vx, -vy, ap, aq, radius, active),
+      pointCapsuleTOI(bq.x, bq.y, -vx, -vy, ap, aq, radius, active));
+    if (time < earliest) { earliest = time; segmentA = [ap, aq]; segmentB = [bp, bq]; }
+  }
+  if (!Number.isFinite(earliest)) return null;
+  const moved = (point, x, y) => ({ x: point.x + x * earliest, y: point.y + y * earliest });
+  const closest = closestSegmentPoints(moved(segmentA[0], avx, avy), moved(segmentA[1], avx, avy),
+    moved(segmentB[0], bvx, bvy), moved(segmentB[1], bvx, bvy));
+  const fraction = a.thickness / (a.thickness + b.thickness);
+  return { time: earliest, x: closest.a.x + (closest.b.x - closest.a.x) * fraction,
+    y: closest.a.y + (closest.b.y - closest.a.y) * fraction };
+}
+
+function waveClashTimeline(arena, waves, dt) {
+  const collisions = [];
+  for (let i = 0; i < waves.length; i++) for (let j = i + 1; j < waves.length; j++) {
+    const hit = wavePairTOI(waves[i], waves[j], dt);
+    if (hit) collisions.push({ ...hit, a: waves[i], b: waves[j] });
+  }
+  collisions.sort((a, b) => a.time - b.time || a.a.id.localeCompare(b.a.id) || a.b.id.localeCompare(b.b.id));
+  const cancelled = new Map();
+  for (let first = 0; first < collisions.length;) {
+    let last = first + 1;
+    while (last < collisions.length && collisions[last].time <= collisions[first].time + WAVE_TIME_EPSILON) last++;
+    const simultaneous = collisions.slice(first, last).filter(hit => !cancelled.has(hit.a.id) && !cancelled.has(hit.b.id));
+    const connected = new Map();
+    for (const hit of simultaneous) for (const wave of [hit.a, hit.b]) connected.set(wave.id, wave);
+    while (connected.size) {
+      const component = new Set([connected.keys().next().value]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const hit of simultaneous) if (component.has(hit.a.id) || component.has(hit.b.id)) {
+          for (const wave of [hit.a, hit.b]) if (!component.has(wave.id)) { component.add(wave.id); changed = true; }
+        }
+      }
+      const members = [...component].sort().map(id => connected.get(id));
+      const edges = simultaneous.filter(hit => component.has(hit.a.id) && component.has(hit.b.id));
+      const time = collisions[first].time;
+      for (const wave of members) { cancelled.set(wave.id, time); connected.delete(wave.id); }
+      arena.waveClashes.push({ id: `clash-${arena.round}-${++arena.clashSerial}`, at: arena.time - dt + time,
+        x: edges.reduce((sum, hit) => sum + hit.x, 0) / edges.length,
+        y: edges.reduce((sum, hit) => sum + hit.y, 0) / edges.length,
+        waveIds: members.map(wave => wave.id), ownerIds: members.map(wave => wave.ownerId), colors: members.map(wave => wave.color),
+        radius: clamp(Math.max(...members.map(wave => wave.thickness)) * 1.5, 18, 48) });
+    }
+    first = last;
+  }
+  return cancelled;
+}
+
+function waveCellTOI(wave, arc, cell, dt, duration) {
+  const x = cell._frameX ?? cell._stepX ?? cell.x, y = cell._frameY ?? cell._stepY ?? cell.y;
+  const vx = (dt > 0 ? (cell.x - x) / dt : 0) - wave.directionX * wave.speed;
+  const vy = (dt > 0 ? (cell.y - y) / dt : 0) - wave.directionY * wave.speed;
+  if (pointSegmentDistanceSquared(0, 0, x - wave.x, y - wave.y,
+    x - wave.x + vx * duration, y - wave.y + vy * duration) > (wave.radius + cell.radius) ** 2) return Infinity;
+  let earliest = Infinity;
+  for (let i = 1; i < arc.length; i++) earliest = Math.min(earliest,
+    pointCapsuleTOI(x, y, vx, vy, arc[i - 1], arc[i], cell.radius + wave.thickness / 2, duration));
+  return earliest;
+}
+
+function advanceWaves(arena, dt) {
+  const waves = [...arena.blasts].sort((a, b) => a.id.localeCompare(b.id));
+  // Cancellation paths are independent of player hits. Resolve that timeline
+  // first, then clip every player's hit sweep to the wave's cancellation time.
+  const cancelled = waveClashTimeline(arena, waves, dt);
+  const hits = [];
+  for (const wave of waves) {
+    const duration = Math.min(waveLiveTime(wave, dt), cancelled.get(wave.id) ?? Infinity);
+    if (duration < 0) continue;
+    const arc = waveArc(wave), cancelTime = cancelled.get(wave.id);
+    for (const player of arena.players.values()) {
+      if (player.id === wave.ownerId || player.respawnIn > 0 || player.invulnerable > 0 || wave.hit.has(player.id)) continue;
+      const touched = player.cells.map(cell => ({ cell, time: waveCellTOI(wave, arc, cell, dt, duration) }))
+        .filter(hit => Number.isFinite(hit.time) && (cancelTime === undefined || hit.time < cancelTime - WAVE_TIME_EPSILON))
+        .sort((a, b) => a.time - b.time || a.cell.id.localeCompare(b.cell.id));
+      if (touched.length) hits.push({ wave, player, hitCells: touched.map(hit => hit.cell), time: touched[0].time });
+    }
+  }
+  hits.sort((a, b) => a.time - b.time || a.wave.id.localeCompare(b.wave.id) || a.player.id.localeCompare(b.player.id));
+  for (const { wave, player, hitCells, time } of hits) {
+    wave.hit.add(player.id);
+    const eventId = `${wave.id}:${player.id}`, primary = hitCells[0];
+    const impulseFor = cell => clamp(WAVE.knockback * Math.pow(START_MASS / cell.mass, 0.35), WAVE.minKnockback, WAVE.maxKnockback);
+    const primaryImpulse = impulseFor(primary);
+    const point = { x: primary.x - wave.directionX * primary.radius, y: primary.y - wave.directionY * primary.radius };
+    let lostMass = 0;
+    for (const cell of hitCells) {
+      const impulse = impulseFor(cell);
+      cell.lastWaveHitId = eventId; cell.vx += wave.directionX * impulse; cell.vy += wave.directionY * impulse;
+      lostMass += chipWaveCell(arena, player, cell, wave);
+    }
+    player.collisionRevision++;
+    player.lastWaveHit = { id: eventId, waveId: wave.id, at: arena.time - dt + time,
+      ownerId: wave.ownerId, cellId: primary.id, ...point, directionX: wave.directionX, directionY: wave.directionY,
+      mode: wave.mode, lostMass, hitCells: hitCells.length, hitCellIds: hitCells.map(cell => cell.id), impulse: primaryImpulse };
+    syncPlayer(player);
+  }
+  for (const wave of waves) {
+    const duration = Math.max(0, Math.min(waveLiveTime(wave, dt), cancelled.get(wave.id) ?? Infinity));
+    wave.travel = Math.min(wave.distance, wave.travel + wave.speed * duration);
+    wave.x = wave.originX + wave.directionX * wave.travel; wave.y = wave.originY + wave.directionY * wave.travel;
+  }
+  arena.blasts = waves.filter(wave => !cancelled.has(wave.id) && wave.travel < wave.distance);
+  arena.waveClashes = arena.waveClashes.filter(event => arena.time - event.at <= WAVE.clashRetention).slice(-WAVE.clashLimit);
 }
 
 export function stepArena(arena, elapsed) {
@@ -1270,6 +1409,7 @@ export function snapshotArena(arena, view) {
     arena: ARENA, motion: MOTION, sibling: SIBLING, simulationTime: arena.time * 1000, dustTotal: arena.dust.length,
     status: arena.status, endless: arena.endless, time: round(arena.time), remaining: arena.endless ? null : round(arena.remaining),
     round: arena.round, winnerId: arena.winnerId,
+    waveClashes: arena.waveClashes.map(event => ({ ...event, waveIds: [...event.waveIds], ownerIds: [...event.ownerIds], colors: [...event.colors] })),
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
       x: round(p.x), y: round(p.y), vx: round(p.vx), vy: round(p.vy), radius: round(p.radius), mass: round(p.mass),
       lastInputSeq: p.lastInputSeq, inputAge: p.inputAge, collisionRevision: p.collisionRevision,
