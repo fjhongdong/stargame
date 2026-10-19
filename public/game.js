@@ -21,7 +21,7 @@
   let width = innerWidth, height = innerHeight, dpr = 1, raf, inputTimer, pingTimer, backgroundCanvas;
   let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false;
   let touchVector = { x: 0, y: 0 }, joystickPointer = null, sound = false, audioContext;
-  let previousStatus = '', previousRound = -1, lastScore = 0, lastUpgradeKey = '', lastShatteredAt = 0;
+  let previousStatus = '', previousRound = -1, lastUpgradeKey = '', lastShatteredAt = 0;
   let inputSeq = 0, lastInputAck = 0, lastMovementSeq = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
   let renderedDust = 0, renderedCells = 0, camera = { x: NaN, y: NaN, scale: .95 };
   let bodyOverflowBefore = null;
@@ -197,7 +197,7 @@
     resetHeldInputs(false);
     renderTimeline = null;
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
-    lastScore = 0; lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
+    lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
     cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
     inputSeq = 0; lastInputAck = 0; lastMovementSeq = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
     camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
@@ -328,10 +328,6 @@
     const me = room.players.find((p) => p.id === myId);
     if (me?.shatteredAt > lastShatteredAt) { lastShatteredAt = me.shatteredAt; toast('撞击碎裂！守住核心，抢回碎片'); }
     emitContactEffects(room, old);
-    if (me && old?.status === 'playing' && me.score > lastScore) {
-      particles.push({ kind: 'score', x: me.x, y: me.y - 40, text: `+${me.score - lastScore}`, life: 1, color: '#b9f6ca' });
-    }
-    lastScore = me?.score || 0;
     for (const blast of room.blasts) {
       if (!seenBlasts.has(blast.id)) {
         seenBlasts.add(blast.id);
@@ -343,7 +339,7 @@
       if (room.status === 'playing') {
         $('sgPanelBackdrop').hidden = true;
         focusGame();
-        if (previousStatus !== 'playing') { toast(room.mode === 'practice' ? '训练开始 · E 向前发射引力波，方向键推进，松键滑行' : '全员就绪 · 引力吸收，碰撞碎裂，成长解锁强化！'); window.StarAudio?.play('start'); }
+        if (previousStatus !== 'playing') { toast(room.endless ? '无尽训练开始 · 无时间限制，随时可返回大厅' : '全员就绪 · 引力吸收，碰撞碎裂，成长解锁强化！'); window.StarAudio?.play('start'); }
         $('sgBlast').disabled = false;
       }
       previousStatus = room.status; previousRound = room.round;
@@ -498,9 +494,12 @@
     updateUpgrades();
     const me = room?.players?.find((p) => p.id === myId);
     const players = [...(room?.players || [])].filter((p) => p.connected !== false).sort(comparePlayers);
-    $('sgRoundLabel').textContent = room?.status === 'playing' ? room.mode === 'practice' ? '训练模式' : 'LIVE MATCH' : room?.status === 'finished' ? 'ROUND COMPLETE' : '准备起航';
-    $('sgTimer').textContent = formatTime(room?.remaining ?? 180);
-    $('sgTimer').style.color = room?.status === 'playing' && room.remaining < 30 ? '#ffb4a6' : '';
+    const endless = room ? room.endless === true : currentOptions?.mode === 'practice';
+    $('sgRoundLabel').textContent = endless ? '无尽训练' : room?.status === 'playing' ? 'LIVE MATCH' : room?.status === 'finished' ? 'ROUND COMPLETE' : '准备起航';
+    $('sgTimer').textContent = endless ? '∞' : formatTime(room?.remaining ?? 180);
+    $('sgTimer').setAttribute('aria-label', endless ? '无尽训练，无时间限制' : '对局剩余时间');
+    $('sgTimer').title = endless ? '无时间限制，可随时返回大厅' : '';
+    $('sgTimer').style.color = !endless && room?.status === 'playing' && room.remaining < 30 ? '#ffb4a6' : '';
     $('sgPlayerCount').textContent = `${String(players.length).padStart(2, '0')} PLAYERS`;
     setMarkup('sgRanking', players.slice(0, 6).map((p, i) => `<div class="sg-rank-row${p.id === myId ? ' me' : ''}"><span class="sg-rank-num">${i + 1}</span><span class="sg-player-dot" style="--planet:${safeColor(p.color)}"></span><span class="sg-rank-name">${esc(p.name)}${p.id === myId ? ' · 你' : ''}</span><span class="sg-rank-score">${Math.floor(p.mass ?? p.score ?? 0)}</span></div>`).join(''));
     $('sgScore').textContent = String(Math.floor(me?.mass ?? 36)).padStart(3, '0');
@@ -516,7 +515,7 @@
     $('sgEnergyFill').style.width = `${energy}%`;
     $('sgBlast').disabled = !room || room.status !== 'playing' || energy < (me?.stats?.blastCost || 30) || (me?.respawnIn || 0) > 0 || reconnecting || (me?.cooldown || 0) > 0;
     $('sgBlast').title = `沿前进方向发射 · 消耗 ${me?.stats?.blastCost || 30} 能量${me?.cooldown > 0 ? ` · 冷却 ${me.cooldown.toFixed(1)} 秒` : ''}`;
-    $('sgRoomFooter').textContent = room ? `${room.mode === 'practice' ? 'PRACTICE / AI TRAINING' : `ROOM / ${room.code}`}  ·  STAY CURIOUS, KEEP EXPLODING` : 'CONNECTING TO YOUR UNIVERSE';
+    $('sgRoomFooter').textContent = room ? `${endless ? 'ENDLESS TRAINING / 无尽训练' : `ROOM / ${room.code}`}  ·  STAY CURIOUS, KEEP EXPLODING` : 'CONNECTING TO YOUR UNIVERSE';
     $('sgDiagnostics').textContent = `${fps > 0 ? fps : '—'} FPS / ${rtt === null ? '—' : Math.round(rtt)} ms`;
     const respawn = me?.respawnIn || 0;
     $('sgRespawn').hidden = respawn <= 0 || room?.status !== 'playing';
@@ -1141,10 +1140,6 @@
           ctx.globalAlpha = (1 - progress) * (.25 + p.strength * .5); ctx.strokeStyle = p.color; ctx.lineWidth = .8 + p.strength * .7;
           ctx.beginPath(); ctx.arc(0, 0, radius, -.7, .7); ctx.stroke();
           ctx.beginPath(); ctx.arc(0, 0, radius, Math.PI - .7, Math.PI + .7); ctx.stroke(); ctx.restore();
-        } else {
-          p.y -= dt * 23;
-          if (!visible(p.x, p.y, 30, view)) continue;
-          ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.font = '600 13px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.fillText(p.text, p.x, p.y); ctx.globalAlpha = 1;
         }
       }
     } else {

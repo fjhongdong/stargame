@@ -101,8 +101,8 @@ export function skinColor(skin, fallback = 0) {
   return Number.isInteger(index) && index >= 0 && index < COLORS.length ? COLORS[index] : COLORS[fallback % COLORS.length];
 }
 
-export function createArena({ random = Math.random } = {}) {
-  return { status: 'lobby', time: 0, remaining: ROUND_DURATION, round: 0, winnerId: null,
+export function createArena({ random = Math.random, endless = false } = {}) {
+  return { endless: endless === true, status: 'lobby', time: 0, remaining: endless === true ? null : ROUND_DURATION, round: 0, winnerId: null,
     players: new Map(), dust: [], blasts: [], serial: 0, random,
     dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0 };
 }
@@ -265,7 +265,7 @@ function refillDust(arena) {
 export function startRound(arena) {
   arena.status = 'playing';
   arena.time = 0;
-  arena.remaining = ROUND_DURATION;
+  arena.remaining = arena.endless ? null : ROUND_DURATION;
   arena.round++;
   arena.winnerId = null;
   arena.dust = [];
@@ -1038,7 +1038,7 @@ export function stepArena(arena, elapsed) {
   if (arena.status !== 'playing') return;
   const dt = clamp(finite(elapsed), 0, 0.1);
   arena.time += dt;
-  arena.remaining = Math.max(0, ROUND_DURATION - arena.time);
+  arena.remaining = arena.endless ? null : Math.max(0, ROUND_DURATION - arena.time);
   // One linear grid rebuild replaces repeated all-particle scans for bots,
   // gravity and pickups. Moving particles update only their changed buckets.
   rebuildDustGrid(arena);
@@ -1104,7 +1104,7 @@ export function stepArena(arena, elapsed) {
   refillDust(arena);
   for (const player of arena.players.values()) updateProgress(arena, player);
 
-  if (arena.remaining <= 0) {
+  if (!arena.endless && arena.remaining <= 0) {
     arena.status = 'finished';
     const ranked = [...arena.players.values()].sort((a, b) => b.mass - a.mass || b.score - a.score || b.kills - a.kills || a.id.localeCompare(b.id));
     arena.winnerId = ranked[0]?.id ?? null;
@@ -1118,7 +1118,7 @@ export function snapshotArena(arena, view) {
     blast.x - blast.radius <= bounds.right && blast.y + blast.radius >= bounds.top && blast.y - blast.radius <= bounds.bottom) : arena.blasts;
   return {
     arena: ARENA, motion: MOTION, simulationTime: arena.time * 1000, dustTotal: arena.dust.length,
-    status: arena.status, time: round(arena.time), remaining: round(arena.remaining),
+    status: arena.status, endless: arena.endless, time: round(arena.time), remaining: arena.endless ? null : round(arena.remaining),
     round: arena.round, winnerId: arena.winnerId,
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
       x: round(p.x), y: round(p.y), vx: round(p.vx), vy: round(p.vy), radius: round(p.radius), mass: round(p.mass),

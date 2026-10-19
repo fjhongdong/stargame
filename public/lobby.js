@@ -5,7 +5,7 @@
   const $$ = (s) => [...document.querySelectorAll(s)];
   const storage = { get(key, fallback) { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } }, set(key, value) { try { localStorage.setItem(key, value); } catch { /* private browsing */ } } };
   const skinNames = ['薄荷新星', '紫雾行星', '落日橘星', '极光蓝星'];
-  const modes = { quick: ['快速匹配','开始匹配'], create: ['好友开黑','创建好友房间'], practice: ['自由练习','进入练习场'] };
+  const modes = { quick: ['快速匹配','开始匹配'], create: ['好友开黑','创建好友房间'], practice: ['无尽训练','开启无尽训练'] };
   let mode = 'quick', skin = Math.max(0, Math.min(3, Number(storage.get('pb-skin','0')) || 0));
   let busy = false, toastTimer, sound = storage.get('pb-sound','false') === 'true';
   let reducedMotion = storage.get('pb-motion', String(matchMedia('(prefers-reduced-motion: reduce)').matches)) === 'true';

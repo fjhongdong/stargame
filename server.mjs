@@ -108,8 +108,9 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, broadc
   function create(id, message = {}) {
     leave(id);
     const code = getCode();
-    const room = { code, hostId: id, mode: message.mode === 'practice' ? 'practice' : 'online',
-      arena: createArena({ random }), createdAt: now() };
+    const mode = message.mode === 'practice' ? 'practice' : 'online';
+    const room = { code, hostId: id, mode,
+      arena: createArena({ random, endless: mode === 'practice' }), createdAt: now() };
     addPlayer(room.arena, { id, name: message.name, skin: message.skin, ready: true });
     rooms.set(code, room);
     playerRooms.set(id, code);
