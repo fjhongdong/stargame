@@ -4,11 +4,12 @@ export const ROUND_DURATION = 180;
 export const COLORS = ['#5eefa8', '#d4b5ff', '#ffbd68', '#83d9ff', '#ff8eaf', '#9da8ff', '#ffe787', '#70f0e4'];
 export const BLAST_COST = 30;
 export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, restitution: 0.2 });
+export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];
 export const UPGRADE_POOL = [
   { id: 'speed', title: '光速引擎', description: '移动速度提升 10%', icon: '⚡' },
   { id: 'growth', title: '星尘滋养', description: '吞食星尘获得的质量增加 20%', icon: '✦' },
-  { id: 'range', title: '超新星回响', description: '星爆攻击范围增加 18%', icon: '◎' },
+  { id: 'range', title: '超新星回响', description: '引力波射程增加 18%', icon: '◎' },
   { id: 'efficiency', title: '能量核心', description: '释放星爆的能量消耗降低 15%', icon: '◈' },
   { id: 'magnet', title: '引力透镜', description: '引力吸引范围增加 25', icon: '🧲' },
   { id: 'shield', title: '行星护盾', description: '生命上限增加 25，并恢复 25 生命', icon: '◇' },
@@ -19,8 +20,6 @@ const START_MASS = 36;
 export const DUST_COUNT = 6000;
 const GRID_SIZE = 256;
 const GRID_COLUMNS = Math.ceil(ARENA.width / GRID_SIZE);
-const BLAST_DURATION = 0.8;
-const BLAST_RADIUS = 210;
 
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : 0;
@@ -104,7 +103,7 @@ export function skinColor(skin, fallback = 0) {
 export function createArena({ random = Math.random } = {}) {
   return { status: 'lobby', time: 0, remaining: ROUND_DURATION, round: 0, winnerId: null,
     players: new Map(), dust: [], blasts: [], serial: 0, random,
-    dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set() };
+    dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set(), impactSerial: 0 };
 }
 
 function spawnPosition(arena) {
@@ -125,7 +124,7 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], hp: 100, energy: 60,
     score: 0, kills: 0, boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
     input: normalizeInput(), fireQueued: false, splitQueued: false, ejectQueued: false, shatteredAt: -10,
-    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, direction: { x: 1, y: 0 } };
+    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
   resetProgress(player);
   arena.players.set(id, player);
@@ -275,10 +274,12 @@ export function startRound(arena) {
   arena.activeDust = new Set();
   arena.blasts = [];
   arena.bodyContacts = new Set();
+  arena.impactSerial = 0;
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, hp: 100, energy: 60, score: 0, kills: 0,
       boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
-      ejectQueued: false, shatteredAt: -10, collisionRevision: 0, pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
+      ejectQueued: false, shatteredAt: -10, collisionRevision: 0, lastImpact: null,
+      pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
     syncPlayer(player);
     resetProgress(player);
@@ -334,14 +335,14 @@ function destroyPlayer(arena, victim, ownerId, dropDust = true) {
   }
 }
 
-function splitPlayer(arena, player) {
+function splitPlayer(arena, player, direction = player.direction) {
   for (const cell of [...player.cells]) {
     if (player.cells.length >= 8) break;
     if (cell.mass < 48) continue;
     cell.mass /= 2;
     cell.radius = 4 * Math.sqrt(cell.mass);
     cell.mergeIn = 12;
-    const { x, y } = player.direction;
+    const { x, y } = direction;
     // Start the launched half beyond the parent's edge. Spawning overlapping
     // halves makes collision separation push the parent against its input.
     const separation = cell.radius * 2 + 2;
@@ -351,8 +352,8 @@ function splitPlayer(arena, player) {
   }
 }
 
-function ejectMass(arena, player) {
-  const { x, y } = player.direction;
+function ejectMass(arena, player, direction = player.direction) {
+  const { x, y } = direction;
   for (const cell of player.cells) {
     if (cell.mass < 16) continue;
     cell.mass -= 3;
@@ -413,10 +414,8 @@ function moveCells(player, input, dt) {
         a.radius = 4 * Math.sqrt(mass);
         player.cells.splice(j--, 1);
       } else if ((a.mergeIn > 0 || b.mergeIn > 0) && distance < a.radius + b.radius) {
-        const push = (a.radius + b.radius - distance) * 0.5;
         const ux = distance > 0 ? dx / distance : 1, uy = distance > 0 ? dy / distance : 0;
-        a.x -= ux * push; a.y -= uy * push;
-        b.x += ux * push; b.y += uy * push;
+        resolveBodyPair({ player, cell: a }, { player, cell: b }, ux, uy);
       }
     }
   }
@@ -426,47 +425,54 @@ function moveCells(player, input, dt) {
   syncPlayer(player);
 }
 
-function shatterCell(arena, player, cell, collider) {
+function shatterCell(arena, player, cell, collider, closingSpeed = 0) {
   if (cell.mass < 16 || cell.protectedFor > 0 || cell.shatterCooldown > 0) return false;
   const count = cell.mass >= 64 ? 3 : 2;
-  const mass = cell.mass * 0.5 / count;
+  const mass = cell.mass / (count + 1);
   const angle = Math.atan2(cell.y - collider.y, cell.x - collider.x);
-  cell.mass *= 0.5;
+  const inheritedX = cell.vx, inheritedY = cell.vy;
+  const scatterSpeed = Math.min(300, 20 + closingSpeed * 0.35);
+  cell.mass = mass;
   cell.radius = 4 * Math.sqrt(cell.mass);
   cell.protectedFor = 1;
   cell.shatterCooldown = 3;
-  cell.vx += Math.cos(angle) * 250;
-  cell.vy += Math.sin(angle) * 250;
+  cell.vx = inheritedX + Math.cos(angle) * scatterSpeed;
+  cell.vy = inheritedY + Math.sin(angle) * scatterSpeed;
   for (let i = 0; i < count; i++) {
-    const direction = angle + (i - (count - 1) / 2) * (Math.PI / count);
+    const direction = angle + (i + 1) * Math.PI * 2 / (count + 1);
     const ux = Math.cos(direction), uy = Math.sin(direction);
     const distance = cell.radius + 14;
     addDust(arena, clamp(cell.x + ux * distance, 8, ARENA.width - 8),
       clamp(cell.y + uy * distance, 8, ARENA.height - 8), mass,
       { fragment: true, color: player.color, ownerId: player.id, collectAfter: arena.time + 0.3,
-        availableAt: arena.time + 0.9, vx: ux * 430, vy: uy * 430 });
+        availableAt: arena.time + 0.9, vx: inheritedX + ux * scatterSpeed, vy: inheritedY + uy * scatterSpeed });
   }
   player.shatteredAt = arena.time;
   syncPlayer(player);
   return true;
 }
 
-function chipCollider(arena, body, other) {
+function chipCollider(arena, body, other, closingSpeed = 0) {
   const cell = body.cell;
   const lost = Math.min(cell.mass * 0.05, Math.max(0, cell.mass - 8));
   if (lost <= 0) return;
   const count = cell.mass >= 64 ? 3 : 2;
+  const inheritedX = cell.vx, inheritedY = cell.vy;
+  const scatterSpeed = Math.min(240, 12 + closingSpeed * 0.25);
   cell.mass -= lost;
   cell.radius = 4 * Math.sqrt(cell.mass);
   const angle = Math.atan2(other.y - cell.y, other.x - cell.x);
   for (let i = 0; i < count; i++) {
     const direction = angle + (i - (count - 1) / 2) * 0.7;
     const ux = Math.cos(direction), uy = Math.sin(direction);
+    const scatterX = ux * scatterSpeed, scatterY = uy * scatterSpeed;
     addDust(arena, clamp(cell.x + ux * (cell.radius + 14), 8, ARENA.width - 8),
       clamp(cell.y + uy * (cell.radius + 14), 8, ARENA.height - 8), lost / count,
       { fragment: true, color: body.player.color, ownerId: body.player.id,
         collectAfter: arena.time + 0.3, availableAt: arena.time + 0.9,
-        vx: cell.vx + ux * 220, vy: cell.vy + uy * 220 });
+        vx: inheritedX + scatterX, vy: inheritedY + scatterY });
+    cell.vx -= lost / count / cell.mass * scatterX;
+    cell.vy -= lost / count / cell.mass * scatterY;
   }
 }
 
@@ -537,7 +543,10 @@ function resolveBodyPair(a, b, nx, ny) {
     bc.vx += impulse * inverseB * nx; bc.vy += impulse * inverseB * ny;
     changed = true;
   }
-  if (changed) { a.player.collisionRevision++; b.player.collisionRevision++; }
+  if (changed) {
+    a.player.collisionRevision++;
+    if (b.player !== a.player) b.player.collisionRevision++;
+  }
 }
 
 function resolvePlayerBodies(arena) {
@@ -555,13 +564,26 @@ function resolvePlayerBodies(arena) {
   contacts.sort((a, b) => a.time - b.time || a.key.localeCompare(b.key));
   for (const contact of contacts) {
     const { a, b, nx, ny, key } = contact;
+    const closingSpeed = Math.max(0, -((b.cell.vx - a.cell.vx) * nx + (b.cell.vy - a.cell.vy) * ny));
     resolveBodyPair(a, b, nx, ny);
-    if (arena.bodyContacts.has(key) || a.cell.mass === b.cell.mass) continue;
-    const big = a.cell.mass > b.cell.mass ? a : b;
-    const small = big === a ? b : a;
-    if (small.player.invulnerable <= 0 && shatterCell(arena, small.player, small.cell, big.cell)) {
-      chipCollider(arena, big, small.cell);
-      big.player.collisionRevision++; small.player.collisionRevision++;
+    if (arena.bodyContacts.has(key)) continue;
+    const impactPoint = { x: a.cell.x + nx * a.cell.radius, y: a.cell.y + ny * a.cell.radius,
+      radius: Math.min(32, Math.min(a.cell.radius, b.cell.radius) * 0.65) };
+    let fractured = false;
+    if (a.cell.mass !== b.cell.mass) {
+      const big = a.cell.mass > b.cell.mass ? a : b;
+      const small = big === a ? b : a;
+      if (small.player.invulnerable <= 0 && shatterCell(arena, small.player, small.cell, big.cell, closingSpeed)) {
+        chipCollider(arena, big, small.cell, closingSpeed);
+        big.player.collisionRevision++; small.player.collisionRevision++;
+        fractured = true;
+      }
+    }
+    if (closingSpeed > 12 || fractured) {
+      const impact = { id: `impact-${arena.round}-${++arena.impactSerial}`, at: arena.time,
+        x: impactPoint.x, y: impactPoint.y, normalX: nx, normalY: ny, speed: closingSpeed,
+        radius: impactPoint.radius, fractured };
+      a.player.lastImpact = b.player.lastImpact = impact;
     }
   }
   // Resolve secondary overlaps in piles, including particles pinned to a wall.
@@ -676,6 +698,103 @@ function collectDust(arena) {
   }
 }
 
+function mainCell(player) {
+  return player.cells.reduce((largest, cell) => !largest || cell.mass > largest.mass ? cell : largest, null);
+}
+
+function updateFacing(player, input) {
+  const source = mainCell(player);
+  const speed = source ? Math.hypot(source.vx, source.vy) : 0;
+  if (speed >= 5) player.direction = { x: source.vx / speed, y: source.vy / speed };
+  else {
+    const length = Math.hypot(input.x, input.y);
+    if (length > 0) player.direction = { x: input.x / length, y: input.y / length };
+  }
+}
+
+function launchWave(arena, player) {
+  const source = mainCell(player);
+  if (!source || player.respawnIn > 0 || player.energy < player.stats.blastCost || player.cooldown > 0) return;
+  const speed = Math.hypot(source.vx, source.vy);
+  const direction = speed >= 5 ? { x: source.vx / speed, y: source.vy / speed } : player.direction;
+  const originOffset = source.radius + WAVE.curvature + WAVE.thickness / 2 + 4;
+  const x = source.x + direction.x * originOffset, y = source.y + direction.y * originOffset;
+  player.energy -= player.stats.blastCost;
+  player.cooldown = player.stats.blastCooldown;
+  arena.blasts.push({ id: `b${++arena.serial}`, ownerId: player.id, kind: 'wave', sourceCellId: source.id,
+    x, y, originX: x, originY: y, originOffset, directionX: direction.x, directionY: direction.y,
+    width: WAVE.width, thickness: WAVE.thickness, curvature: WAVE.curvature,
+    speed: WAVE.speed, distance: WAVE.distance * player.stats.blastRange, travel: 0,
+    color: player.color, radius: WAVE.width / 2 + WAVE.curvature + WAVE.thickness / 2, hit: new Set() });
+}
+
+/** A forward arc; its tips trail its center by curvature world units. */
+export function waveArcPoint(wave, u) {
+  const sideways = u * wave.width / 2;
+  const backwards = wave.curvature * u * u;
+  return { x: wave.x - wave.directionY * sideways - wave.directionX * backwards,
+    y: wave.y + wave.directionX * sideways - wave.directionY * backwards };
+}
+
+function pointSegmentDistanceSquared(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const length = dx * dx + dy * dy;
+  const t = length > 0 ? clamp(((px - ax) * dx + (py - ay) * dy) / length, 0, 1) : 0;
+  return (px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2;
+}
+
+function segmentDistanceSquared(ax, ay, bx, by, cx, cy, dx, dy) {
+  const rx = bx - ax, ry = by - ay, sx = dx - cx, sy = dy - cy;
+  const denominator = rx * sy - ry * sx;
+  if (Math.abs(denominator) > 1e-10) {
+    const qx = cx - ax, qy = cy - ay;
+    const t = (qx * sy - qy * sx) / denominator;
+    const u = (qx * ry - qy * rx) / denominator;
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) return 0;
+  }
+  return Math.min(pointSegmentDistanceSquared(ax, ay, cx, cy, dx, dy),
+    pointSegmentDistanceSquared(bx, by, cx, cy, dx, dy),
+    pointSegmentDistanceSquared(cx, cy, ax, ay, bx, by),
+    pointSegmentDistanceSquared(dx, dy, ax, ay, bx, by));
+}
+
+function advanceWaves(arena, dt) {
+  for (const wave of arena.blasts) {
+    const previousX = wave.x, previousY = wave.y;
+    const remaining = wave.distance - wave.travel;
+    const activeFraction = dt > 0 ? Math.min(1, remaining / (wave.speed * dt)) : 1;
+    wave.travel = Math.min(wave.distance, wave.travel + wave.speed * dt);
+    wave.x = wave.originX + wave.directionX * wave.travel;
+    wave.y = wave.originY + wave.directionY * wave.travel;
+    const deltaX = wave.x - previousX, deltaY = wave.y - previousY;
+    const arc = [];
+    for (let i = 0; i <= WAVE.segments; i++) {
+      const point = waveArcPoint(wave, -1 + 2 * i / WAVE.segments);
+      arc.push({ x: point.x - deltaX, y: point.y - deltaY });
+    }
+    for (const player of arena.players.values()) {
+      if (player.id === wave.ownerId || player.respawnIn > 0 || player.invulnerable > 0 || wave.hit.has(player.id)) continue;
+      const hit = player.cells.some(cell => {
+        const radiusSquared = (cell.radius + wave.thickness / 2) ** 2;
+        const startX = cell._stepX ?? cell.x, startY = cell._stepY ?? cell.y;
+        const endX = startX + (cell.x - startX) * activeFraction - deltaX;
+        const endY = startY + (cell.y - startY) * activeFraction - deltaY;
+        for (let i = 1; i < arc.length; i++) {
+          if (segmentDistanceSquared(startX, startY, endX, endY,
+            arc[i - 1].x, arc[i - 1].y, arc[i].x, arc[i].y) <= radiusSquared) return true;
+        }
+        return false;
+      });
+      if (hit) {
+        wave.hit.add(player.id);
+        player.hp = Math.max(0, player.hp - 40);
+        if (player.hp === 0) destroyPlayer(arena, player, wave.ownerId);
+      }
+    }
+  }
+  arena.blasts = arena.blasts.filter(wave => wave.travel < wave.distance);
+}
+
 export function stepArena(arena, elapsed) {
   if (arena.status !== 'playing') return;
   const dt = clamp(finite(elapsed), 0, 0.1);
@@ -701,23 +820,17 @@ export function stepArena(arena, elapsed) {
     }
     const input = player.connected ? player.input : normalizeInput();
     const moving = Math.hypot(input.x, input.y) > 0;
-    if (moving) player.direction = { x: input.x / Math.hypot(input.x, input.y), y: input.y / Math.hypot(input.x, input.y) };
+    const actionDirection = moving ? { x: input.x / Math.hypot(input.x, input.y), y: input.y / Math.hypot(input.x, input.y) } : player.direction;
     player.boosting = input.boost && moving && player.energy > 1;
     player.energy = clamp(player.energy + dt * (player.boosting ? -13 : player.stats.energyRegen), 0, 100);
-    if (player.splitQueued) splitPlayer(arena, player);
-    if (player.ejectQueued) ejectMass(arena, player);
+    if (player.splitQueued) splitPlayer(arena, player, actionDirection);
+    if (player.ejectQueued) ejectMass(arena, player, actionDirection);
     player.splitQueued = player.ejectQueued = false;
     if (player.pendingInputSeq !== player.lastInputSeq) player.inputAge = 0;
     moveCells(player, input, dt);
     player.inputAge += dt;
     player.lastInputSeq = player.pendingInputSeq;
-    if (player.fireQueued && player.energy >= player.stats.blastCost && player.cooldown <= 0) {
-      player.energy -= player.stats.blastCost;
-      player.cooldown = player.stats.blastCooldown;
-      arena.blasts.push({ id: `b${++arena.serial}`, ownerId: player.id, x: player.x, y: player.y,
-        color: player.color, age: 0, radius: 0, maxRadius: BLAST_RADIUS * player.stats.blastRange, hit: new Set() });
-    }
-    player.fireQueued = false;
+    updateFacing(player, input);
   }
 
   attractDust(arena, dt);
@@ -725,20 +838,12 @@ export function stepArena(arena, elapsed) {
 
   // Live controlled cores have solid bodies; only loose fragments are eaten.
   resolvePlayerBodies(arena);
-
-  for (const blast of arena.blasts) {
-    blast.age += dt;
-    blast.radius = blast.maxRadius * Math.min(1, blast.age / BLAST_DURATION);
-    for (const player of arena.players.values()) {
-      if (player.id === blast.ownerId || player.respawnIn > 0 || player.invulnerable > 0 || blast.hit.has(player.id)) continue;
-      if (player.cells.some(cell => Math.hypot(cell.x - blast.x, cell.y - blast.y) <= blast.radius + cell.radius)) {
-        blast.hit.add(player.id);
-        player.hp = Math.max(0, player.hp - 40);
-        if (player.hp === 0) destroyPlayer(arena, player, blast.ownerId);
-      }
-    }
+  for (const player of arena.players.values()) {
+    updateFacing(player, player.connected ? player.input : normalizeInput());
+    if (player.fireQueued) launchWave(arena, player);
+    player.fireQueued = false;
   }
-  arena.blasts = arena.blasts.filter(blast => blast.age < BLAST_DURATION);
+  advanceWaves(arena, dt);
   refillDust(arena);
   for (const player of arena.players.values()) updateProgress(arena, player);
 
@@ -761,6 +866,8 @@ export function snapshotArena(arena, view) {
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
       x: round(p.x), y: round(p.y), vx: round(p.vx), vy: round(p.vy), radius: round(p.radius), mass: round(p.mass),
       lastInputSeq: p.lastInputSeq, inputAge: p.inputAge, collisionRevision: p.collisionRevision,
+      lastImpact: p.lastImpact ? { ...p.lastImpact } : null,
+      direction: { ...p.direction },
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),
@@ -775,7 +882,10 @@ export function snapshotArena(arena, view) {
     dust: visibleDust.map(d => ({ id: d.id, x: round(d.x), y: round(d.y), vx: round(finite(d.vx)), vy: round(finite(d.vy)), value: d.value,
       ...(d.ejected ? { ejected: true, color: d.color } : {}),
       ...(d.fragment ? { fragment: true, color: d.color, ownerId: d.ownerId } : {}) })),
-    blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, x: round(b.x), y: round(b.y),
-      color: b.color, radius: round(b.radius), progress: round(b.age / BLAST_DURATION) })),
+    blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, kind: b.kind, sourceCellId: b.sourceCellId,
+      x: round(b.x), y: round(b.y), originX: round(b.originX), originY: round(b.originY), originOffset: round(b.originOffset),
+      directionX: b.directionX, directionY: b.directionY, width: b.width, thickness: b.thickness, curvature: b.curvature,
+      speed: b.speed, distance: round(b.distance), travel: round(b.travel),
+      color: b.color, radius: round(b.radius), progress: round(b.travel / b.distance) })),
   };
 }

@@ -123,7 +123,7 @@ test('big impact leaves one controllable core and mass-conserving free fragments
   const small = player('small', 355, 36);
   stepArena(arena, 0.01);
   assert.equal(small.cells.length, 1);
-  assert.equal(small.mass, 18);
+  assert.equal(small.mass, 12);
   assert.equal(big.mass, 95);
   const free = arena.dust.filter(d => d.fragment && d.ownerId === small.id);
   assert.equal(free.length, 2);
@@ -147,7 +147,7 @@ test('higher-mass impact leaves one core and three free fragments', () => {
   const small = player('small', 380, 80);
   stepArena(arena, 0.01);
   assert.equal(small.cells.length, 1);
-  assert.equal(small.mass, 40);
+  assert.equal(small.mass, 20);
   const free = arena.dust.filter(d => d.fragment && d.ownerId === small.id);
   assert.equal(free.length, 3);
   assert.equal(small.mass + free.reduce((sum, fragment) => sum + fragment.value, 0), 80);
@@ -163,7 +163,7 @@ test('owner may reabsorb free chunks after grace without multiplying recycled ma
   const free = arena.dust.filter(d => d.fragment && d.ownerId === small.id);
   for (const fragment of free) Object.assign(fragment, { x: small.x, y: small.y, vx: 0, vy: 0 });
   stepArena(arena, 0.01);
-  assert.equal(small.mass, 18);
+  assert.equal(small.mass, 12);
   small.cells[0].vx = small.cells[0].vy = 0;
   for (const fragment of free) Object.assign(fragment, { x: small.cells[0].x, y: small.cells[0].y,
     vx: 0, vy: 0, collectAfter: 0, availableAt: 0 });

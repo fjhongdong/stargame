@@ -140,3 +140,18 @@ test('bodies pinned to different walls at one corner separate by sliding along w
   assert.ok(Math.hypot(ac.x - bc.x, ac.y - bc.y) >= ac.radius + bc.radius - 1e-5);
   assert.ok(ac.x <= ARENA.width - ac.radius && bc.y <= ARENA.height - bc.radius);
 });
+
+test('different-mass unmerged siblings conserve normal momentum and retain tangential velocities', () => {
+  const { arena, player } = fixture([[1000, 1000], [1050, 1000]]);
+  const [a, b] = player.cells;
+  Object.assign(a, { mass: 36, radius: 24, vx: 150, vy: 30, mergeIn: 5 });
+  Object.assign(b, { mass: 100, radius: 40, vx: -80, vy: -20, mergeIn: 5 });
+  const momentum = a.mass * a.vx + b.mass * b.vx;
+  stepArena(arena, 0);
+  assert.equal(player.cells.length, 2);
+  assert.ok(Math.abs(a.mass * a.vx + b.mass * b.vx - momentum) < 1e-9);
+  assert.equal(a.vy, 30);
+  assert.equal(b.vy, -20);
+  assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= a.radius + b.radius - 1e-6);
+  assert.equal(player.collisionRevision, 1, 'a sibling response increments its owner revision once');
+});

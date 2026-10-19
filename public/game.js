@@ -30,6 +30,8 @@
   const cellTracks = new Map(), dustTracks = new Map(), predictedCells = new Map(), inputHistory = [], domCache = new Map();
   const planetSprites = new Map(), dustSprites = new Map();
   const materializedDust = new Map();
+  const seenImpacts = new Map();
+  const waveVisuals = new Map();
   const remoteContactPositions = new Map();
   let remoteContactFrame = -1;
   const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
@@ -61,7 +63,7 @@
       <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
       <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
-      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>引力爆破</span><kbd>E</kbd></button></div></div>
+      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向引力波</span><kbd>E</kbd></button></div></div>
       <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
       <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><button class="sg-touch-boost" id="sgTouchBoost" aria-label="按住加速">加速</button><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button><button id="sgTouchEject">吐球</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
@@ -200,7 +202,7 @@
     resetHeldInputs(false);
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastScore = 0; lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
-    cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
+    cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
     inputSeq = 0; lastInputAck = 0; lastMovementSeq = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
     camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
     inputPulse = false; splitPulse = false; ejectPulse = false;
@@ -270,13 +272,14 @@
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
     reconnecting = true; retries += 1; resetHeldInputs(false);
-    predictedCells.clear(); inputHistory.length = 0;
+    predictedCells.clear(); inputHistory.length = 0; waveVisuals.clear();
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
 
   function showConnectionError(message) {
     reconnecting = false; clearTimeout(retryTimer);
+    waveVisuals.clear();
     resetHeldInputs(false);
     intentionalClose = true; socket?.close();
     showPanel(`<div class="sg-eyebrow">CONNECTION LOST</div><h2>信号暂时消失了</h2><p class="sg-panel-desc">${esc(message)}</p><div class="sg-panel-buttons"><button class="sg-primary" id="sgErrorExit">返回大厅</button></div>`);
@@ -295,6 +298,7 @@
   function send(data) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); }
   function closeSession(notify = true) {
     intentionalClose = true; active = false;
+    waveVisuals.clear();
     clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
     send({ type: 'leave' }); socket?.close(); socket = null;
     resetHeldInputs(false);
@@ -322,22 +326,10 @@
     room = next;
     if (!Array.isArray(room.players)) room.players = [];
     room.dust ||= []; room.blasts ||= [];
+    cacheWaveVisuals(room, old);
     const me = room.players.find((p) => p.id === myId);
     if (me?.shatteredAt > lastShatteredAt) { lastShatteredAt = me.shatteredAt; toast('撞击碎裂！守住核心，抢回碎片'); }
-    if (old?.status === 'playing' && old.round === room.round) {
-      for (const player of room.players) {
-        const previous = old.players.find((p) => p.id === player.id);
-        if (previous && player.shatteredAt >= 0 && player.shatteredAt > previous.shatteredAt) {
-          const color = safeColor(player.color), radius = Math.max(12, previous.radius || player.radius || 24);
-          particles.push({ kind: 'impact', x: player.x, y: player.y, radius, life: .42, duration: .42, color });
-          for (let i = 0; i < 9; i++) {
-            const angle = i * Math.PI * 2 / 9 + player.shatteredAt * 2.3, speed = 65 + i % 3 * 28;
-            particles.push({ kind: 'chip', x: player.x + Math.cos(angle) * radius * .55, y: player.y + Math.sin(angle) * radius * .55, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, rotation: angle, size: 2 + i % 3, life: .55, duration: .55, color });
-          }
-        }
-      }
-      if (particles.length > 180) particles.splice(0, particles.length - 180);
-    }
+    emitContactEffects(room, old);
     if (me && old?.status === 'playing' && me.score > lastScore) {
       particles.push({ kind: 'score', x: me.x, y: me.y - 40, text: `+${me.score - lastScore}`, life: 1, color: '#b9f6ca' });
     }
@@ -353,12 +345,48 @@
       if (room.status === 'playing') {
         $('sgPanelBackdrop').hidden = true;
         focusGame();
-        if (previousStatus !== 'playing') { toast(room.mode === 'practice' ? '训练开始 · 引力吸收碎片，碰撞碎裂，松键滑行' : '全员就绪 · 引力吸收，碰撞碎裂，成长解锁强化！'); window.StarAudio?.play('start'); }
+        if (previousStatus !== 'playing') { toast(room.mode === 'practice' ? '训练开始 · E 向前发射引力波，方向键推进，松键滑行' : '全员就绪 · 引力吸收，碰撞碎裂，成长解锁强化！'); window.StarAudio?.play('start'); }
         $('sgBlast').disabled = false;
       }
       previousStatus = room.status; previousRound = room.round;
     }
     updateHud(room.status !== old?.status || room.round !== old?.round);
+  }
+
+  function emitContactEffects(current, previous) {
+    if (previous?.round !== current.round) seenImpacts.clear();
+    const events = new Map();
+    for (const player of current.players) {
+      const impact = player.lastImpact;
+      if (!impact?.id) continue;
+      let event = events.get(impact.id);
+      if (!event) { event = { impact, colors: [] }; events.set(impact.id, event); }
+      event.colors.push(safeColor(player.color));
+    }
+    for (const { impact, colors } of events.values()) {
+      if (seenImpacts.has(impact.id)) continue;
+      seenImpacts.set(impact.id, impact.at);
+      const age = current.time - impact.at;
+      // A first snapshot establishes a baseline; old contacts never replay on join.
+      if (current.status !== 'playing' || previous?.status !== 'playing' || previous.round !== current.round || !Number.isFinite(age) || age < -.02 || age > .35 || !Number.isFinite(impact.x) || !Number.isFinite(impact.y)) continue;
+      const speed = Math.max(0, impact.speed || 0);
+      if (!impact.fractured && speed <= 12) continue;
+      const strength = clamp(Math.max(impact.fractured ? .3 : 0, (speed - 12) / 360), 0, 1);
+      const normalLength = Math.hypot(impact.normalX, impact.normalY) || 1, nx = (impact.normalX || 0) / normalLength, ny = (impact.normalY || 0) / normalLength;
+      const angle = Math.atan2(ny, nx), radius = clamp(impact.radius || 8, 4, 32) * (.7 + strength * .5), duration = .12 + strength * .18;
+      particles.push({ kind: 'contact', x: impact.x, y: impact.y, radius, angle, strength, life: duration, duration, color: colors[0] });
+      const count = 2 + Math.round(strength * 6);
+      for (let i = 0; i < count; i++) {
+        const variance = .4 + Math.abs(Math.sin(i * 2.7 + impact.at * 4.3)) * .6;
+        const normal = (i % 2 ? 1 : -1) * (12 + strength * 65) * variance;
+        const tangent = (i % 4 < 2 ? 1 : -1) * (20 + strength * 125) * variance;
+        const life = .14 + strength * .25 + i % 2 * .03;
+        particles.push({ kind: 'chip', x: impact.x, y: impact.y, vx: nx * normal - ny * tangent, vy: ny * normal + nx * tangent, rotation: angle + i, size: 1 + strength * 1.7 + i % 2 * .4, life, duration: life, color: colors[i % colors.length] });
+      }
+    }
+    for (const [id, at] of seenImpacts) if (current.time - at > 5) seenImpacts.delete(id);
+    while (seenImpacts.size > 128) seenImpacts.delete(seenImpacts.keys().next().value);
+    if (particles.length > 180) particles.splice(0, particles.length - 180);
   }
 
   function updateRoomPanel() {
@@ -375,7 +403,7 @@
     const focused = document.activeElement?.id;
     const roster = players.map((p) => `<div class="sg-roster-row"><span class="sg-mini-planet" style="--planet:${safeColor(p.color)}"></span><span class="sg-roster-name">${esc(p.name)}${p.id === myId ? '<span class="sg-small-tag">你</span>' : ''}${p.id === room.hostId ? '<span class="sg-small-tag">房主</span>' : ''}${p.bot ? '<span class="sg-small-tag">AI</span>' : ''}</span><span class="sg-ready-status${p.ready || p.bot ? ' ready' : ''}">${finished ? `${Math.floor(p.mass || 0)} 质量` : p.ready || p.bot ? '● 已准备' : '等待准备'}</span></div>`).join('');
     let html = `${finished ? `<div class="sg-panel-topline"><span class="sg-eyebrow">ROUND COMPLETE</span><span class="sg-badge">${room.mode === 'practice' ? '训练完成' : '本局结束'}</span></div><h2>${place === 1 ? '你就是宇宙的中心。' : '每一次引爆，都是新生。'}</h2><div class="sg-result-place">#${place}<span style="font-size:18px;color:#7d899b;letter-spacing:0"> / ${players.length}</span></div><p class="sg-panel-desc">${esc(winner?.name || '星际旅人')} 获得本局第一名</p><div class="sg-result-grid"><div><div class="sg-result-number">${me?.score || 0}</div><div class="sg-result-label">获得星尘</div></div><div><div class="sg-result-number">${players.length}</div><div class="sg-result-label">参赛星球</div></div><div><div class="sg-result-number">${room.round || 1}</div><div class="sg-result-label">探索轮次</div></div></div>` : `<div class="sg-panel-topline"><span class="sg-eyebrow">YOUR NEXT UNIVERSE</span><span class="sg-badge">在线房间 · ${players.length} / 8</span></div><h2>${host ? '宇宙已就位。<br>就差你的朋友。' : '你已进入这片宇宙。'}</h2><p class="sg-panel-desc">${host ? '把房间码发给朋友，一起开启星际混战。' : '准备好你的星球，等待房主开启对局。'}</p><div class="sg-code-box"><div><div class="sg-code-label">房间邀请码 / ROOM CODE</div><div class="sg-code">${esc(room.code)}</div></div><button class="sg-copy" id="sgCopyCode" title="复制房间码" aria-label="复制房间码">${icons.copy}</button></div>`}<div class="sg-roster-title"><span>${finished ? '本局星球' : '已抵达星球'}</span><span>${players.length} ${players.length === 1 ? 'PLAYER' : 'PLAYERS'}</span></div><div class="sg-roster">${roster}</div><div class="sg-panel-buttons"><button class="sg-secondary" id="sgRoomExit">返回大厅</button>${host ? `<button class="sg-primary" id="sgStartRound" ${allReady || (room.mode === 'practice' && finished) ? '' : 'disabled'}>${finished ? '再来一局' : '开始引爆'} ↗</button>` : `<button class="sg-primary" id="sgReady">${me?.ready ? '取消准备' : finished ? '准备下一局' : '我准备好了'}${me?.ready ? ' ✓' : ''}</button>`}</div><p class="sg-panel-note">${room.mode === 'practice' ? '训练模式中的其他星球由 AI 控制。' : host ? players.length < 2 ? '至少需要 2 名玩家。邀请朋友，或等待新星球加入。' : allReady ? '所有星球已准备就绪，可以出发了。' : '等待所有玩家准备后，房主即可开始。' : me?.ready ? '你已准备就绪，等待房主开始。' : '点击准备，告诉同伴你已就绪。'}</p>`;
-    html = html.replace(/<\/p>$/, '<br>引力吸碎片 · 撞击会碎裂 · 守住核心再吸收</p>');
+    html = html.replace(/<\/p>$/, '<br>碰撞等分成 3 / 4 份 · 唯一核心可控 · E 向前发射引力波</p>');
     if (domCache.get('roomPanel') !== html) {
       domCache.set('roomPanel', html); panel.innerHTML = html;
       if ($('sgCopyCode')) $('sgCopyCode').onclick = copyCode;
@@ -453,7 +481,7 @@
     $('sgEnergyText').textContent = `${Math.floor(energy)} / 100`;
     $('sgEnergyFill').style.width = `${energy}%`;
     $('sgBlast').disabled = !room || room.status !== 'playing' || energy < (me?.stats?.blastCost || 30) || (me?.respawnIn || 0) > 0 || reconnecting || (me?.cooldown || 0) > 0;
-    $('sgBlast').title = `消耗 ${me?.stats?.blastCost || 30} 能量${me?.cooldown > 0 ? ` · 冷却 ${me.cooldown.toFixed(1)} 秒` : ''}`;
+    $('sgBlast').title = `沿前进方向发射 · 消耗 ${me?.stats?.blastCost || 30} 能量${me?.cooldown > 0 ? ` · 冷却 ${me.cooldown.toFixed(1)} 秒` : ''}`;
     $('sgRoomFooter').textContent = room ? `${room.mode === 'practice' ? 'PRACTICE / AI TRAINING' : `ROOM / ${room.code}`}  ·  STAY CURIOUS, KEEP EXPLODING` : 'CONNECTING TO YOUR UNIVERSE';
     $('sgDiagnostics').textContent = `${fps > 0 ? fps : '—'} FPS / ${rtt === null ? '—' : Math.round(rtt)} ms`;
     const respawn = me?.respawnIn || 0;
@@ -779,11 +807,18 @@
       const sampleAt = room._renderTime + Math.max(0, time - room._receivedAt) - 100;
       for (const dust of room.dust) {
         const position = sampleTrack(dustTracks.get(dust.id), sampleAt, 75) || dust;
-        const radius = dust.fragment ? Math.sqrt(dust.value || 1) * 3 + 15 : 15;
+        const radius = dust.fragment ? Math.sqrt(dust.value || 1) * 4 * 1.3 + 30 : 15;
         if (!visible(position.x, position.y, radius, view)) continue;
         drawDust(dust, position, time); renderedDust++;
       }
-      for (const blast of room.blasts) if (visible(blast.x, blast.y, (blast.radius || 210) + 30, view)) drawBlast(blast, time);
+      for (const [id, entry] of waveVisuals) {
+        if (entry.missingSince !== null && time - entry.missingSince > 100) { waveVisuals.delete(id); continue; }
+        const blast = entry.blast;
+        const pose = wavePose(blast, time);
+        if (!pose.active) continue;
+        const extent = Math.hypot((blast.width || 160) / 2, (blast.curvature || 30) + pose.tail) + (blast.thickness || 20) + 10;
+        if (visible(pose.x, pose.y, extent, view)) drawBlast(blast, time, pose);
+      }
       for (const player of room.players) {
         if (player.respawnIn > 0) continue;
         const cells = player.cells || [];
@@ -805,12 +840,15 @@
           if (!visible(p.x, p.y, 10, view)) continue;
           ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rotation); ctx.globalAlpha = p.life / p.duration * .8; ctx.fillStyle = p.color;
           ctx.beginPath(); ctx.moveTo(-p.size, -p.size * .35); ctx.lineTo(p.size * .7, -p.size); ctx.lineTo(p.size, p.size * .6); ctx.closePath(); ctx.fill(); ctx.restore();
-        } else if (p.kind === 'impact') {
-          const progress = 1 - p.life / p.duration, radius = p.radius + progress * 30;
+        } else if (p.kind === 'contact') {
+          const progress = 1 - p.life / p.duration, radius = 2 + p.radius * progress;
           if (!visible(p.x, p.y, radius, view)) continue;
-          ctx.save(); ctx.globalAlpha = (1 - progress) * .8; ctx.strokeStyle = p.color; ctx.lineWidth = 1.6 - progress;
-          ctx.beginPath(); ctx.arc(p.x, p.y, radius, 0, Math.PI * 2); ctx.stroke();
-          ctx.globalAlpha *= .45; ctx.lineWidth = .8; ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(1, radius - 5), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+          ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle);
+          ctx.globalAlpha = (1 - progress) ** 2 * (.35 + p.strength * .65); ctx.fillStyle = '#f1fbff';
+          ctx.beginPath(); ctx.ellipse(0, 0, Math.max(.5, p.radius * .22 * (1 - progress)), Math.max(1, p.radius * .6 * (1 - progress)), 0, 0, Math.PI * 2); ctx.fill();
+          ctx.globalAlpha = (1 - progress) * (.25 + p.strength * .5); ctx.strokeStyle = p.color; ctx.lineWidth = .8 + p.strength * .7;
+          ctx.beginPath(); ctx.arc(0, 0, radius, -.7, .7); ctx.stroke();
+          ctx.beginPath(); ctx.arc(0, 0, radius, Math.PI - .7, Math.PI + .7); ctx.stroke(); ctx.restore();
         } else {
           p.y -= dt * 23;
           if (!visible(p.x, p.y, 30, view)) continue;
@@ -873,31 +911,77 @@
 
   function cachedDust(dust) {
     const color = dust.fragment || dust.ejected ? safeColor(dust.color) : '#c2e6cc';
-    const radius = dust.fragment ? clamp(Math.round(Math.sqrt(dust.value || 1) * 2.15 / 2) * 2, 5, 34) : dust.ejected ? 4 : 1.5;
+    const radius = dust.fragment ? clamp(Math.round(4 * Math.sqrt(dust.value || 1) / 6) * 6, 6, 54) : dust.ejected ? 4 : 1.5;
     const key = `${color}:${dust.fragment ? 'f' : 'd'}:${radius}`;
     if (dustSprites.has(key)) return dustSprites.get(key);
-    const sprite = makeSprite(Math.max(18, radius * 5)), c = sprite.c;
+    const sprite = makeSprite(dust.fragment ? radius * 2.6 + 8 : Math.max(18, radius * 5)), c = sprite.c;
     c.translate(sprite.center, sprite.center);
-    const halo = c.createRadialGradient(0, 0, radius * .3, 0, 0, radius * 2.4); halo.addColorStop(0, `${color}77`); halo.addColorStop(1, `${color}00`); c.fillStyle = halo; c.beginPath(); c.arc(0, 0, radius * 2.4, 0, Math.PI * 2); c.fill();
-    c.fillStyle = color;
-    if (dust.fragment) { c.beginPath(); for (let i = 0; i < 7; i++) { const a = Math.PI * 2 / 7 * i, r = radius * (i % 2 ? .7 : 1); if (!i) c.moveTo(Math.cos(a) * r, Math.sin(a) * r); else c.lineTo(Math.cos(a) * r, Math.sin(a) * r); } c.closePath(); c.fill(); c.strokeStyle = '#ffffff66'; c.lineWidth = .7; c.stroke(); c.strokeStyle = '#20304199'; c.beginPath(); c.moveTo(-radius * .6, -radius * .2); c.lineTo(0, 0); c.lineTo(radius * .3, radius * .6); c.stroke(); }
-    else if (dust.ejected) { c.beginPath(); c.arc(0, 0, radius, 0, Math.PI * 2); c.fill(); }
-    else { c.rotate(Math.PI / 4); c.fillRect(-radius, -radius, radius * 2, radius * 2); }
+    if (dust.fragment) {
+      // Free fragments and the surviving core use the same mass-to-radius scale.
+      const planet = cachedPlanet(color, radius), scale = radius / planet.radius;
+      c.drawImage(planet.canvas, -planet.center * scale, -planet.center * scale, planet.canvas.width * scale, planet.canvas.height * scale);
+      c.save(); c.beginPath(); c.arc(0, 0, radius, 0, Math.PI * 2); c.clip();
+      c.strokeStyle = '#142031bb'; c.lineWidth = Math.max(1, radius * .075); c.lineJoin = 'round'; c.beginPath();
+      c.moveTo(-radius * .9, -radius * .35); c.lineTo(-radius * .15, -radius * .12); c.lineTo(radius * .05, radius * .15); c.lineTo(radius * .55, radius * .9);
+      c.moveTo(-radius * .15, -radius * .12); c.lineTo(radius * .55, -radius * .7); c.stroke();
+      c.strokeStyle = '#ffffff55'; c.lineWidth = .7; c.stroke(); c.restore();
+    } else {
+      const halo = c.createRadialGradient(0, 0, radius * .3, 0, 0, radius * 2.4); halo.addColorStop(0, `${color}77`); halo.addColorStop(1, `${color}00`); c.fillStyle = halo; c.beginPath(); c.arc(0, 0, radius * 2.4, 0, Math.PI * 2); c.fill();
+      c.fillStyle = color;
+      if (dust.ejected) { c.beginPath(); c.arc(0, 0, radius, 0, Math.PI * 2); c.fill(); }
+      else { c.rotate(Math.PI / 4); c.fillRect(-radius, -radius, radius * 2, radius * 2); }
+    }
+    sprite.radius = radius;
     dustSprites.set(key, sprite); if (dustSprites.size > 48) dustSprites.delete(dustSprites.keys().next().value); return sprite;
   }
 
   function drawDust(dust, position, time) {
     const sprite = cachedDust(dust), speed = Math.hypot(dust.vx || 0, dust.vy || 0);
     if (speed > 25) { const length = clamp(speed * .07, 3, 27); ctx.strokeStyle = dust.fragment ? `${safeColor(dust.color)}55` : '#c2e6cc35'; ctx.lineWidth = dust.fragment ? 1.5 : .7; ctx.beginPath(); ctx.moveTo(position.x, position.y); ctx.lineTo(position.x - dust.vx / speed * length, position.y - dust.vy / speed * length); ctx.stroke(); }
-    ctx.drawImage(sprite.canvas, position.x - sprite.center, position.y - sprite.center);
+    const scale = dust.fragment ? 4 * Math.sqrt(dust.value || 1) / sprite.radius : 1;
+    ctx.drawImage(sprite.canvas, position.x - sprite.center * scale, position.y - sprite.center * scale, sprite.canvas.width * scale, sprite.canvas.height * scale);
   }
   function drawGravity(x, y, radius, color, time, primary = true) {
     color = safeColor(color); ctx.save(); ctx.translate(x, y); ctx.strokeStyle = `${color}${primary ? '25' : '17'}`; ctx.lineWidth = primary ? .7 : .5; ctx.setLineDash([2, 10]); ctx.beginPath(); ctx.arc(0, 0, radius, time * .00012, Math.PI * 2 + time * .00012); ctx.stroke(); ctx.setLineDash([]);
     const pulse = 1 - ((time * .00017) % 1); ctx.globalAlpha = (1 - pulse) * (primary ? .12 : .06); ctx.strokeStyle = color; ctx.beginPath(); ctx.arc(0, 0, radius * (.55 + pulse * .45), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
   }
-  function drawBlast(blast) {
-    const color = safeColor(room.players.find((p) => p.id === blast.ownerId)?.color), r = Math.max(1, blast.radius || 1), progress = clamp(blast.progress || 0, 0, 1);
-    ctx.save(); ctx.globalAlpha = 1 - progress * .6; ctx.strokeStyle = `${color}24`; ctx.lineWidth = 13; ctx.beginPath(); ctx.arc(blast.x, blast.y, r, 0, Math.PI * 2); ctx.stroke(); ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke(); ctx.strokeStyle = `${color}44`; ctx.lineWidth = .7; ctx.beginPath(); ctx.arc(blast.x, blast.y, Math.max(1, r - 8), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  function cacheWaveVisuals(current, previous) {
+    if (previous?.code !== current.code || previous?.round !== current.round) waveVisuals.clear();
+    const present = new Set();
+    for (const blast of current.blasts) {
+      present.add(blast.id);
+      waveVisuals.set(blast.id, { blast, receivedAt: current._receivedAt, missingSince: null });
+    }
+    for (const [id, entry] of waveVisuals) {
+      if (present.has(id)) continue;
+      if (entry.blast.ownerId === myId) waveVisuals.delete(id);
+      else if (entry.missingSince === null) entry.missingSince = current._receivedAt;
+    }
+    while (waveVisuals.size > 128) waveVisuals.delete(waveVisuals.keys().next().value);
+  }
+  function wavePose(blast, time) {
+    const dx = Number.isFinite(blast.directionX) ? blast.directionX : 1, dy = Number.isFinite(blast.directionY) ? blast.directionY : 0, length = Math.hypot(dx, dy) || 1;
+    const directionX = dx / length, directionY = dy / length, speed = Math.max(0, blast.speed || 600);
+    const distance = blast.distance || 420, travel = blast.travel ?? distance * (blast.progress || 0);
+    const receivedAt = waveVisuals.get(blast.id)?.receivedAt ?? room?._receivedAt ?? time, remote = blast.ownerId !== myId;
+    const elapsed = clamp((time - receivedAt) / 1000 - (remote ? .1 : 0), remote ? -.1 : 0, remote ? .1 : .09);
+    const renderedTravel = travel + speed * elapsed, front = clamp(renderedTravel, 0, distance);
+    const originX = blast.originX ?? blast.x - directionX * travel, originY = blast.originY ?? blast.y - directionY * travel;
+    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: renderedTravel >= 0 && renderedTravel < distance };
+  }
+  function drawBlast(blast, time, pose = wavePose(blast, time)) {
+    const color = safeColor(blast.color || room.players.find((p) => p.id === blast.ownerId)?.color), halfWidth = (blast.width || 160) / 2, thickness = blast.thickness || 20, curve = blast.curvature || 30;
+    const opacity = Math.min(1, (1 - pose.progress) * 5);
+    ctx.save(); ctx.translate(pose.x, pose.y); ctx.rotate(Math.atan2(pose.directionY, pose.directionX)); ctx.lineCap = 'round';
+    if (pose.tail > 1) {
+      ctx.globalAlpha = opacity * .065; ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(-curve, -halfWidth); ctx.quadraticCurveTo(curve, 0, -curve, halfWidth); ctx.lineTo(-curve - pose.tail, halfWidth * .8); ctx.quadraticCurveTo(curve - pose.tail, 0, -curve - pose.tail, -halfWidth * .8); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = opacity * .12; ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(-curve - pose.tail * .45, -halfWidth * .92); ctx.quadraticCurveTo(curve - pose.tail * .45, 0, -curve - pose.tail * .45, halfWidth * .92); ctx.stroke();
+    }
+    // This curve is the server's swept wave front: (x,y) + perp*u*width/2 - direction*curvature*u².
+    ctx.beginPath(); ctx.moveTo(-curve, -halfWidth); ctx.quadraticCurveTo(curve, 0, -curve, halfWidth);
+    ctx.globalAlpha = opacity * .12; ctx.strokeStyle = color; ctx.lineWidth = thickness + 8; ctx.stroke();
+    ctx.globalAlpha = opacity * .5; ctx.lineWidth = thickness; ctx.stroke();
+    ctx.globalAlpha = opacity; ctx.strokeStyle = '#eff9ff'; ctx.lineWidth = 1.6; ctx.stroke(); ctx.restore();
   }
   function drawPlanet(player, cell, position, time, primary, decoration = false) {
     const color = safeColor(player.color), radius = Math.max(5, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;
@@ -910,7 +994,12 @@
     if (me && !decoration) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(position.x, position.y, Math.max(2, radius - 3), -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(player.hp / (player.stats?.maxHp || 100), 0, 1)); ctx.stroke(); }
     if (cell.protected || cell.protectedFor > 0) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.arc(position.x, position.y, radius + 11 + Math.sin(time * .008) * 2, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
     if (!decoration && radius > 15) { ctx.font = `600 ${clamp(radius * .43, 10, 20)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.fillStyle = '#eff4ffb0'; ctx.fillText(Math.floor(cell.mass || player.mass || 0), position.x, position.y + radius * .15); }
-    if (!decoration && primary) { ctx.font = `${me ? '600' : '400'} 11px sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = me ? '#edf8f3' : '#a5b5c7'; ctx.fillText(`${player.name}${me ? ' · 你' : player.connected === false ? ' · 重连中' : ''}`, position.x, position.y + radius + 26); if (me) { ctx.fillStyle = '#b9f6ca'; ctx.beginPath(); ctx.moveTo(position.x - 3, position.y - radius - 18); ctx.lineTo(position.x + 3, position.y - radius - 18); ctx.lineTo(position.x, position.y - radius - 13); ctx.fill(); } }
+    if (me && primary && !decoration) {
+      const velocity = Math.hypot(player.vx || 0, player.vy || 0);
+      const facing = player.direction || (velocity >= 5 ? { x: player.vx / velocity, y: player.vy / velocity } : { x: 1, y: 0 });
+      ctx.save(); ctx.translate(position.x, position.y); ctx.rotate(Math.atan2(facing.y, facing.x)); ctx.strokeStyle = `${color}cc`; ctx.lineWidth = 1.2 / Math.max(.3, camera.scale); ctx.lineJoin = 'round'; ctx.beginPath(); ctx.moveTo(radius + 8, -3.5); ctx.lineTo(radius + 14, 0); ctx.lineTo(radius + 8, 3.5); ctx.stroke(); ctx.restore();
+    }
+    if (!decoration && primary) { ctx.font = `${me ? '600' : '400'} 11px sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = me ? '#edf8f3' : '#a5b5c7'; ctx.fillText(`${player.name}${me ? ' · 你' : player.connected === false ? ' · 重连中' : ''}`, position.x, position.y + radius + 26);  }
     ctx.restore();
   }
   function drawMinimap(view) {

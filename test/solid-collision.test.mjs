@@ -42,13 +42,14 @@ test('outer-edge contact fractures the smaller core and chips exactly 5% from th
   const coreId = small.cells[0].id;
   stepArena(arena, .01);
   assert.equal(big.mass, 95);
-  assert.equal(small.mass, 18);
+  assert.equal(small.mass, 12);
   assert.equal(small.cells.length, 1);
   assert.equal(small.cells[0].id, coreId, 'the original controllable core remains owned by the player');
   const debris = loose(arena);
   assert.equal(debris.filter(dust => dust.ownerId === small.id).length, 2);
   assert.equal(debris.filter(dust => dust.ownerId === big.id).length, 3);
-  near(debris.filter(dust => dust.ownerId === small.id).reduce((sum, d) => sum + d.value, 0), 18);
+  assert.ok(debris.filter(dust => dust.ownerId === small.id).every(dust => dust.value === small.mass), 'core and both free fragments have equal mass');
+  near(debris.filter(dust => dust.ownerId === small.id).reduce((sum, d) => sum + d.value, 0), 24);
   near(debris.filter(dust => dust.ownerId === big.id).reduce((sum, d) => sum + d.value, 0), 5);
   near(totalMass(arena), 136);
   assert.ok(debris.every(dust => dust.fragment && dust.collectAfter > arena.time && dust.availableAt > dust.collectAfter));
@@ -72,7 +73,7 @@ test('a positive gap does not collide and a strictly larger 1.1x planet can frac
     { id: 'a', mass: 44, x: 1000, y: 1000 }, { id: 'b', mass: 40, x: 1000 + sumRadius, y: 1000 },
   ]);
   stepArena(arena, .01);
-  near(a.mass, 41.8); near(b.mass, 20); near(totalMass(arena), 84);
+  near(a.mass, 41.8); near(b.mass, 40 / 3); near(totalMass(arena), 84);
   assertSolid(arena);
 });
 
@@ -100,7 +101,10 @@ test('spawn protection, core protection and fracture cooldown preserve solid bod
 });
 
 test('persistent contact cannot repeatedly fracture after cooldown; separating and colliding again can', () => {
-  const { arena, players: [big, small] } = fixture();
+  const { arena, players: [big, small] } = fixture([
+    { id: 'big', mass: 100, x: 1000, y: 1000 },
+    { id: 'small', mass: 60, x: 1000 + 40 + 4 * Math.sqrt(60), y: 1000 },
+  ]);
   stepArena(arena, .01);
   const fracturedAt = small.shatteredAt;
   // Keep the bodies touching with zero external momentum, while loose mass is
@@ -113,13 +117,13 @@ test('persistent contact cannot repeatedly fracture after cooldown; separating a
     stepArena(arena, .05);
   }
   assert.equal(small.shatteredAt, fracturedAt);
-  assert.equal(big.mass, 95); assert.equal(small.mass, 18);
-  near(totalMass(arena), 136);
+  assert.equal(big.mass, 95); assert.equal(small.mass, 20);
+  near(totalMass(arena), 160);
   small.cells[0].x += 200; stepArena(arena, .01);
   small.cells[0].x = big.cells[0].x + big.cells[0].radius + small.cells[0].radius;
   stepArena(arena, .01);
   assert.ok(small.shatteredAt > fracturedAt);
-  near(big.mass, 90.25); near(small.mass, 9); near(totalMass(arena), 136);
+  near(big.mass, 90.25); near(small.mass, 20 / 3); near(totalMass(arena), 160);
   assertSolid(arena);
 });
 
