@@ -9,6 +9,11 @@ export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, rest
 export const SIBLING = Object.freeze({ launchGrace: 0.9, rangeBase: 600, rangeScale: 2,
   attraction: 900, radialDamping: 12, maxAcceleration: 4000, fusionDuration: 1.2 });
 export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, clashRetention: 1.5, clashLimit: 64 });
+export const METEOR = Object.freeze({ count: 72, minSpeed: 450, maxSpeed: 750, minRadius: 3, maxRadius: 5,
+  mass: 4, interaction: 'impact', nearPlayerCount: 3, nearRadius: 1200, nearSpawnMinDistance: 450,
+  nearSpawnMaxDistance: 900, spawnClearance: 80, tailScale: 0.14, minTail: 60, maxTail: 120,
+  viewportLead: 0.25, knockback: 160, minKnockback: 60, maxKnockback: 240, restitution: 0.2,
+  chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, pickupGrace: 0.3 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];
 export const UPGRADE_POOL = [
   { id: 'speed', title: '光速引擎', description: '移动速度提升 10%', icon: '⚡' },
@@ -105,7 +110,7 @@ export function skinColor(skin, fallback = 0) {
 
 export function createArena({ random = Math.random, endless = false } = {}) {
   return { endless: endless === true, status: 'lobby', time: 0, remaining: endless === true ? null : ROUND_DURATION, round: 0, winnerId: null,
-    players: new Map(), dust: [], blasts: [], waveClashes: [], clashSerial: 0, serial: 0, random,
+    players: new Map(), dust: [], blasts: [], meteors: [], meteorsInitialized: false, waveClashes: [], clashSerial: 0, serial: 0, random,
     dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0 };
 }
 
@@ -127,7 +132,7 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], energy: 60,
     score: 0, kills: 0, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
     input: normalizeInput(), fireQueued: false, rearFireQueued: false, splitQueued: false, shatteredAt: -10,
-    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, lastWaveHit: null, botState: null, direction: { x: 1, y: 0 } };
+    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, lastWaveHit: null, lastMeteorHit: null, botState: null, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
   resetProgress(player);
   arena.players.set(id, player);
@@ -148,7 +153,7 @@ export function setPlayerInput(arena, id, input) {
 
 function newCell(arena, x, y, mass, extra = {}) {
   return { id: `c${++arena.serial}`, x, y, mass, radius: 4 * Math.sqrt(mass),
-    vx: 0, vy: 0, mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, lastWaveHitId: null,
+    vx: 0, vy: 0, mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, lastWaveHitId: null, lastMeteorHitId: null,
     fusionId: null, fusionRole: null, fusionPartnerId: null, fusionTargetId: null, fusionDonorId: null,
     fusionProgress: 0, fusionTime: 0, ...extra };
 }
@@ -366,6 +371,162 @@ function refillDust(arena) {
   }
 }
 
+function meteorSpawnSafe(arena, x, y, radius) {
+  for (const player of arena.players.values()) for (const cell of player.cells) {
+    if (Math.hypot(cell.x - x, cell.y - y) < cell.radius + radius + METEOR.spawnClearance) return false;
+  }
+  return true;
+}
+
+function newMeteor(arena, near, initial = false, spawnAt = arena.time) {
+  const radius = METEOR.minRadius + arena.random() * (METEOR.maxRadius - METEOR.minRadius);
+  const speed = METEOR.minSpeed + arena.random() * (METEOR.maxSpeed - METEOR.minSpeed);
+  for (let attempt = 0; attempt < 64; attempt++) {
+    let x, y, dx, dy, bornAt = spawnAt;
+    if (near && attempt < 24) {
+      const angle = arena.random() * Math.PI * 2;
+      const distance = METEOR.nearSpawnMinDistance + arena.random() * (METEOR.nearSpawnMaxDistance - METEOR.nearSpawnMinDistance);
+      x = near.x + Math.cos(angle) * distance; y = near.y + Math.sin(angle) * distance;
+      if (x < radius || x > ARENA.width - radius || y < radius || y > ARENA.height - radius) continue;
+      const offset = (90 + arena.random() * 210) * (arena.random() < 0.5 ? -1 : 1);
+      dx = near.x - x - Math.sin(angle) * offset; dy = near.y - y + Math.cos(angle) * offset;
+    } else {
+      const edge = Math.min(3, Math.floor(arena.random() * 4));
+      let tx, ty;
+      if (edge < 2) {
+        x = edge === 0 ? 0 : ARENA.width; y = arena.random() * ARENA.height;
+        tx = edge === 0 ? ARENA.width : 0; ty = arena.random() * ARENA.height;
+      } else {
+        x = arena.random() * ARENA.width; y = edge === 2 ? 0 : ARENA.height;
+        tx = arena.random() * ARENA.width; ty = edge === 2 ? ARENA.height : 0;
+      }
+      dx = tx - x; dy = ty - y;
+      if (initial) {
+        const phase = arena.random() * 0.95;
+        x += dx * phase; y += dy * phase; bornAt -= Math.hypot(dx, dy) * phase / speed;
+      }
+    }
+    if (!meteorSpawnSafe(arena, x, y, radius)) continue;
+    const length = Math.hypot(dx, dy) || 1;
+    return { id: `m${++arena.serial}`, x, y, vx: dx / length * speed, vy: dy / length * speed,
+      radius, mass: METEOR.mass, tailLength: clamp(speed * METEOR.tailScale, METEOR.minTail, METEOR.maxTail),
+      color: '#ffd6a1', bornAt };
+  }
+  return null;
+}
+
+function refillMeteors(arena, initial = false, spawnAt = arena.time) {
+  const living = [...arena.players.values()].filter(p => p.connected && p.respawnIn <= 0 && p.cells.length);
+  const humans = living.filter(p => !p.bot);
+  const centers = humans.length ? humans : living;
+  while (arena.meteors.length < METEOR.count) {
+    const near = centers.find(player => arena.meteors.reduce((count, meteor) => count +
+      (Math.hypot(meteor.x - player.x, meteor.y - player.y) < METEOR.nearRadius ? 1 : 0), 0) < METEOR.nearPlayerCount);
+    const meteor = newMeteor(arena, near, initial, spawnAt);
+    if (!meteor) break;
+    arena.meteors.push(meteor);
+  }
+}
+
+function meteorExitTime(meteor) {
+  if (meteor.x < 0 || meteor.x > ARENA.width || meteor.y < 0 || meteor.y > ARENA.height) return 0;
+  let time = Infinity;
+  if (meteor.vx > 0) time = Math.min(time, (ARENA.width - meteor.x) / meteor.vx);
+  else if (meteor.vx < 0) time = Math.min(time, -meteor.x / meteor.vx);
+  if (meteor.vy > 0) time = Math.min(time, (ARENA.height - meteor.y) / meteor.vy);
+  else if (meteor.vy < 0) time = Math.min(time, -meteor.y / meteor.vy);
+  return Math.max(0, time);
+}
+
+function meteorShards(arena, meteor, cell, nx, ny, transferredImpulse, at) {
+  const mass = meteor.mass ?? METEOR.mass;
+  const meanX = meteor.vx - nx * transferredImpulse / mass;
+  const meanY = meteor.vy - ny * transferredImpulse / mass;
+  const angle = Math.atan2(-ny, -nx);
+  for (let i = 0; i < METEOR.fragmentCount; i++) {
+    const opening = angle + (i - 1) * 0.6;
+    const distance = cell.radius + 14;
+    let x = clamp(cell.x + Math.cos(opening) * distance, 8, ARENA.width - 8);
+    let y = clamp(cell.y + Math.sin(opening) * distance, 8, ARENA.height - 8);
+    for (let turn = 1; Math.hypot(x - cell.x, y - cell.y) <= cell.radius + 5 && turn <= 12; turn++) {
+      const direction = opening + turn * Math.PI / 6;
+      x = clamp(cell.x + Math.cos(direction) * distance, 8, ARENA.width - 8);
+      y = clamp(cell.y + Math.sin(direction) * distance, 8, ARENA.height - 8);
+    }
+    const scatter = angle + i * Math.PI * 2 / METEOR.fragmentCount;
+    addDust(arena, x, y, mass / METEOR.fragmentCount, { fragment: true, sourceKind: 'meteor',
+      ownerId: null, color: meteor.color ?? '#ffd6a1', collectAfter: at + METEOR.pickupGrace,
+      availableAt: at + METEOR.pickupGrace,
+      vx: meanX + Math.cos(scatter) * METEOR.fragmentSpeed, vy: meanY + Math.sin(scatter) * METEOR.fragmentSpeed });
+  }
+}
+
+/** Ballistic heads are immune to all gravity. Only their first body contact matters. */
+export function advanceMeteors(arena, dt, { refill = arena.meteorsInitialized, frameStart = arena.time } = {}) {
+  const consumed = new Set(), events = [];
+  for (const meteor of arena.meteors) {
+    const delay = Math.max(0, (meteor.bornAt ?? frameStart) - frameStart);
+    if (delay > dt) continue;
+    const duration = Math.max(0, dt - delay), exit = meteorExitTime(meteor);
+    const active = Math.min(duration, exit);
+    let best = null;
+    for (const player of arena.players.values()) {
+      if (player.respawnIn > 0) continue;
+      for (const cell of player.cells) {
+        const startX = cell._frameX ?? cell.x, startY = cell._frameY ?? cell.y;
+        const vx = dt > 0 ? (cell.x - startX) / dt : cell.vx;
+        const vy = dt > 0 ? (cell.y - startY) / dt : cell.vy;
+        const center = { x: startX + vx * delay, y: startY + vy * delay };
+        const time = pointCapsuleTOI(meteor.x, meteor.y, meteor.vx - vx, meteor.vy - vy,
+          center, center, cell.radius + meteor.radius, active);
+        if (!Number.isFinite(time)) continue;
+        const key = `${player.id}:${cell.id}`;
+        if (!best || time < best.time - 1e-9 || (Math.abs(time - best.time) <= 1e-9 && key < best.key)) {
+          best = { meteor, player, cell, time, key, bodyVx: vx, bodyVy: vy,
+            centerX: center.x + vx * time, centerY: center.y + vy * time,
+            x: meteor.x + meteor.vx * time, y: meteor.y + meteor.vy * time, at: frameStart + delay + time };
+        }
+      }
+    }
+    if (best) { events.push(best); consumed.add(meteor); }
+    else if (exit <= duration + 1e-10) consumed.add(meteor);
+    else { meteor.x += meteor.vx * duration; meteor.y += meteor.vy * duration; }
+  }
+  events.sort((a, b) => a.at - b.at || a.meteor.id.localeCompare(b.meteor.id));
+  for (const event of events) {
+    const { meteor, player, cell, at } = event;
+    let nx = event.centerX - event.x, ny = event.centerY - event.y;
+    const length = Math.hypot(nx, ny);
+    if (length > 1e-9) { nx /= length; ny /= length; }
+    else { const speed = Math.hypot(meteor.vx, meteor.vy) || 1; nx = meteor.vx / speed; ny = meteor.vy / speed; }
+    const closing = Math.max(0, (meteor.vx - event.bodyVx) * nx + (meteor.vy - event.bodyVy) * ny);
+    const protectedBody = player.invulnerable > 0;
+    const x = event.centerX - nx * cell.radius, y = event.centerY - ny * cell.radius;
+    let transferredImpulse = 0, impulse = 0, lostMass = 0;
+    if (!protectedBody && closing > 1e-6) {
+      const requested = clamp(METEOR.knockback * (closing / 600) * Math.pow(36 / cell.mass, 0.35),
+        METEOR.minKnockback, METEOR.maxKnockback);
+      const meteorMass = meteor.mass ?? METEOR.mass;
+      const physicalCap = (1 + METEOR.restitution) * cell.mass * meteorMass / (cell.mass + meteorMass) * closing;
+      transferredImpulse = Math.min(cell.mass * requested, physicalCap);
+      impulse = transferredImpulse / cell.mass;
+      cell.vx += nx * impulse; cell.vy += ny * impulse;
+      lostMass = chipWaveCell(arena, player, cell,
+        { directionX: nx, directionY: ny, impactConfig: METEOR, impactAt: at });
+      player.collisionRevision++;
+    }
+    meteorShards(arena, meteor, cell, nx, ny, transferredImpulse, at);
+    const id = `${meteor.id}:${player.id}:${cell.id}`;
+    cell.lastMeteorHitId = id;
+    player.lastMeteorHit = { id, meteorId: meteor.id, at, cellId: cell.id, hitCellIds: [cell.id],
+      x, y, directionX: nx, directionY: ny, impulse, lostMass, meteorFragmentMass: meteor.mass ?? METEOR.mass,
+      protected: protectedBody };
+    syncPlayer(player);
+  }
+  arena.meteors = arena.meteors.filter(meteor => !consumed.has(meteor));
+  if (refill) refillMeteors(arena, false, frameStart + dt);
+}
+
 export function startRound(arena) {
   arena.status = 'playing';
   arena.time = 0;
@@ -377,6 +538,8 @@ export function startRound(arena) {
   arena.naturalDustCount = 0;
   arena.activeDust = new Set();
   arena.blasts = [];
+  arena.meteors = [];
+  arena.meteorsInitialized = true;
   arena.waveClashes = [];
   arena.clashSerial = 0;
   arena.bodyContacts = new Set();
@@ -385,7 +548,7 @@ export function startRound(arena) {
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, energy: 60, score: 0, kills: 0,
       respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, rearFireQueued: false, splitQueued: false,
-      shatteredAt: -10, collisionRevision: 0, lastImpact: null, lastWaveHit: null, botState: null,
+      shatteredAt: -10, collisionRevision: 0, lastImpact: null, lastWaveHit: null, lastMeteorHit: null, botState: null,
       pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
     syncPlayer(player);
@@ -398,6 +561,7 @@ export function startRound(arena) {
   }
   refillDust(arena);
   rebuildDustGrid(arena);
+  refillMeteors(arena, true);
 }
 
 function botInput(arena, player) {
@@ -1073,15 +1237,17 @@ function launchWave(arena, player, mode = 'forward') {
 }
 
 function chipWaveCell(arena, player, cell, wave) {
-  const lost = Math.min(cell.mass * WAVE.chipFraction, Math.max(0, cell.mass - 1));
+  const config = wave.impactConfig ?? WAVE;
+  const at = wave.impactAt ?? arena.time;
+  const lost = Math.min(cell.mass * config.chipFraction, Math.max(0, cell.mass - 1));
   if (lost <= 0) return 0;
   cell.mass -= lost;
   cell.radius = 4 * Math.sqrt(cell.mass);
   // Equal triangle vectors sum to zero. All fragments inherit the post-wave
   // velocity, conserving the momentum after the external wave impulse.
   const angle = Math.atan2(wave.directionY, wave.directionX);
-  for (let i = 0; i < WAVE.fragmentCount; i++) {
-    const direction = angle + i * Math.PI * 2 / WAVE.fragmentCount;
+  for (let i = 0; i < config.fragmentCount; i++) {
+    const direction = angle + i * Math.PI * 2 / config.fragmentCount;
     const ux = Math.cos(direction), uy = Math.sin(direction);
     const distance = cell.radius + 14;
     let x = clamp(cell.x + ux * distance, 8, ARENA.width - 8);
@@ -1093,10 +1259,10 @@ function chipWaveCell(arena, player, cell, wave) {
       x = clamp(cell.x + Math.cos(opening) * distance, 8, ARENA.width - 8);
       y = clamp(cell.y + Math.sin(opening) * distance, 8, ARENA.height - 8);
     }
-    addDust(arena, x, y, lost / WAVE.fragmentCount,
+    addDust(arena, x, y, lost / config.fragmentCount,
       { fragment: true, color: player.color, ownerId: player.id,
-        collectAfter: arena.time + 0.3, availableAt: arena.time + 0.9,
-        vx: cell.vx + ux * WAVE.fragmentSpeed, vy: cell.vy + uy * WAVE.fragmentSpeed });
+        collectAfter: at + 0.3, availableAt: at + 0.9,
+        vx: cell.vx + ux * config.fragmentSpeed, vy: cell.vy + uy * config.fragmentSpeed });
   }
   return lost;
 }
@@ -1390,6 +1556,7 @@ export function stepArena(arena, elapsed) {
     player.fireQueued = player.rearFireQueued = false;
   }
   advanceWaves(arena, dt);
+  advanceMeteors(arena, dt, { frameStart: arena.time - dt });
   refillDust(arena);
   for (const player of arena.players.values()) updateProgress(arena, player);
 
@@ -1405,8 +1572,17 @@ export function snapshotArena(arena, view) {
   const visibleDust = bounds ? queryDust(arena, view) : arena.dust;
   const visibleBlasts = bounds ? arena.blasts.filter(blast => blast.x + blast.radius >= bounds.left &&
     blast.x - blast.radius <= bounds.right && blast.y + blast.radius >= bounds.top && blast.y - blast.radius <= bounds.bottom) : arena.blasts;
+  const visibleMeteors = bounds ? arena.meteors.filter(meteor => {
+    const margin = meteor.radius + meteor.tailLength + Math.hypot(meteor.vx, meteor.vy) * METEOR.viewportLead;
+    return meteor.x + margin >= bounds.left && meteor.x - margin <= bounds.right &&
+      meteor.y + margin >= bounds.top && meteor.y - margin <= bounds.bottom;
+  }) : arena.meteors;
   return {
-    arena: ARENA, motion: MOTION, sibling: SIBLING, simulationTime: arena.time * 1000, dustTotal: arena.dust.length,
+    arena: ARENA, motion: MOTION, sibling: SIBLING, meteor: METEOR, simulationTime: arena.time * 1000, dustTotal: arena.dust.length,
+    meteorTotal: arena.meteors.length, meteors: visibleMeteors.map(meteor => ({
+      id: meteor.id, x: meteor.x, y: meteor.y, vx: meteor.vx, vy: meteor.vy,
+      radius: meteor.radius, mass: meteor.mass ?? METEOR.mass, tailLength: meteor.tailLength,
+      color: meteor.color, bornAt: meteor.bornAt })),
     status: arena.status, endless: arena.endless, time: round(arena.time), remaining: arena.endless ? null : round(arena.remaining),
     round: arena.round, winnerId: arena.winnerId,
     waveClashes: arena.waveClashes.map(event => ({ ...event, waveIds: [...event.waveIds], ownerIds: [...event.ownerIds], colors: [...event.colors] })),
@@ -1415,12 +1591,14 @@ export function snapshotArena(arena, view) {
       lastInputSeq: p.lastInputSeq, inputAge: p.inputAge, collisionRevision: p.collisionRevision,
       lastImpact: p.lastImpact ? { ...p.lastImpact } : null,
       lastWaveHit: p.lastWaveHit ? { ...p.lastWaveHit, hitCellIds: [...p.lastWaveHit.hitCellIds] } : null,
+      lastMeteorHit: p.lastMeteorHit ? { ...p.lastMeteorHit, hitCellIds: [...p.lastMeteorHit.hitCellIds] } : null,
       direction: { ...p.direction },
       steering: { x: p.connected ? p.input.x : 0, y: p.connected ? p.input.y : 0 },
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),
-        lastWaveHitId: c.lastWaveHitId ?? null, mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable) > 0,
+        lastWaveHitId: c.lastWaveHitId ?? null, lastMeteorHitId: c.lastMeteorHitId ?? null,
+        mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable) > 0,
         fusionId: c.fusionId ?? null, fusionRole: c.fusionRole ?? null, fusionPartnerId: c.fusionPartnerId ?? null,
         fusionTargetId: c.fusionTargetId ?? null, fusionDonorId: c.fusionDonorId ?? null,
         fusionProgress: c.fusionProgress ?? 0, fusionTime: c.fusionTime ?? 0,
@@ -1433,7 +1611,8 @@ export function snapshotArena(arena, view) {
       upgrades: Object.entries(p.upgrades).map(([id, count]) => ({ id, count })), stats: { ...p.stats },
       invulnerable: round(p.invulnerable), cooldown: round(p.cooldown) })),
     dust: visibleDust.map(d => ({ id: d.id, x: round(d.x), y: round(d.y), vx: round(finite(d.vx)), vy: round(finite(d.vy)), value: d.value,
-      ...(d.fragment ? { fragment: true, color: d.color, ownerId: d.ownerId } : {}) })),
+      ...(d.fragment ? { fragment: true, color: d.color, ownerId: d.ownerId,
+        ...(d.sourceKind ? { sourceKind: d.sourceKind } : {}) } : {}) })),
     blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, kind: b.kind, mode: b.mode, sourceCellId: b.sourceCellId,
       x: round(b.x), y: round(b.y), originX: round(b.originX), originY: round(b.originY), originOffset: round(b.originOffset),
       directionX: b.directionX, directionY: b.directionY, width: b.width, thickness: b.thickness, curvature: b.curvature,

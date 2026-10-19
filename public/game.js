@@ -23,10 +23,12 @@
   let touchVector = { x: 0, y: 0 }, joystickPointer = null, sound = false, audioContext;
   let previousStatus = '', previousRound = -1, lastUpgradeKey = '', lastShatteredAt = 0;
   let inputSeq = 0, lastInputAck = 0, lastMovementSeq = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
-  let renderedDust = 0, renderedCells = 0, camera = { x: NaN, y: NaN, scale: .95 };
+  let renderedDust = 0, renderedCells = 0, renderedMeteors = 0, camera = { x: NaN, y: NaN, scale: .95 };
   let bodyOverflowBefore = null;
   const keys = new Set(), drawnPlayers = new Map(), drawnDust = new Map(), particles = [], seenBlasts = new Set();
   const cellTracks = new Map(), dustTracks = new Map(), predictedCells = new Map(), inputHistory = [], domCache = new Map();
+  const meteorTracks = new Map();
+  let meteorPresentation = null;
   const planetSprites = new Map(), dustSprites = new Map();
   const materializedDust = new Map();
   const seenImpacts = new Map();
@@ -204,7 +206,7 @@
     currentOptions = { ...options, mode };
     active = true; joined = false; reconnecting = false; intentionalClose = false; retries = 0;
     resetHeldInputs(false);
-    resetWaveFeedback(); resetWaveClashes();
+    resetWaveFeedback(); resetWaveClashes(); resetMeteors();
     renderTimeline = null;
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
@@ -277,14 +279,14 @@
   function attemptReconnect() {
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
-    reconnecting = true; retries += 1; resetHeldInputs(false); resetWaveFeedback(); resetWaveClashes();
+    reconnecting = true; retries += 1; resetHeldInputs(false); resetWaveFeedback(); resetWaveClashes(); resetMeteors();
     predictedCells.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); inputHistory.length = 0; waveVisuals.clear(); renderTimeline = null;
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
 
   function showConnectionError(message) {
-    reconnecting = false; clearTimeout(retryTimer); resetWaveFeedback(); resetWaveClashes();
+    reconnecting = false; clearTimeout(retryTimer); resetWaveFeedback(); resetWaveClashes(); resetMeteors();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); renderTimeline = null;
     resetHeldInputs(false);
@@ -304,7 +306,7 @@
 
   function send(data) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); }
   function closeSession(notify = true) {
-    intentionalClose = true; active = false; resetWaveFeedback(); resetWaveClashes();
+    intentionalClose = true; active = false; resetWaveFeedback(); resetWaveClashes(); resetMeteors();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); remoteContactPositions.clear(); renderTimeline = null;
     clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
@@ -334,10 +336,12 @@
     room = next;
     if (!Array.isArray(room.players)) room.players = [];
     room.dust ||= []; room.blasts ||= [];
+    cacheMeteorTracks(room, old);
     const me = room.players.find((p) => p.id === myId);
     if (me?.shatteredAt > lastShatteredAt) { lastShatteredAt = me.shatteredAt; toast('撞击碎裂！守住核心，抢回碎片'); }
     emitContactEffects(room, old);
     receiveWaveFeedback(room, old);
+    receiveMeteorFeedback(room, old);
     receiveWaveClashes(room, old);
     cacheWaveVisuals(room, old);
     for (const blast of room.blasts) {
@@ -441,6 +445,40 @@
       }
     }
     for (const [id, at] of seenCombatEvents) if (current.time - at > 5) seenCombatEvents.delete(id);
+    while (seenCombatEvents.size > 128) seenCombatEvents.delete(seenCombatEvents.keys().next().value);
+    while (combatFeedback.size > 64) combatFeedback.delete(combatFeedback.keys().next().value);
+    if (particles.length > 180) particles.splice(0, particles.length - 180);
+  }
+
+  function receiveMeteorFeedback(current, previous) {
+    const now = performance.now();
+    for (const player of current.players) {
+      const hit = player.lastMeteorHit;
+      if (!hit?.id || seenCombatEvents.has(hit.id)) continue;
+      seenCombatEvents.set(hit.id, hit.at);
+      const previousHit = previous?.players?.find(p => p.id === player.id)?.lastMeteorHit, age = current.time - hit.at;
+      if (previousHit?.id === hit.id || previous?.status !== 'playing' || current.status !== 'playing' || previous.round !== current.round || previous.code !== current.code || !Number.isFinite(age) || age < -.02 || age > .8) continue;
+      const body = drawnPlayers.get(`${player.id}:${hit.cellId}`) || { x: player.x, y: player.y, radius: player.radius || 24 };
+      const existing = combatFeedback.get(player.id);
+      if (!existing || hit.at >= existing.hit.at) combatFeedback.set(player.id, { kind: 'meteor', hit, cellIds: hit.hitCellIds || [hit.cellId], startedAt: now - Math.max(0, age) * 1000, recentUntil: now + 2800, fallback: { ...body } });
+      const length = Math.hypot(hit.directionX, hit.directionY) || 1, dx = (hit.directionX || 0) / length, dy = (hit.directionY || 0) / length;
+      const x = body.x - dx * body.radius, y = body.y - dy * body.radius;
+      for (let i = 0; i < 6; i++) {
+        const duration = .22 + i % 2 * .08;
+        if (age >= duration) continue;
+        const tangent = (i - 2.5) * 24;
+        particles.push({ kind: 'chip', x, y, vx: dx * (55 + i * 9) - dy * tangent, vy: dy * (55 + i * 9) + dx * tangent, rotation: i, size: 1.4, life: duration - Math.max(0, age), duration, updatedAt: now, color: '#ffc987' });
+      }
+      if (player.id === myId && hit.at >= (player.lastWaveHit?.at ?? -Infinity)) {
+        const marker = $('sgWaveFeedback');
+        if (marker) {
+          const lost = Math.max(0, hit.lostMass || 0).toFixed(1).replace(/\.0$/, '');
+          marker.dataset.kind = 'meteor'; marker.dataset.mode = 'impact'; marker.dataset.tone = 'victim';
+          marker.textContent = `流星撞击${hit.lostMass > 0 ? ` · 震落 ${lost} 质量的碎片` : ''}`;
+          marker.hidden = false; clearTimeout(combatMarkerTimer); combatMarkerTimer = setTimeout(() => { marker.hidden = true; }, 1300);
+        }
+      }
+    }
     while (seenCombatEvents.size > 128) seenCombatEvents.delete(seenCombatEvents.keys().next().value);
     while (combatFeedback.size > 64) combatFeedback.delete(combatFeedback.keys().next().value);
     if (particles.length > 180) particles.splice(0, particles.length - 180);
@@ -706,6 +744,86 @@
     return { x: latest.x + latest.vx * dt, y: latest.y + latest.vy * dt, mass: latest.mass, radius: latest.radius };
   }
 
+  function resetMeteors() { meteorTracks.clear(); meteorPresentation = null; renderedMeteors = 0; }
+  function cacheMeteorTracks(current, previous) {
+    if (previous?.code !== current.code || previous?.round !== current.round) resetMeteors();
+    const snapshotAt = current._renderTime, present = new Set();
+    const impacts = new Set(current.players.map(player => player.lastMeteorHit?.meteorId).filter(Boolean));
+    for (const meteor of current.meteors || []) {
+      if (impacts.has(meteor?.id)) continue;
+      if (!meteor?.id || ![meteor.x, meteor.y, meteor.vx, meteor.vy].every(Number.isFinite)) continue;
+      present.add(meteor.id);
+      let track = meteorTracks.get(meteor.id);
+      // An immutable anchor keeps a straight flight continuous across rounded
+      // snapshots. Packet timing only extends how far the path is confirmed.
+      if (!track) {
+        track = { x: meteor.x, y: meteor.y, vx: meteor.vx, vy: meteor.vy, t: snapshotAt, bornAt: meteor.bornAt };
+        meteorTracks.set(meteor.id, track);
+      }
+      if (track.pendingImpact && snapshotAt > track.pendingImpact.time + motionSettings.physicsStep * 2000) {
+        // A genuinely later live state can disprove a visual-only prediction.
+        // An older in-flight packet cannot resurrect a head already touching us.
+        track.ignoredBody = `${track.pendingImpact.playerId}:${track.pendingImpact.cellId}`;
+        track.pendingImpact = null; track.lastPose = null;
+      }
+      track.latestAt = snapshotAt; track.latestX = meteor.x; track.latestY = meteor.y;
+    }
+    for (const id of meteorTracks.keys()) if (!present.has(id)) meteorTracks.delete(id);
+    while (meteorTracks.size > 128) meteorTracks.delete(meteorTracks.keys().next().value);
+  }
+  function meteorPose(meteor, at) {
+    const track = meteorTracks.get(meteor.id);
+    if (!track) return null;
+    if (!meteorPresentation) meteorPresentation = { lead: simulationLead, at };
+    const frameTime = Math.max(0, (at - meteorPresentation.at) / 1000);
+    if (frameTime) {
+      const error = clamp(simulationLead, 0, .25) - meteorPresentation.lead;
+      meteorPresentation.lead += clamp(error * (1 - Math.exp(-frameTime * 2)), -frameTime * .05, frameTime * .05);
+      meteorPresentation.at = at;
+    }
+    // Lead uses the same downlink estimate as nearby bodies. Easing its phase
+    // limits clock drift to 5%, rather than jumping a fast head when ping changes.
+    const lead = meteorPresentation.lead * 1000;
+    const sampleAt = Math.min(renderSimulationTime(at) + lead, track.latestAt + lead + 250);
+    if (Number.isFinite(track.bornAt) && sampleAt < track.bornAt * 1000) return null;
+    const dt = (sampleAt - track.t) / 1000, x = track.x + track.vx * dt, y = track.y + track.vy * dt;
+    if (x < 0 || y < 0 || x > WORLD.width || y > WORLD.height) return null;
+    if (track.pendingImpact) return null;
+    const pose = { x, y, vx: track.vx, vy: track.vy, time: sampleAt };
+    if (meteorTouchesVisibleBody(meteor, pose, track, at)) return null;
+    track.lastPose = pose;
+    return pose;
+  }
+  function meteorTouchesVisibleBody(meteor, pose, track, at) {
+    const previous = track.lastPose || { x: track.latestX, y: track.latestY, time: track.latestAt };
+    const elapsed = Math.max(0, (pose.time - previous.time) / 1000);
+    let contact;
+    for (const player of room?.players || []) for (const cell of player.cells || []) {
+      const key = `${player.id}:${cell.id}`, own = player.id === myId, proxy = own ? predictedCells.get(cell.id) : remotePhysics.get(key);
+      if (!proxy || (!own && (!proxy.island || proxy.islandUntil <= at)) || proxy.model?._consumed) continue;
+      const position = own ? proxy : remoteContactFrame === at ? remoteContactPositions.get(key) || proxy.visual : proxy.visual;
+      if (!position) continue;
+      const radius = (proxy.model?.radius ?? cell.radius) + (meteor.radius || 4);
+      if (track.ignoredBody === key) {
+        if (Math.hypot(pose.x - position.x, pose.y - position.y) <= radius + 1) continue;
+        track.ignoredBody = null;
+      }
+      const drawn = track.lastPose ? drawnPlayers.get(key) : null;
+      const start = drawn || (track.lastPose ? { x: position.x - (proxy.model?.vx || 0) * elapsed, y: position.y - (proxy.model?.vy || 0) * elapsed } : cell);
+      const sx = previous.x - start.x, sy = previous.y - start.y;
+      const vx = (pose.x - previous.x) - (position.x - start.x), vy = (pose.y - previous.y) - (position.y - start.y);
+      const c = sx * sx + sy * sy - radius * radius, a = vx * vx + vy * vy, b = 2 * (sx * vx + sy * vy);
+      let fraction = c <= 0 ? 0 : Infinity;
+      const discriminant = b * b - 4 * a * c;
+      if (c > 0 && a > 1e-9 && b < 0 && discriminant >= 0) fraction = (-b - Math.sqrt(discriminant)) / (2 * a);
+      if (fraction < 0 || fraction > 1 || (contact && fraction >= contact.fraction)) continue;
+      contact = { playerId: player.id, cellId: cell.id, fraction, time: previous.time + (pose.time - previous.time) * fraction };
+    }
+    if (!contact) return false;
+    track.pendingImpact = contact;
+    return true;
+  }
+
   function renderSimulationTime(at) {
     if (!renderTimeline) return room?._renderTime || 0;
     const clock = renderTimeline, dt = Math.max(0, (at - clock.at) / 1000);
@@ -944,6 +1062,10 @@
         const waveHit = player.lastWaveHit;
         const cellWaveImpulse = cell.lastWaveHitId && cell.lastWaveHitId !== previousCell?.lastWaveHitId;
         const newWaveImpulse = cellWaveImpulse || (waveHit?.id && waveHit.id !== previousPlayer?.lastWaveHit?.id && next.time - waveHit.at <= .8 && (waveHit.hitCellIds || [waveHit.cellId]).includes(cell.id));
+        const meteorHit = player.lastMeteorHit;
+        const cellMeteorImpulse = cell.lastMeteorHitId && cell.lastMeteorHitId !== previousCell?.lastMeteorHitId;
+        const newMeteorImpulse = cellMeteorImpulse || (meteorHit?.id && meteorHit.id !== previousPlayer?.lastMeteorHit?.id && next.time - meteorHit.at <= .8 && (meteorHit.hitCellIds || [meteorHit.cellId]).includes(cell.id));
+        const newHitImpulse = newWaveImpulse || newMeteorImpulse;
         if (player.id === myId) {
           const model = authorityCells.get(cell.id);
           let p = predictedCells.get(cell.id);
@@ -958,7 +1080,7 @@
             const newImpact = player.lastImpact?.id && player.lastImpact.id !== previousPlayer?.lastImpact?.id;
             const revised = player.collisionRevision !== previousPlayer?.collisionRevision;
             const velocityError = Math.hypot(model.vx - p.model.vx, model.vy - p.model.vy);
-            if ((newWaveImpulse && velocityError > 1) || (newImpact && velocityError > 1) || (p.contactUntil <= at && revised && velocityError > motionSettings.restingThreshold)) {
+            if ((newHitImpulse && velocityError > 1) || (newImpact && velocityError > 1) || (p.contactUntil <= at && revised && velocityError > motionSettings.restingThreshold)) {
               // A server-only impact is real momentum, unlike ordinary ACK
               // phase noise. Apply it once without moving the visible body.
               p.model.vx = model.vx; p.model.vy = model.vy;
@@ -967,7 +1089,7 @@
             }
           }
           if (structural) p.modelAt = at;
-          syncModelGeometry(p, cell, model, previousCell, fractured || newWaveImpulse);
+          syncModelGeometry(p, cell, model, previousCell, fractured || newHitImpulse);
           p.authority = { ...model }; p.authorityAt = at; p.cell = cell; p.player = player;
           p.stopConfirmed = Boolean(acknowledged && !acknowledged.x && !acknowledged.y);
         } else {
@@ -979,9 +1101,9 @@
             remotePhysics.set(key, proxy);
           } else {
             proxy.authority = target;
-            if (fractured || newWaveImpulse) { proxy.model.vx = target.vx; proxy.model.vy = target.vy; proxy.modelAt = at; }
+            if (fractured || newHitImpulse) { proxy.model.vx = target.vx; proxy.model.vy = target.vy; proxy.modelAt = at; }
           }
-          syncModelGeometry(proxy, cell, target, previousCell, fractured || newWaveImpulse);
+          syncModelGeometry(proxy, cell, target, previousCell, fractured || newHitImpulse);
           proxy.cell = cell; proxy.player = player; proxy.steering = steering;
           proxy.modelAt ??= at; proxy.authorityAt = at;
         }
@@ -1372,7 +1494,7 @@
     const view = getCamera();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0); drawBackground();
     ctx.save(); ctx.translate(view.offsetX, view.offsetY); ctx.scale(view.scale, view.scale); drawArena(view);
-    renderedDust = 0; renderedCells = 0;
+    renderedDust = 0; renderedCells = 0; renderedMeteors = 0;
     if (room) {
       const sampleAt = renderSimulationTime(time) - 100;
       for (const dust of room.dust) {
@@ -1380,6 +1502,13 @@
         const radius = dust.fragment ? Math.sqrt(dust.value || 1) * 4 * 1.3 + 30 : 15;
         if (!visible(position.x, position.y, radius, view)) continue;
         drawDust(dust, position, time); renderedDust++;
+      }
+      for (const meteor of room.meteors || []) {
+        const pose = meteorPose(meteor, time);
+        if (!pose) continue;
+        const extent = (meteor.tailLength || 90) + (meteor.radius || 4) * 2;
+        if (!visible(pose.x, pose.y, extent, view)) continue;
+        drawMeteor(meteor, pose); renderedMeteors++;
       }
       for (const [id, entry] of waveVisuals) {
         if (entry.missingSince !== null && time - entry.missingSince > 100) { waveVisuals.delete(id); continue; }
@@ -1521,6 +1650,19 @@
     const scale = dust.fragment ? 4 * Math.sqrt(dust.value || 1) / sprite.radius : 1;
     ctx.drawImage(sprite.canvas, position.x - sprite.center * scale, position.y - sprite.center * scale, sprite.canvas.width * scale, sprite.canvas.height * scale);
   }
+  function drawMeteor(meteor, pose) {
+    const speed = Math.hypot(pose.vx, pose.vy), radius = clamp(meteor.radius || 4, 2, 6);
+    const tail = clamp(meteor.tailLength || speed * .14, 60, 120), color = safeColor(meteor.color || '#ffc987');
+    ctx.save(); ctx.translate(pose.x, pose.y); ctx.rotate(Math.atan2(pose.vy, pose.vx));
+    ctx.fillStyle = color; ctx.globalAlpha = .1;
+    ctx.beginPath(); ctx.moveTo(-tail, 0); ctx.quadraticCurveTo(-tail * .35, -radius * .7, 0, -radius * 1.3); ctx.lineTo(0, radius * 1.3); ctx.quadraticCurveTo(-tail * .35, radius * .7, -tail, 0); ctx.fill();
+    ctx.globalAlpha = .35;
+    ctx.beginPath(); ctx.moveTo(-tail * .88, 0); ctx.lineTo(0, -radius * .55); ctx.lineTo(0, radius * .55); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = .13; ctx.beginPath(); ctx.arc(0, 0, radius * 1.9, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = .95; ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff5dd'; ctx.beginPath(); ctx.arc(radius * .15, 0, radius * .48, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
   function drawGravity(x, y, radius, color, time, primary = true) {
     color = safeColor(color); ctx.save(); ctx.translate(x, y); ctx.strokeStyle = `${color}${primary ? '25' : '17'}`; ctx.lineWidth = primary ? .7 : .5; ctx.setLineDash([2, 10]); ctx.beginPath(); ctx.arc(0, 0, radius, time * .00012, Math.PI * 2 + time * .00012); ctx.stroke(); ctx.setLineDash([]);
     const pulse = 1 - ((time * .00017) % 1); ctx.globalAlpha = (1 - pulse) * (primary ? .12 : .06); ctx.strokeStyle = color; ctx.beginPath(); ctx.arc(0, 0, radius * (.55 + pulse * .45), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
@@ -1626,5 +1768,5 @@
     ctx.restore(); ctx.globalAlpha = 1; ctx.fillStyle = '#78909d'; ctx.font = `${mobile ? 7 : 8}px ui-monospace,monospace`; ctx.textAlign = 'left'; ctx.fillText(`${WORLD.width} × ${WORLD.height} / 宇宙导航`, x, y - 7); ctx.restore();
   }
 
-  window.StarGame = { connect, disconnect, onLobby: null, get isConnected() { return active && joined && !reconnecting; }, getDiagnostics() { const view = getCamera(); return { fps, ping: rtt === null ? null : Math.round(rtt), world: { ...WORLD }, view: { x: view.x, y: view.y, width: view.width, height: view.height, scale: view.scale }, self: getOwnCenter(), inputSeq, lastInputAck, renderedDust, renderedCells, inputHistoryLength: inputHistory.length, predictedCellCount: predictedCells.size, cellTrackCount: cellTracks.size, materializedDustCount: materializedDust.size, spriteCount: planetSprites.size + dustSprites.size, trackedDust: dustTracks.size }; } };
+  window.StarGame = { connect, disconnect, onLobby: null, get isConnected() { return active && joined && !reconnecting; }, getDiagnostics() { const view = getCamera(); return { fps, ping: rtt === null ? null : Math.round(rtt), world: { ...WORLD }, view: { x: view.x, y: view.y, width: view.width, height: view.height, scale: view.scale }, self: getOwnCenter(), inputSeq, lastInputAck, renderedDust, renderedCells, renderedMeteors, meteorTrackCount: meteorTracks.size, inputHistoryLength: inputHistory.length, predictedCellCount: predictedCells.size, cellTrackCount: cellTracks.size, materializedDustCount: materializedDust.size, spriteCount: planetSprites.size + dustSprites.size, trackedDust: dustTracks.size }; } };
 })();
