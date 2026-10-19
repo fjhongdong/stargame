@@ -128,7 +128,8 @@ test('big impact leaves one controllable core and mass-conserving free fragments
   const free = arena.dust.filter(d => d.fragment && d.ownerId === small.id);
   assert.equal(free.length, 2);
   assert.equal(small.mass + free.reduce((sum, fragment) => sum + fragment.value, 0), 36);
-  assert.ok(small.cells.every(cell => cell.protectedFor === 1 && cell.shatterCooldown === 3));
+  assert.ok(small.cells.every(cell => cell.protectedFor > 0.99 && cell.protectedFor <= 1 &&
+    cell.shatterCooldown > 2.99 && cell.shatterCooldown <= 3));
   assert.ok(small.shatteredAt > 0);
   for (const cell of small.cells) Object.assign(cell, { x: big.x, y: big.y, impulseX: 0, impulseY: 0 });
   stepArena(arena, 0.01);

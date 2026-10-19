@@ -31,6 +31,12 @@ function client() {
         }));
       },
       ack() { return lastInputAck; },
+      remote(key) { return remotePhysics.get(key); },
+      trackTime(key) { return cellTracks.get(key)?.at(-1)?.t; },
+      velocity() { const model = predictedCells.values().next().value?.model; return { x: model?.vx, y: model?.vy }; },
+      wave(blast) { return wavePose(blast, performance.now()); },
+      lead() { return simulationLead; },
+      cacheWaves(state) { cacheWaveVisuals(state, room); },
     };
   `;
   context.window.onSend = message => sent.push(message);
@@ -148,4 +154,69 @@ test('a high speed predicted path cannot jump through a nearby solid body', () =
   const [a, b] = c.api.bodies();
   assert.ok(a.x < b.x, 'swept collision must preserve which side of the contact each body occupies');
   assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= a.radius + b.radius - 0.03);
+});
+
+test('ordinary collision revisions preserve the visible position and reconcile continuously', () => {
+  const arena = createArena(); arena.status = 'playing';
+  const pilot = addPlayer(arena, { id: 'pilot' });
+  Object.assign(pilot.cells[0], { x: 1000, y: 1000 });
+  const c = client(); c.api.start({ serverTime: 0, ...snapshotArena(arena) });
+  const before = c.api.position();
+  pilot.cells[0].x += 16; pilot.collisionRevision++;
+  c.time(50); c.api.packet({ serverTime: 50, ...snapshotArena(arena) });
+  assert.equal(c.api.position().x, before.x, 'a contact revision must not teleport the rendered body');
+  c.time(50 + 1000 / 60); c.api.frame(1 / 60);
+  const travel = c.api.position().x - before.x;
+  assert.ok(travel > 0 && travel < 3, 'authority error must settle over frames instead of one packet jump');
+});
+
+test('remote contact proxies retain their simulation across snapshots and use simulation time', () => {
+  const arena = createArena(); arena.status = 'playing';
+  const pilot = addPlayer(arena, { id: 'pilot' }), other = addPlayer(arena, { id: 'other' });
+  Object.assign(pilot.cells[0], { x: 1000, y: 1000 });
+  Object.assign(other.cells[0], { x: 1060, y: 1000 });
+  const c = client(); c.api.start({ serverTime: 100000, ...snapshotArena(arena) });
+  const key = `other:${other.cells[0].id}`, proxy = c.api.remote(key), model = proxy.model;
+  other.cells[0].x -= 5; other.cells[0].vx = -100;
+  arena.time = 0.1;
+  c.time(100); c.api.packet({ serverTime: 900000, ...snapshotArena(arena) });
+  assert.equal(c.api.remote(key), proxy, 'a new packet must retain the contact proxy');
+  assert.equal(c.api.remote(key).model, model, 'a new packet must not replace collision velocity state');
+  assert.equal(model.x, 1060, 'authority updates must not reset the proxy position');
+  assert.equal(c.api.trackTime(key), 100, 'interpolation uses precise simulation time, independent of wall-clock stalls');
+});
+
+test('a wall-pinned contact does not retain phantom momentum after constraints', () => {
+  const arena = createArena(); arena.status = 'playing';
+  const pilot = addPlayer(arena, { id: 'pilot' }), other = addPlayer(arena, { id: 'other' });
+  Object.assign(pilot.cells[0], { x: 12000 - 24 - 48, y: 1000 });
+  Object.assign(other.cells[0], { x: 12000 - 24, y: 1000 });
+  const c = client(); c.api.start({ serverTime: 0, ...snapshotArena(arena) }); c.api.press('ArrowRight');
+  for (let frame = 1; frame <= 30; frame++) {
+    c.time(frame * 1000 / 60); c.api.frame(1 / 60);
+    assert.ok(Math.abs(c.api.velocity().x) < 1e-4, 'a static wall-supported chain must have static model velocity');
+  }
+});
+
+test('a real near-field wave uses its contact proxy clock and keeps that clock for its lifetime', () => {
+  const arena = createArena(); arena.status = 'playing';
+  const pilot = addPlayer(arena, { id: 'pilot' }), other = addPlayer(arena, { id: 'other' });
+  Object.assign(pilot.cells[0], { x: 1000, y: 1000 });
+  Object.assign(other.cells[0], { x: 1060, y: 1000, vx: 100 });
+  const c = client(); c.api.start({ code: 'WAVECLOCK', ...snapshotArena(arena) });
+  c.api.heartbeat();
+  setPlayerInput(arena, pilot.id, c.sent.at(-1));
+  setPlayerInput(arena, other.id, { x: 1, y: 0, fire: true });
+  stepArena(arena, 1 / 30);
+  const state = { code: 'WAVECLOCK', ...snapshotArena(arena) }, blast = state.blasts[0];
+  assert.ok(blast, 'fixture must create an authoritative forward wave');
+  c.time(150); c.api.packet(state); c.api.cacheWaves(state);
+  c.time(150 + 1000 / 60); c.api.frame(1 / 60);
+  const proxy = c.api.remote(`other:${other.cells[0].id}`);
+  assert.ok(proxy.island, 'the attacker must be in the current-time contact island');
+  const elapsed = c.api.lead() + 1 / 60, pose = c.api.wave(blast);
+  assert.ok(Math.abs(pose.x - blast.originX - blast.directionX * (blast.travel + blast.speed * elapsed)) < 1e-6,
+    'near-field wave and proxy authority advance on the same simulation horizon');
+  proxy.island = false; proxy.islandUntil = 0;
+  assert.equal(c.api.wave(blast).x, pose.x, 'leaving an island must not jump a wave back by 100 ms');
 });

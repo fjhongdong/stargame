@@ -155,3 +155,47 @@ test('different-mass unmerged siblings conserve normal momentum and retain tange
   assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= a.radius + b.radius - 1e-6);
   assert.equal(player.collisionRevision, 1, 'a sibling response increments its owner revision once');
 });
+
+test('physics substeps do not repeat a single split or wave action, energy recharge or acknowledged time', () => {
+  const { arena, player } = fixture([[1000, 1000]], 200);
+  setPlayerInput(arena, player.id, { x: 1, y: 0, split: true, fire: true, seq: 11 });
+  stepArena(arena, 0.1);
+  assert.equal(player.cells.length, 2);
+  assert.equal(player.mass, 200);
+  assert.equal(arena.blasts.filter(wave => wave.ownerId === player.id).length, 1);
+  assert.ok(Math.abs(player.energy - 30.3) < 1e-9);
+  assert.equal(player.lastInputSeq, 11);
+  assert.equal(player.inputAge, 0.1);
+  assert.equal(arena.blasts[0].travel, 60);
+});
+
+test('snapshots retain precise simulation time, accepted steering and shared contact parameters', () => {
+  const { arena, player } = fixture();
+  arena.time = 1 / 7;
+  setPlayerInput(arena, player.id, { x: 1, y: -1, boost: true, seq: 1 });
+  stepArena(arena, 0.001);
+  const state = snapshotArena(arena);
+  assert.equal(state.simulationTime, arena.time * 1000);
+  assert.notEqual(state.simulationTime, state.time * 1000);
+  assert.deepEqual(state.players[0].steering, { x: player.input.x, y: player.input.y, boost: true });
+  assert.equal(state.motion.physicsStep, 1 / 120);
+  assert.equal(state.motion.restingThreshold, 60);
+  assert.equal(state.motion.contactSlop, 0.01);
+});
+
+test('resting contact slop never erases a high-speed impact before bodies or walls actually touch', () => {
+  const { arena, player } = fixture();
+  const other = addPlayer(arena, { id: 'other' });
+  Object.assign(other.cells[0], { x: 1048.005, y: 1000, vx: -50, vy: 0 });
+  player.cells[0].vx = 850;
+  player.invulnerable = other.invulnerable = 100;
+  stepArena(arena, 0);
+  assert.equal(player.cells[0].vx, 850);
+  assert.equal(other.cells[0].vx, -50);
+  assert.equal(player.lastImpact, null);
+  assert.equal(player.collisionRevision, 0);
+  arena.players.delete(other.id);
+  Object.assign(player.cells[0], { x: ARENA.width - player.cells[0].radius - 0.005, vx: 850 });
+  stepArena(arena, 0);
+  assert.equal(player.cells[0].vx, 850);
+});

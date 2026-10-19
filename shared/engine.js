@@ -3,7 +3,8 @@ export const ARENA = Object.freeze({ width: 12000, height: 8000 });
 export const ROUND_DURATION = 180;
 export const COLORS = ['#5eefa8', '#d4b5ff', '#ffbd68', '#83d9ff', '#ff8eaf', '#9da8ff', '#ffe787', '#70f0e4'];
 export const BLAST_COST = 30;
-export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, restitution: 0.2 });
+export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, restitution: 0.2,
+  restingThreshold: 60, contactSlop: 0.01, physicsStep: 1 / 120 });
 export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];
 export const UPGRADE_POOL = [
@@ -379,10 +380,11 @@ export function integrateMotion(cell, input, speed, dt) {
 }
 
 function confineCell(cell) {
-  if (cell.x < cell.radius) { cell.x = cell.radius; if (cell.vx < 0) cell.vx *= -MOTION.restitution; }
-  if (cell.x > ARENA.width - cell.radius) { cell.x = ARENA.width - cell.radius; if (cell.vx > 0) cell.vx *= -MOTION.restitution; }
-  if (cell.y < cell.radius) { cell.y = cell.radius; if (cell.vy < 0) cell.vy *= -MOTION.restitution; }
-  if (cell.y > ARENA.height - cell.radius) { cell.y = ARENA.height - cell.radius; if (cell.vy > 0) cell.vy *= -MOTION.restitution; }
+  const bounce = velocity => Math.abs(velocity) > MOTION.restingThreshold ? -velocity * MOTION.restitution : 0;
+  if (cell.x < cell.radius) { cell.x = cell.radius; if (cell.vx < 0) cell.vx = bounce(cell.vx); }
+  if (cell.x > ARENA.width - cell.radius) { cell.x = ARENA.width - cell.radius; if (cell.vx > 0) cell.vx = bounce(cell.vx); }
+  if (cell.y < cell.radius) { cell.y = cell.radius; if (cell.vy < 0) cell.vy = bounce(cell.vy); }
+  if (cell.y > ARENA.height - cell.radius) { cell.y = ARENA.height - cell.radius; if (cell.vy > 0) cell.vy = bounce(cell.vy); }
 }
 
 function moveCells(player, input, dt) {
@@ -538,15 +540,69 @@ function resolveBodyPair(a, b, nx, ny) {
   }
   const approaching = (bc.vx - ac.vx) * nx + (bc.vy - ac.vy) * ny;
   if (approaching < -1e-7) {
-    const impulse = -(1 + MOTION.restitution) * approaching / inverseSum;
+    const restitution = -approaching > MOTION.restingThreshold ? MOTION.restitution : 0;
+    const impulse = -(1 + restitution) * approaching / inverseSum;
     ac.vx -= impulse * inverseA * nx; ac.vy -= impulse * inverseA * ny;
     bc.vx += impulse * inverseB * nx; bc.vy += impulse * inverseB * ny;
     changed = true;
   }
-  if (changed) {
+  // Revisions identify a significant discontinuity, not every substep of a
+  // resting contact. Low-speed support forces must not look like teleports.
+  if (changed && (penetration > 0.5 || -approaching > MOTION.restingThreshold)) {
     a.player.collisionRevision++;
     if (b.player !== a.player) b.player.collisionRevision++;
   }
+}
+
+function constrainWallVelocity(cell) {
+  const slop = MOTION.contactSlop;
+  const response = (velocity, gap) => {
+    if (Math.abs(velocity) <= MOTION.restingThreshold) return 0;
+    // Slop supports resting bodies; a fast body across a positive gap must
+    // reach the wall before receiving its real impact and restitution.
+    return gap <= 1e-7 ? -velocity * MOTION.restitution : velocity;
+  };
+  if (cell.x <= cell.radius + slop && cell.vx < 0) cell.vx = response(cell.vx, cell.x - cell.radius);
+  if (cell.x >= ARENA.width - cell.radius - slop && cell.vx > 0) cell.vx = response(cell.vx, ARENA.width - cell.radius - cell.x);
+  if (cell.y <= cell.radius + slop && cell.vy < 0) cell.vy = response(cell.vy, cell.y - cell.radius);
+  if (cell.y >= ARENA.height - cell.radius - slop && cell.vy > 0) cell.vy = response(cell.vy, ARENA.height - cell.radius - cell.y);
+}
+
+function constrainContactVelocities(bodies) {
+  const touching = [];
+  for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+    const a = bodies[i], b = bodies[j];
+    if (a.player === b.player && a.cell.mergeIn <= 0 && b.cell.mergeIn <= 0) continue;
+    const dx = b.cell.x - a.cell.x, dy = b.cell.y - a.cell.y;
+    const limit = a.cell.radius + b.cell.radius + MOTION.contactSlop;
+    const coarseLimit = limit + 1e-9;
+    if (Math.abs(dx) > coarseLimit || Math.abs(dy) > coarseLimit) continue;
+    const squaredDistance = dx * dx + dy * dy;
+    if (squaredDistance > coarseLimit * coarseLimit) continue;
+    const distance = Math.hypot(dx, dy);
+    if (distance > limit) continue;
+    touching.push({ a: a.cell, b: b.cell, nx: distance > 1e-9 ? dx / distance : 1,
+      ny: distance > 1e-9 ? dy / distance : 0, gap: distance - a.cell.radius - b.cell.radius });
+  }
+  // Solve velocity and wall constraints together. Otherwise a wall-pinned
+  // chain can publish forward velocity while all of its positions stand still.
+  for (let iteration = 0; iteration < 512; iteration++) {
+    for (const body of bodies) constrainWallVelocity(body.cell);
+    let closing = 0;
+    for (const pair of touching) {
+      const { a, b, nx, ny } = pair;
+      const relative = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+      if (relative >= -1e-6) continue;
+      if (pair.gap > 1e-7 && -relative > MOTION.restingThreshold) continue;
+      closing = Math.max(closing, -relative);
+      const inverseA = 1 / a.mass, inverseB = 1 / b.mass;
+      const impulse = -relative / (inverseA + inverseB);
+      a.vx -= impulse * inverseA * nx; a.vy -= impulse * inverseA * ny;
+      b.vx += impulse * inverseB * nx; b.vy += impulse * inverseB * ny;
+    }
+    if (closing < 1e-5) break;
+  }
+  for (const body of bodies) constrainWallVelocity(body.cell);
 }
 
 function resolvePlayerBodies(arena) {
@@ -593,7 +649,12 @@ function resolvePlayerBodies(arena) {
       const a = bodies[i], b = bodies[j];
       if (a.player === b.player) continue;
       const dx = b.cell.x - a.cell.x, dy = b.cell.y - a.cell.y;
-      const distance = Math.hypot(dx, dy), radius = a.cell.radius + b.cell.radius;
+      const radius = a.cell.radius + b.cell.radius;
+      const coarseRadius = radius - 1e-6 + 1e-9;
+      if (Math.abs(dx) > coarseRadius || Math.abs(dy) > coarseRadius) continue;
+      const squaredDistance = dx * dx + dy * dy;
+      if (squaredDistance > coarseRadius * coarseRadius) continue;
+      const distance = Math.hypot(dx, dy);
       if (distance >= radius - 1e-6) continue;
       overlap = true;
       resolveBodyPair(a, b, distance > 1e-9 ? dx / distance : 1, distance > 1e-9 ? dy / distance : 0);
@@ -603,11 +664,21 @@ function resolvePlayerBodies(arena) {
   const current = new Set();
   for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
     const a = bodies[i], b = bodies[j];
-    if (a.player !== b.player && Math.hypot(a.cell.x - b.cell.x, a.cell.y - b.cell.y) <= a.cell.radius + b.cell.radius + 0.5) {
-      current.add(`${a.key}|${b.key}`);
+    if (a.player === b.player) continue;
+    const radius = a.cell.radius + b.cell.radius;
+    const dx = a.cell.x - b.cell.x, dy = a.cell.y - b.cell.y;
+    const limit = radius + 0.5 + 1e-9;
+    if (Math.abs(dx) > limit || Math.abs(dy) > limit) continue;
+    const squaredDistance = dx * dx + dy * dy;
+    if (squaredDistance > limit * limit) continue;
+    const key = `${a.key}|${b.key}`;
+    const gap = Math.hypot(dx, dy) - radius;
+    if (gap <= 1e-6 || (arena.bodyContacts.has(key) && gap <= 0.5)) {
+      current.add(key);
     }
   }
   arena.bodyContacts = current;
+  constrainContactVelocities(bodies);
   for (const player of arena.players.values()) syncPlayer(player);
 }
 
@@ -623,6 +694,7 @@ function gravityStrength(cell) {
 }
 
 function attractDust(arena, dt) {
+  if (dt <= 0) return;
   const targets = new Map();
   for (const player of arena.players.values()) {
     if (player.respawnIn > 0) continue;
@@ -696,6 +768,7 @@ function collectDust(arena) {
     arena._indexedDust = arena.dust;
     arena._indexedCount = arena.dust.length;
   }
+  return consumed.length;
 }
 
 function mainCell(player) {
@@ -776,7 +849,7 @@ function advanceWaves(arena, dt) {
       if (player.id === wave.ownerId || player.respawnIn > 0 || player.invulnerable > 0 || wave.hit.has(player.id)) continue;
       const hit = player.cells.some(cell => {
         const radiusSquared = (cell.radius + wave.thickness / 2) ** 2;
-        const startX = cell._stepX ?? cell.x, startY = cell._stepY ?? cell.y;
+        const startX = cell._frameX ?? cell._stepX ?? cell.x, startY = cell._frameY ?? cell._stepY ?? cell.y;
         const endX = startX + (cell.x - startX) * activeFraction - deltaX;
         const endY = startY + (cell.y - startY) * activeFraction - deltaY;
         for (let i = 1; i < arc.length; i++) {
@@ -803,6 +876,7 @@ export function stepArena(arena, elapsed) {
   // One linear grid rebuild replaces repeated all-particle scans for bots,
   // gravity and pickups. Moving particles update only their changed buckets.
   rebuildDustGrid(arena);
+  const movers = [];
   for (const player of arena.players.values()) {
     if (player.bot) setPlayerInput(arena, player.id, botInput(arena, player));
     if (player.bot && player.upgradeChoices.length) chooseUpgrade(arena, player.id, player.upgradeChoices[0].id);
@@ -827,17 +901,32 @@ export function stepArena(arena, elapsed) {
     if (player.ejectQueued) ejectMass(arena, player, actionDirection);
     player.splitQueued = player.ejectQueued = false;
     if (player.pendingInputSeq !== player.lastInputSeq) player.inputAge = 0;
-    moveCells(player, input, dt);
+    for (const cell of player.cells) { cell._frameX = cell.x; cell._frameY = cell.y; }
+    movers.push({ player, input });
+  }
+
+  // Keep the expensive dust grid at the network simulation rate, while solid
+  // contacts advance in short steps so glancing bodies follow changing normals.
+  const steps = Math.max(1, Math.ceil(dt / MOTION.physicsStep - 1e-9));
+  const substep = dt / steps;
+  for (let i = 0; i < steps; i++) {
+    for (const { player, input } of movers) moveCells(player, input, substep);
+    resolvePlayerBodies(arena);
+  }
+  for (const { player, input } of movers) {
     player.inputAge += dt;
     player.lastInputSeq = player.pendingInputSeq;
     updateFacing(player, input);
   }
 
   attractDust(arena, dt);
-  collectDust(arena);
-
-  // Live controlled cores have solid bodies; only loose fragments are eaten.
-  resolvePlayerBodies(arena);
+  if (collectDust(arena)) {
+    // Collection can enlarge a body after its movement has finished.
+    for (const player of arena.players.values()) for (const cell of player.cells) {
+      cell._stepX = cell.x; cell._stepY = cell.y; confineCell(cell);
+    }
+    resolvePlayerBodies(arena);
+  }
   for (const player of arena.players.values()) {
     updateFacing(player, player.connected ? player.input : normalizeInput());
     if (player.fireQueued) launchWave(arena, player);
@@ -860,7 +949,7 @@ export function snapshotArena(arena, view) {
   const visibleBlasts = bounds ? arena.blasts.filter(blast => blast.x + blast.radius >= bounds.left &&
     blast.x - blast.radius <= bounds.right && blast.y + blast.radius >= bounds.top && blast.y - blast.radius <= bounds.bottom) : arena.blasts;
   return {
-    arena: ARENA, dustTotal: arena.dust.length,
+    arena: ARENA, motion: MOTION, simulationTime: arena.time * 1000, dustTotal: arena.dust.length,
     status: arena.status, time: round(arena.time), remaining: round(arena.remaining),
     round: arena.round, winnerId: arena.winnerId,
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
@@ -868,6 +957,8 @@ export function snapshotArena(arena, view) {
       lastInputSeq: p.lastInputSeq, inputAge: p.inputAge, collisionRevision: p.collisionRevision,
       lastImpact: p.lastImpact ? { ...p.lastImpact } : null,
       direction: { ...p.direction },
+      steering: { x: p.connected ? p.input.x : 0, y: p.connected ? p.input.y : 0,
+        boost: p.connected && p.input.boost },
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),

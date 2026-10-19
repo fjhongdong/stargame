@@ -33,6 +33,9 @@
   const seenImpacts = new Map();
   const waveVisuals = new Map();
   const remoteContactPositions = new Map();
+  const remotePhysics = new Map(), contactEpisodes = new Map();
+  const defaultMotion = { response: 6, drag: 2, stopSpeed: .5, restitution: .2, restingThreshold: 60, contactSlop: .01, physicsStep: 1 / 120 };
+  let motionSettings = { ...defaultMotion }, simulationLead = 0;
   let remoteContactFrame = -1;
   const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
   const gameKeys = new Set([...movementKeys, 'Space', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
@@ -202,7 +205,7 @@
     resetHeldInputs(false);
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastScore = 0; lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
-    cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
+    cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
     inputSeq = 0; lastInputAck = 0; lastMovementSeq = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
     camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
     inputPulse = false; splitPulse = false; ejectPulse = false;
@@ -272,7 +275,7 @@
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
     reconnecting = true; retries += 1; resetHeldInputs(false);
-    predictedCells.clear(); inputHistory.length = 0; waveVisuals.clear();
+    predictedCells.clear(); remotePhysics.clear(); contactEpisodes.clear(); inputHistory.length = 0; waveVisuals.clear();
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
@@ -280,6 +283,7 @@
   function showConnectionError(message) {
     reconnecting = false; clearTimeout(retryTimer);
     waveVisuals.clear();
+    remotePhysics.clear(); contactEpisodes.clear();
     resetHeldInputs(false);
     intentionalClose = true; socket?.close();
     showPanel(`<div class="sg-eyebrow">CONNECTION LOST</div><h2>信号暂时消失了</h2><p class="sg-panel-desc">${esc(message)}</p><div class="sg-panel-buttons"><button class="sg-primary" id="sgErrorExit">返回大厅</button></div>`);
@@ -299,6 +303,7 @@
   function closeSession(notify = true) {
     intentionalClose = true; active = false;
     waveVisuals.clear();
+    remotePhysics.clear(); contactEpisodes.clear(); remoteContactPositions.clear();
     clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
     send({ type: 'leave' }); socket?.close(); socket = null;
     resetHeldInputs(false);
@@ -579,7 +584,7 @@
   function advanceOwnCell(state, cell, player, input, elapsed) {
     const moving = Math.hypot(input.x, input.y) > 0;
     const speed = (input.boost && player.energy > 1 && moving ? 360 : 210) * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
-    const rate = moving ? 6 : 2, dt = Math.max(0, elapsed), decay = Math.exp(-rate * dt);
+    const rate = moving ? motionSettings.response : motionSettings.drag, dt = Math.max(0, elapsed), decay = Math.exp(-rate * dt);
     const targetX = input.x * speed, targetY = input.y * speed;
     const initialX = state.vx || 0, initialY = state.vy || 0;
     // Exact integration matches the server across different render/tick rates.
@@ -588,11 +593,11 @@
     state.y += targetY * dt + (initialY - targetY) * (1 - decay) / rate;
     state.vx = targetX + (initialX - targetX) * decay;
     state.vy = targetY + (initialY - targetY) * decay;
-    if (!moving && Math.hypot(state.vx, state.vy) < .5) state.vx = state.vy = 0;
-    if (state.x < cell.radius) { state.x = cell.radius; if (state.vx < 0) state.vx *= -.2; }
-    if (state.x > WORLD.width - cell.radius) { state.x = WORLD.width - cell.radius; if (state.vx > 0) state.vx *= -.2; }
-    if (state.y < cell.radius) { state.y = cell.radius; if (state.vy < 0) state.vy *= -.2; }
-    if (state.y > WORLD.height - cell.radius) { state.y = WORLD.height - cell.radius; if (state.vy > 0) state.vy *= -.2; }
+    if (!moving && Math.hypot(state.vx, state.vy) < motionSettings.stopSpeed) state.vx = state.vy = 0;
+    if (state.x < cell.radius) { state.x = cell.radius; if (state.vx < 0) state.vx *= Math.abs(state.vx) > motionSettings.restingThreshold ? -motionSettings.restitution : 0; }
+    if (state.x > WORLD.width - cell.radius) { state.x = WORLD.width - cell.radius; if (state.vx > 0) state.vx *= Math.abs(state.vx) > motionSettings.restingThreshold ? -motionSettings.restitution : 0; }
+    if (state.y < cell.radius) { state.y = cell.radius; if (state.vy < 0) state.vy *= Math.abs(state.vy) > motionSettings.restingThreshold ? -motionSettings.restitution : 0; }
+    if (state.y > WORLD.height - cell.radius) { state.y = WORLD.height - cell.radius; if (state.vy > 0) state.vy *= Math.abs(state.vy) > motionSettings.restingThreshold ? -motionSettings.restitution : 0; }
     return Math.hypot(state.vx, state.vy);
   }
 
@@ -615,39 +620,65 @@
   function ingestSnapshot(next, at) {
     if (next.arena?.width > 0) WORLD.width = next.arena.width;
     if (next.arena?.height > 0) WORLD.height = next.arena.height;
-    const snapshotAt = Number.isFinite(next.serverTime) ? next.serverTime : (next.time || 0) * 1000;
-    next._renderTime = snapshotAt;
-    next._receivedAt = at;
-    const own = next.players.find((p) => p.id === myId);
-    const previousOwn = room?.players?.find((p) => p.id === myId);
+    motionSettings = { ...defaultMotion, ...next.motion };
+    const snapshotAt = Number.isFinite(next.simulationTime) ? next.simulationTime : Number.isFinite(next.serverTime) ? next.serverTime : (next.time || 0) * 1000;
+    next._renderTime = snapshotAt; next._receivedAt = at;
+    const own = next.players.find((p) => p.id === myId), previousOwn = room?.players?.find((p) => p.id === myId);
     const merged = own && previousOwn && own.cells.length < previousOwn.cells.length;
-    const collided = previousOwn && Number.isFinite(own?.collisionRevision) && own.collisionRevision !== previousOwn.collisionRevision;
-    const acknowledged = inputHistory.find(input => input.seq === own?.lastInputSeq);
+    const collided = previousOwn && own?.collisionRevision !== previousOwn.collisionRevision;
+    const acknowledged = inputHistory.find((input) => input.seq === own?.lastInputSeq);
+    simulationLead = acknowledged ? clamp((at - acknowledged.t) / 1000 - (own.inputAge || 0), 0, .45) : clamp((rtt || 0) / 1000, 0, .45);
     const cellsPresent = new Set(), dustPresent = new Set();
+    if (room && (next.round !== room.round || next.code !== room.code)) { remotePhysics.clear(); contactEpisodes.clear(); }
     for (const player of next.players) {
+      const previousPlayer = room?.players?.find((p) => p.id === player.id);
       for (const cell of player.cells || []) {
         const key = `${player.id}:${cell.id}`; cellsPresent.add(key); addTrack(cellTracks, key, cell, snapshotAt);
-        if (player.id !== myId) continue;
-        const model = replayOwnCell(cell, player, acknowledged, at);
-        let predicted = predictedCells.get(cell.id);
-        const previousCell = previousOwn?.cells?.find(previous => previous.id === cell.id);
+        const previousCell = previousPlayer?.cells?.find((c) => c.id === cell.id);
         const relocated = previousCell && Math.hypot(cell.x - previousCell.x, cell.y - previousCell.y) > 350;
-        if (!predicted || player.respawnIn > 0 || next.round !== room?.round || merged || relocated || collided) {
-          predicted = { x: model.x, y: model.y, vx: model.vx, vy: model.vy };
-          predictedCells.set(cell.id, predicted);
+        const fractured = previousCell && cell.mass < previousCell.mass * .8;
+        if (player.id === myId) {
+          const model = replayOwnCell(cell, player, acknowledged, at);
+          let p = predictedCells.get(cell.id);
+          const structural = !p || player.respawnIn > 0 || next.round !== room?.round || merged || relocated;
+          if (structural) {
+            p = { x: model.x, y: model.y, vx: model.vx, vy: model.vy, offsetX: 0, offsetY: 0, model, normals: [], contactUntil: 0 };
+            predictedCells.set(cell.id, p);
+          } else if (collided || p.contactUntil > at) {
+            // Keep the ongoing contact simulation. A revision is authority data,
+            // not a teleport or another collision impulse.
+            p.authority = model;
+            if (fractured) { p.model.vx = cell.vx || 0; p.model.vy = cell.vy || 0; }
+          } else {
+            p.offsetX = p.x - model.x; p.offsetY = p.y - model.y;
+            p.model = model; p.authority = null;
+          }
+          p.modelAt = at; p.cell = cell; p.player = player;
+          p.stopConfirmed = Boolean(acknowledged && !acknowledged.x && !acknowledged.y);
+        } else {
+          const steering = player.steering || { x: 0, y: 0, boost: false };
+          const target = { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 };
+          if (player.steering) advanceOwnCell(target, cell, player, steering, simulationLead);
+          else { target.x += target.vx * Math.min(.15, simulationLead); target.y += target.vy * Math.min(.15, simulationLead); }
+          let proxy = remotePhysics.get(key);
+          if (!proxy || relocated || next.round !== room?.round) {
+            proxy = { model: { ...target }, authority: { ...target }, visual: { x: cell.x, y: cell.y }, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [] };
+            remotePhysics.set(key, proxy);
+          } else {
+            proxy.authority = target;
+            if (fractured) { proxy.model.vx = cell.vx || 0; proxy.model.vy = cell.vy || 0; }
+          }
+          proxy.cell = cell; proxy.player = player; proxy.steering = steering;
         }
-        // Keep the authoritative replay separate from its visible position.
-        // Replacing the model must not shove the rendered planet in an old direction.
-        predicted.model = model; predicted.modelAt = at;
-        predicted.stopConfirmed = Boolean(acknowledged && !acknowledged.x && !acknowledged.y);
       }
     }
     for (const key of cellTracks.keys()) if (!cellsPresent.has(key)) cellTracks.delete(key);
+    for (const key of remotePhysics.keys()) if (!cellsPresent.has(key)) remotePhysics.delete(key);
+    while (remotePhysics.size > 128) remotePhysics.delete(remotePhysics.keys().next().value);
     const ownIds = new Set((own?.cells || []).map((c) => c.id));
     for (const id of predictedCells.keys()) if (!ownIds.has(id)) predictedCells.delete(id);
     if (Number.isFinite(own?.lastInputSeq)) {
       lastInputAck = own.lastInputSeq;
-      // Retain the acknowledged command itself: its send time anchors replay.
       while (inputHistory.length > 1 && inputHistory[0].seq < lastInputAck) inputHistory.shift();
     }
     for (const dust of next.dust) { dustPresent.add(dust.id); addTrack(dustTracks, dust.id, dust, snapshotAt); }
@@ -655,115 +686,209 @@
     lastSnapshotAt = at;
   }
 
+  function followAuthority(body, dt, at) {
+    const ref = body.ref, target = ref.authority, model = body.position;
+    if (!target) return;
+    let dx = target.x - model.x, dy = target.y - model.y, dvx = target.vx - model.vx, dvy = target.vy - model.vy;
+    if (ref.contactUntil > at) {
+      // Old snapshots cannot pull a resting contact back through the surface.
+      for (const normal of ref.normals || []) {
+        const closingPosition = dx * normal.x + dy * normal.y;
+        if (closingPosition < 0) { dx -= normal.x * closingPosition; dy -= normal.y * closingPosition; }
+        const closingVelocity = dvx * normal.x + dvy * normal.y;
+        if (closingVelocity < 0) { dvx -= normal.x * closingVelocity; dvy -= normal.y * closingVelocity; }
+      }
+    }
+    const blend = 1 - Math.exp(-dt * 10), error = Math.hypot(dx, dy), limit = (ref.contactUntil > at ? 30 : 100) * dt;
+    const correction = error > 0 ? Math.min(blend, limit / error) : 0;
+    model.x = clamp(model.x + dx * correction, body.cell.radius, WORLD.width - body.cell.radius);
+    model.y = clamp(model.y + dy * correction, body.cell.radius, WORLD.height - body.cell.radius);
+    model.vx += dvx * blend; model.vy += dvy * blend;
+  }
+
+  function physicsBodies() {
+    const bodies = [];
+    for (const player of room?.players || []) {
+      if (player.respawnIn > 0) continue;
+      for (const cell of player.cells || []) {
+        const key = `${player.id}:${cell.id}`, own = player.id === myId;
+        let ref = own ? predictedCells.get(cell.id) : remotePhysics.get(key);
+        if (!ref) {
+          if (own) continue;
+          ref = { model: { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 }, visual: { x: cell.x, y: cell.y }, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [], cell, player, steering: player.steering || { x: 0, y: 0, boost: false } };
+          remotePhysics.set(key, ref);
+        }
+        const position = ref.model || ref;
+        position.vx ||= 0; position.vy ||= 0;
+        bodies.push({ key, cell, player, own, ref, position, previousX: position._frameX ?? position.x, previousY: position._frameY ?? position.y });
+      }
+    }
+    return bodies;
+  }
+
   function predictOwn(dt, at) {
     const me = room?.players?.find((p) => p.id === myId);
     if (!me || room.status !== 'playing' || me.respawnIn > 0 || reconnecting || at - lastSnapshotAt > 650) return;
-    const input = getIntent();
-    for (const cell of me.cells || []) {
-      const p = predictedCells.get(cell.id); if (!p?.model) continue;
-      p._frameX = p.x; p._frameY = p.y;
-      const speed = advanceOwnCell(p, cell, me, input, dt);
-      advanceOwnCell(p.model, cell, me, input, clamp((at - p.modelAt) / 1000, 0, .1));
-      p.modelAt = at;
-      if (speed >= .5) {
-        const ux = p.vx / speed, uy = p.vy / speed;
-        const forwardError = (p.model.x - p.x) * ux + (p.model.y - p.y) * uy;
-        // Reconciliation follows physical momentum, including braking/coasting.
-        // A stale packet can only slightly adjust speed, never create a new thrust.
-        const adjustment = Math.abs(forwardError) > 1.5 ? clamp(forwardError * (1 - Math.exp(-dt * 9)), -speed * dt * .25, speed * dt * .25) : 0;
-        p.x = clamp(p.x + ux * adjustment, cell.radius, WORLD.width - cell.radius);
-        p.y = clamp(p.y + uy * adjustment, cell.radius, WORLD.height - cell.radius);
-      } else if (p.stopConfirmed && lastInputAck > lastMovementSeq && Math.hypot(p.model.vx, p.model.vy) < .5) {
-        p.x = p.model.x; p.y = p.model.y; p.vx = p.vy = 0;
+    const input = getIntent(), bodies = physicsBodies(), steps = Math.max(1, Math.ceil(dt / motionSettings.physicsStep)), step = dt / steps;
+    for (let i = 0; i < steps; i++) {
+      for (const body of bodies) {
+        const p = body.position, ref = body.ref, steering = body.own ? input : ref.steering;
+        body.previousX = p.x; body.previousY = p.y;
+        advanceOwnCell(p, body.cell, body.player, steering, step);
+        if (ref.authority) advanceOwnCell(ref.authority, body.cell, body.player, steering, step);
+        followAuthority(body, step, at);
       }
+      collidePredictedBodies(at, step, bodies);
     }
-    collidePredictedBodies(at, dt);
+    publishVisibleBodies(at, dt, bodies);
   }
 
-  function collidePredictedBodies(at, dt) {
-    const contacted = new Set();
-    remoteContactPositions.clear(); remoteContactFrame = at;
-    if (room?.status !== 'playing') return contacted;
-    const ownPlayer = room.players.find((player) => player.id === myId);
-    if (!ownPlayer || ownPlayer.respawnIn > 0) return contacted;
-    const sampleAt = room._renderTime + Math.max(0, at - room._receivedAt) - 100;
-    const ownBodies = [], otherBodies = [];
-    for (const player of room.players) {
-      if (player.respawnIn > 0) continue;
-      for (const cell of player.cells || []) {
-        const key = `${player.id}:${cell.id}`;
-        if (player.id === myId) {
-          const position = predictedCells.get(cell.id); if (!position) continue;
-          if (!Number.isFinite(position.vx)) position.vx = 0;
-          if (!Number.isFinite(position.vy)) position.vy = 0;
-          ownBodies.push({ cell, position, own: true, previousX: position._frameX ?? position.x, previousY: position._frameY ?? position.y });
-        } else {
-          const track = cellTracks.get(key), current = sampleTrack(track, sampleAt) || cell;
-          const previous = sampleTrack(track, sampleAt - dt * 1000) || current;
-          const position = { x: current.x, y: current.y, vx: dt > 0 ? (current.x - previous.x) / dt : cell.vx || 0, vy: dt > 0 ? (current.y - previous.y) / dt : cell.vy || 0 };
-          remoteContactPositions.set(key, position);
-          otherBodies.push({ cell, position, own: false, previousX: previous.x, previousY: previous.y });
-        }
-      }
+  function separateCircles(a, b, nx, ny, depth) {
+    const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass), total = inverseA + inverseB;
+    function move(body, dx, dy) { const r = body.cell.radius; body.position.x = clamp(body.position.x + dx, r, WORLD.width - r); body.position.y = clamp(body.position.y + dy, r, WORLD.height - r); }
+    const ax = a.position.x, ay = a.position.y, bx = b.position.x, by = b.position.y;
+    move(a, nx * depth * inverseA / total, ny * depth * inverseA / total);
+    move(b, -nx * depth * inverseB / total, -ny * depth * inverseB / total);
+    let remaining = depth - ((a.position.x - ax - b.position.x + bx) * nx + (a.position.y - ay - b.position.y + by) * ny);
+    if (remaining > .00001) {
+      const x = a.position.x, y = a.position.y; move(a, nx * remaining, ny * remaining);
+      remaining -= (a.position.x - x) * nx + (a.position.y - y) * ny;
+      if (remaining > .00001) move(b, -nx * remaining, -ny * remaining);
     }
-    function moveWithinBounds(body, dx, dy) {
-      const p = body.position, r = body.cell.radius;
-      p.x = clamp(p.x + dx, r, WORLD.width - r); p.y = clamp(p.y + dy, r, WORLD.height - r);
-    }
-    function separate(a, b, nx, ny, depth) {
-      const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass), total = inverseA + inverseB;
-      const ax = a.position.x, ay = a.position.y, bx = b.position.x, by = b.position.y;
-      moveWithinBounds(a, nx * depth * inverseA / total, ny * depth * inverseA / total);
-      moveWithinBounds(b, -nx * depth * inverseB / total, -ny * depth * inverseB / total);
-      // Transfer any blocked correction to the other body at a world boundary.
-      let remaining = depth - ((a.position.x - ax - b.position.x + bx) * nx + (a.position.y - ay - b.position.y + by) * ny);
-      if (remaining > .001) {
-        const x = a.position.x, y = a.position.y;
-        moveWithinBounds(a, nx * remaining, ny * remaining);
-        remaining -= (a.position.x - x) * nx + (a.position.y - y) * ny;
-        if (remaining > .001) moveWithinBounds(b, -nx * remaining, -ny * remaining);
-      }
-    }
-    function collide(a, b, swept) {
-      const pa = a.position, pb = b.position, radius = a.cell.radius + b.cell.radius;
-      let dx = pa.x - pb.x, dy = pa.y - pb.y, distance = Math.hypot(dx, dy);
-      let nx = distance > .00001 ? dx / distance : 1, ny = distance > .00001 ? dy / distance : 0, hit = distance <= radius + .02;
-      if (swept) {
-        const sx = a.previousX - b.previousX, sy = a.previousY - b.previousY;
-        const vx = dx - sx, vy = dy - sy, aa = vx * vx + vy * vy, bb = 2 * (sx * vx + sy * vy), cc = sx * sx + sy * sy - radius * radius;
-        const discriminant = bb * bb - 4 * aa * cc;
-        if (aa > .000001 && cc >= -.05 && discriminant >= 0) {
-          const impact = (-bb - Math.sqrt(discriminant)) / (2 * aa);
-          if (impact >= -.00001 && impact <= 1) {
-            const ix = sx + vx * clamp(impact, 0, 1), iy = sy + vy * clamp(impact, 0, 1), length = Math.hypot(ix, iy) || 1;
-            if (vx * ix + vy * iy < 0) {
-              nx = ix / length; ny = iy / length; hit = true;
-              const depth = radius + .02 - (dx * nx + dy * ny);
-              if (depth > 0) separate(a, b, nx, ny, depth);
-              dx = pa.x - pb.x; dy = pa.y - pb.y; distance = Math.hypot(dx, dy);
+  }
+
+  function collidePredictedBodies(at, dt, suppliedBodies) {
+    const contacted = new Set(), bodies = suppliedBodies || physicsBodies(), slop = motionSettings.contactSlop;
+    function eligible(a, b) { return a.player !== b.player || (a.cell.mergeIn > 0 || b.cell.mergeIn > 0); }
+    for (let iteration = 0; iteration < 5; iteration++) {
+      let corrected = false;
+      for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+        const a = bodies[i], b = bodies[j];
+        if (!eligible(a, b) || (!a.own && !b.own && a.ref.islandUntil < at && b.ref.islandUntil < at)) continue;
+        const pa = a.position, pb = b.position, radius = a.cell.radius + b.cell.radius;
+        let dx = pa.x - pb.x, dy = pa.y - pb.y, distance = Math.hypot(dx, dy), nx = distance > 1e-7 ? dx / distance : 1, ny = distance > 1e-7 ? dy / distance : 0;
+        let hit = distance <= radius + slop, sweptHit = false;
+        if (iteration === 0) {
+          const sx = a.previousX - b.previousX, sy = a.previousY - b.previousY, vx = dx - sx, vy = dy - sy;
+          const aa = vx * vx + vy * vy, bb = 2 * (sx * vx + sy * vy), cc = sx * sx + sy * sy - radius * radius, discriminant = bb * bb - 4 * aa * cc;
+          if (aa > 1e-9 && cc >= -slop && discriminant >= 0) {
+            const impact = (-bb - Math.sqrt(discriminant)) / (2 * aa);
+            if (impact >= -1e-7 && impact <= 1) {
+              const ix = sx + vx * clamp(impact, 0, 1), iy = sy + vy * clamp(impact, 0, 1), length = Math.hypot(ix, iy) || 1;
+              if (vx * ix + vy * iy < 0) {
+                nx = ix / length; ny = iy / length; hit = true; sweptHit = true;
+                const depth = radius - (dx * nx + dy * ny);
+                if (depth > 1e-7) { separateCircles(a, b, nx, ny, depth); corrected = true; }
+                dx = pa.x - pb.x; dy = pa.y - pb.y; distance = Math.hypot(dx, dy);
+              }
             }
           }
         }
+        if (!hit) continue;
+        // Slop supports resting bodies, but must not cancel a fast approach
+        // before actual contact; the relative sweep supplies that contact.
+        if (!sweptHit && distance > radius + 1e-7 && -((pa.vx - pb.vx) * nx + (pa.vy - pb.vy) * ny) > motionSettings.restingThreshold) continue;
+        if (distance < radius - 1e-7) { separateCircles(a, b, nx, ny, radius - distance); corrected = true; }
+        const key = a.key < b.key ? `${a.key}|${b.key}` : `${b.key}|${a.key}`;
+        const old = contactEpisodes.get(key), fresh = !old || at - old.lastTouch > 250;
+        const sharedImpact = a.player.lastImpact?.id && a.player.lastImpact.id === b.player.lastImpact?.id && room.time - a.player.lastImpact.at < .35;
+        const normalVelocity = (pa.vx - pb.vx) * nx + (pa.vy - pb.vy) * ny;
+        if (normalVelocity < -1e-7) {
+          const restitution = fresh && !sharedImpact && -normalVelocity > motionSettings.restingThreshold ? motionSettings.restitution : 0;
+          const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass), impulse = -(1 + restitution) * normalVelocity / (inverseA + inverseB);
+          pa.vx += impulse * inverseA * nx; pa.vy += impulse * inverseA * ny;
+          pb.vx -= impulse * inverseB * nx; pb.vy -= impulse * inverseB * ny;
+        }
+        contactEpisodes.set(key, { lastTouch: at });
+        for (const [body, x, y] of [[a, nx, ny], [b, -nx, -ny]]) {
+          body.ref.contactUntil = at + 180; body.ref.normals = [{ x, y }];
+          if (body.own) contacted.add(body.cell.id); else body.ref.islandUntil = at + 400;
+        }
       }
-      if (!hit) return;
-      if (distance < radius) separate(a, b, nx, ny, radius - distance + .02);
-      const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass);
-      const normalVelocity = (pa.vx - pb.vx) * nx + (pa.vy - pb.vy) * ny;
-      if (normalVelocity < 0) {
-        const impulse = -1.2 * normalVelocity / (inverseA + inverseB);
+      if (!corrected) break;
+    }
+    for (const [key, episode] of contactEpisodes) if (at - episode.lastTouch > 700) contactEpisodes.delete(key);
+    while (contactEpisodes.size > 512) contactEpisodes.delete(contactEpisodes.keys().next().value);
+    constrainClientContactVelocities(bodies);
+    if (!suppliedBodies) publishVisibleBodies(at, dt, bodies);
+    return contacted;
+  }
+
+  function constrainClientContactVelocities(bodies) {
+    const slop = motionSettings.contactSlop, touching = [];
+    for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i], b = bodies[j];
+      if (a.player === b.player && a.cell.mergeIn <= 0 && b.cell.mergeIn <= 0) continue;
+      if (!a.own && !b.own && !a.ref.island && !b.ref.island) continue;
+      const dx = a.position.x - b.position.x, dy = a.position.y - b.position.y, distance = Math.hypot(dx, dy), gap = distance - a.cell.radius - b.cell.radius;
+      if (gap <= slop) touching.push({ a, b, gap, nx: distance > 1e-9 ? dx / distance : 1, ny: distance > 1e-9 ? dy / distance : 0 });
+    }
+    function walls(body) {
+      const p = body.position, r = body.cell.radius;
+      const response = (v, gap) => Math.abs(v) <= motionSettings.restingThreshold ? 0 : gap <= 1e-7 ? -v * motionSettings.restitution : v;
+      if (p.x <= r + slop && p.vx < 0) p.vx = response(p.vx, p.x - r);
+      if (p.x >= WORLD.width - r - slop && p.vx > 0) p.vx = response(p.vx, WORLD.width - r - p.x);
+      if (p.y <= r + slop && p.vy < 0) p.vy = response(p.vy, p.y - r);
+      if (p.y >= WORLD.height - r - slop && p.vy > 0) p.vy = response(p.vy, WORLD.height - r - p.y);
+    }
+    for (let iteration = 0; iteration < 128; iteration++) {
+      for (const body of bodies) walls(body);
+      let closing = 0;
+      for (const { a, b, gap, nx, ny } of touching) {
+        const pa = a.position, pb = b.position, relative = (pa.vx - pb.vx) * nx + (pa.vy - pb.vy) * ny;
+        if (relative >= -1e-6 || (gap > 1e-7 && -relative > motionSettings.restingThreshold)) continue;
+        closing = Math.max(closing, -relative);
+        const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass), impulse = -relative / (inverseA + inverseB);
         pa.vx += impulse * inverseA * nx; pa.vy += impulse * inverseA * ny;
         pb.vx -= impulse * inverseB * nx; pb.vy -= impulse * inverseB * ny;
       }
-      if (a.own) contacted.add(a.cell.id);
-      if (b.own) contacted.add(b.cell.id);
+      if (closing < 1e-5) break;
     }
-    for (let iteration = 0; iteration < 4; iteration++) {
-      for (const own of ownBodies) for (const other of otherBodies) collide(own, other, iteration === 0);
-      for (let i = 0; i < ownBodies.length; i++) for (let j = i + 1; j < ownBodies.length; j++) {
-        if (ownBodies[i].cell.mergeIn > 0 || ownBodies[j].cell.mergeIn > 0) collide(ownBodies[i], ownBodies[j], iteration === 0);
+    for (const body of bodies) walls(body);
+  }
+
+  function publishVisibleBodies(at, dt, bodies) {
+    const ownBodies = bodies.filter((body) => body.own), visualBodies = [];
+    const sampleAt = room._renderTime + Math.max(0, at - room._receivedAt) - 100;
+    remoteContactPositions.clear(); remoteContactFrame = at;
+    for (const body of bodies) {
+      const ref = body.ref, model = body.position;
+      if (body.own) {
+        ref.offsetX = (ref.offsetX || 0) * Math.exp(-dt * 12); ref.offsetY = (ref.offsetY || 0) * Math.exp(-dt * 12);
+        ref.x = model.x + ref.offsetX; ref.y = model.y + ref.offsetY; ref.vx = model.vx; ref.vy = model.vy;
+        visualBodies.push({ ...body, position: ref });
+      } else {
+        for (const own of ownBodies) {
+          const relativeSpeed = Math.hypot(model.vx - own.position.vx, model.vy - own.position.vy);
+          if (Math.hypot(model.x - own.position.x, model.y - own.position.y) < body.cell.radius + own.cell.radius + Math.max(70, relativeSpeed * (simulationLead + .12))) ref.islandUntil = at + 400;
+        }
+        const island = ref.islandUntil > at, target = island ? model : sampleTrack(cellTracks.get(body.key), sampleAt) || model;
+        if (island !== ref.island) { ref.offsetX = ref.visual.x - target.x; ref.offsetY = ref.visual.y - target.y; ref.island = island; }
+        ref.offsetX *= Math.exp(-dt * 12); ref.offsetY *= Math.exp(-dt * 12);
+        ref.visual.x = target.x + ref.offsetX; ref.visual.y = target.y + ref.offsetY;
+        visualBodies.push({ ...body, position: ref.visual });
+        remoteContactPositions.set(body.key, ref.visual);
       }
     }
-    return contacted;
+    // Rendering offsets do not participate in impulses or authority replay.
+    // Enforce only geometry here, so smoothing can never show bodies crossing.
+    for (let iteration = 0; iteration < 4; iteration++) for (let i = 0; i < visualBodies.length; i++) for (let j = i + 1; j < visualBodies.length; j++) {
+      const a = visualBodies[i], b = visualBodies[j];
+      if ((!a.own && !b.own) || (a.player === b.player && a.cell.mergeIn <= 0 && b.cell.mergeIn <= 0)) continue;
+      const pa = a.position, pb = b.position, radius = a.cell.radius + b.cell.radius;
+      const mx = a.ref.model?.x ?? pa.x, my = a.ref.model?.y ?? pa.y, ox = b.ref.model?.x ?? pb.x, oy = b.ref.model?.y ?? pb.y;
+      const physicalDistance = Math.hypot(mx - ox, my - oy);
+      let dx = pa.x - pb.x, dy = pa.y - pb.y, distance = Math.hypot(dx, dy);
+      if (physicalDistance <= radius + 2) {
+        const nx = physicalDistance > 1e-7 ? (mx - ox) / physicalDistance : 1, ny = physicalDistance > 1e-7 ? (my - oy) / physicalDistance : 0;
+        const depth = radius - (dx * nx + dy * ny); if (depth > 1e-7) separateCircles(a, b, nx, ny, depth);
+      } else if (distance < radius) separateCircles(a, b, distance > 1e-7 ? dx / distance : 1, distance > 1e-7 ? dy / distance : 0, radius - distance);
+    }
+    for (const body of visualBodies) {
+      // Store the independent display error after a positional-only projection.
+      if (body.own) { body.ref.offsetX = body.ref.x - body.ref.model.x; body.ref.offsetY = body.ref.y - body.ref.model.y; }
+      else if (body.ref.island) { body.ref.offsetX = body.ref.visual.x - body.ref.model.x; body.ref.offsetY = body.ref.visual.y - body.ref.model.y; }
+    }
   }
 
   function updateCamera(dt) {
@@ -950,7 +1075,8 @@
     const present = new Set();
     for (const blast of current.blasts) {
       present.add(blast.id);
-      waveVisuals.set(blast.id, { blast, receivedAt: current._receivedAt, missingSince: null });
+      const previousVisual = waveVisuals.get(blast.id);
+      waveVisuals.set(blast.id, { blast, receivedAt: current._receivedAt, missingSince: null, timeline: previousVisual?.timeline, completed: previousVisual?.completed || false });
     }
     for (const [id, entry] of waveVisuals) {
       if (present.has(id)) continue;
@@ -964,10 +1090,17 @@
     const directionX = dx / length, directionY = dy / length, speed = Math.max(0, blast.speed || 600);
     const distance = blast.distance || 420, travel = blast.travel ?? distance * (blast.progress || 0);
     const receivedAt = waveVisuals.get(blast.id)?.receivedAt ?? room?._receivedAt ?? time, remote = blast.ownerId !== myId;
-    const elapsed = clamp((time - receivedAt) / 1000 - (remote ? .1 : 0), remote ? -.1 : 0, remote ? .1 : .09);
+    let contactIsland = false;
+    if (remote) for (const proxy of remotePhysics.values()) if (proxy.player?.id === blast.ownerId && proxy.island && proxy.islandUntil > time) { contactIsland = true; break; }
+    const visual = waveVisuals.get(blast.id);
+    const timeline = visual?.timeline ?? (remote ? contactIsland ? simulationLead : -.1 : 0);
+    if (visual && visual.timeline === undefined) visual.timeline = timeline;
+    const currentTimeWave = remote && timeline >= 0;
+    const elapsed = clamp((time - receivedAt) / 1000 + timeline, remote && !currentTimeWave ? -.1 : 0, currentTimeWave ? .55 : remote ? .1 : .09);
     const renderedTravel = travel + speed * elapsed, front = clamp(renderedTravel, 0, distance);
     const originX = blast.originX ?? blast.x - directionX * travel, originY = blast.originY ?? blast.y - directionY * travel;
-    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: renderedTravel >= 0 && renderedTravel < distance };
+    if (visual && renderedTravel >= distance) visual.completed = true;
+    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
   }
   function drawBlast(blast, time, pose = wavePose(blast, time)) {
     const color = safeColor(blast.color || room.players.find((p) => p.id === blast.ownerId)?.color), halfWidth = (blast.width || 160) / 2, thickness = blast.thickness || 20, curve = blast.curvature || 30;
