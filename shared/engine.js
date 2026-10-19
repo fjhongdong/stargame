@@ -124,7 +124,7 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], hp: 100, energy: 60,
     score: 0, kills: 0, boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
     input: normalizeInput(), fireQueued: false, splitQueued: false, ejectQueued: false, shatteredAt: -10,
-    pendingInputSeq: 0, lastInputSeq: 0, direction: { x: 1, y: 0 } };
+    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
   resetProgress(player);
   arena.players.set(id, player);
@@ -274,7 +274,7 @@ export function startRound(arena) {
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, hp: 100, energy: 60, score: 0, kills: 0,
       boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
-      ejectQueued: false, shatteredAt: -10, pendingInputSeq: 0, lastInputSeq: 0, input: normalizeInput() });
+      ejectQueued: false, shatteredAt: -10, pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
     syncPlayer(player);
     resetProgress(player);
@@ -338,7 +338,10 @@ function splitPlayer(arena, player) {
     cell.radius = 4 * Math.sqrt(cell.mass);
     cell.mergeIn = 12;
     const { x, y } = player.direction;
-    const child = newCell(arena, cell.x + x * cell.radius, cell.y + y * cell.radius, cell.mass,
+    // Start the launched half beyond the parent's edge. Spawning overlapping
+    // halves makes collision separation push the parent against its input.
+    const separation = cell.radius * 2 + 2;
+    const child = newCell(arena, cell.x + x * separation, cell.y + y * separation, cell.mass,
       { mergeIn: 12, impulseX: x * 650, impulseY: y * 650 });
     player.cells.push(child);
   }
@@ -357,24 +360,28 @@ function ejectMass(arena, player) {
 }
 
 function moveCells(player, input, dt) {
-  const targetX = player.x + input.x * 260;
-  const targetY = player.y + input.y * 260;
-  const moving = Math.hypot(input.x, input.y) > 0;
+  const intentLength = Math.hypot(input.x, input.y);
+  const moving = intentLength > 0;
+  const directionX = moving ? input.x / intentLength : 0;
+  const directionY = moving ? input.y / intentLength : 0;
   for (const cell of player.cells) {
     cell._stepX = cell.x;
     cell._stepY = cell.y;
     cell.mergeIn = Math.max(0, cell.mergeIn - dt);
     cell.protectedFor = Math.max(0, cell.protectedFor - dt);
     cell.shatterCooldown = Math.max(0, cell.shatterCooldown - dt);
-    const dx = targetX - cell.x;
-    const dy = targetY - cell.y;
-    const distance = Math.hypot(dx, dy) || 1;
     const speed = (player.boosting ? 360 : 210) * player.stats.speed * Math.pow(START_MASS / cell.mass, 0.18);
-    // Steering needs active intent. Separated cells stay where they are when
-    // controls are released; only deliberate split/impact momentum remains.
-    const approach = moving ? Math.min(1, distance / 50) : 0;
-    cell.x = clamp(cell.x + (dx / distance * speed * approach + cell.impulseX) * dt, cell.radius, ARENA.width - cell.radius);
-    cell.y = clamp(cell.y + (dy / distance * speed * approach + cell.impulseY) * dt, cell.radius, ARENA.height - cell.radius);
+    if (moving) {
+      // Directional controls take priority over old split/impact momentum.
+      // Preserve forward launch speed, without sideways drift or reversal.
+      const forwardImpulse = Math.max(0, cell.impulseX * directionX + cell.impulseY * directionY);
+      cell.impulseX = directionX * forwardImpulse;
+      cell.impulseY = directionY * forwardImpulse;
+    } else cell.impulseX = cell.impulseY = 0;
+    // Apply the same direction to every controlled cell. A centroid target can
+    // sit behind a distant cell and make it move opposite to the pressed key.
+    cell.x = clamp(cell.x + (input.x * speed + cell.impulseX) * dt, cell.radius, ARENA.width - cell.radius);
+    cell.y = clamp(cell.y + (input.y * speed + cell.impulseY) * dt, cell.radius, ARENA.height - cell.radius);
     cell.impulseX *= Math.exp(-5 * dt);
     cell.impulseY *= Math.exp(-5 * dt);
     if (Math.abs(cell.impulseX) + Math.abs(cell.impulseY) < 0.05) cell.impulseX = cell.impulseY = 0;
@@ -552,7 +559,9 @@ export function stepArena(arena, elapsed) {
     if (player.ejectQueued) ejectMass(arena, player);
     player.splitQueued = player.ejectQueued = false;
     const previousX = player.x, previousY = player.y;
+    if (player.pendingInputSeq !== player.lastInputSeq) player.inputAge = 0;
     moveCells(player, input, dt);
+    player.inputAge += dt;
     player.lastInputSeq = player.pendingInputSeq;
     player.vx = dt ? (player.x - previousX) / dt : 0;
     player.vy = dt ? (player.y - previousY) / dt : 0;
@@ -639,9 +648,10 @@ export function snapshotArena(arena, view) {
     round: arena.round, winnerId: arena.winnerId,
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
       x: round(p.x), y: round(p.y), vx: round(p.vx), vy: round(p.vy), radius: round(p.radius), mass: round(p.mass),
-      lastInputSeq: p.lastInputSeq,
+      lastInputSeq: p.lastInputSeq, inputAge: p.inputAge,
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
-      cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy), radius: round(c.radius), mass: round(c.mass),
+      cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
+        impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),
         mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: c.protectedFor > 0, protectedFor: round(c.protectedFor) })),
       hp: p.hp, energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
       bot: p.bot, connected: p.connected, boosting: p.boosting, respawnIn: round(p.respawnIn),

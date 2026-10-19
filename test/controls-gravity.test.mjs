@@ -47,16 +47,16 @@ test('separated cells do not automatically steer toward their centroid without i
   assert.ok(f.player.cells.every(cell => cell.vx === 0 && cell.vy === 0));
 });
 
-test('release preserves deliberate split impulse, which then settles without idle drift', () => {
+test('release cancels controlled-cell split impulse immediately without idle drift', () => {
   const f = fixture(100);
   setPlayerInput(f.arena, f.player.id, { x: 1, split: true });
   stepArena(f.arena, 0.01);
   assert.equal(f.player.cells.length, 2);
   const launched = f.player.cells[1];
-  const initialX = launched.x;
   setPlayerInput(f.arena, f.player.id, {});
+  const initialX = launched.x;
   stepArena(f.arena, 0.1);
-  assert.ok(launched.x > initialX, 'intentional split momentum should remain after release');
+  assert.equal(launched.x, initialX, 'controlled cells should stop even after a split launch');
   for (let tick = 0; tick < 90; tick++) stepArena(f.arena, 1 / 30);
   assert.ok(f.player.cells.every(cell => cell.impulseX === 0 && cell.impulseY === 0));
   const settled = f.player.cells.map(cell => ({ x: cell.x, y: cell.y }));

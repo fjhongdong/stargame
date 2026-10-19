@@ -19,11 +19,11 @@
   let active = false, intentionalClose = false, joined = false, reconnecting = false;
   let pendingResolve, pendingReject, connectionTimer, retryTimer, retries = 0;
   let width = innerWidth, height = innerHeight, dpr = 1, raf, inputTimer, pingTimer, backgroundCanvas;
-  let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false, ejectPulse = false, boostTouch = false, pointerMove = null;
+  let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false, ejectPulse = false, boostTouch = false;
   let touchVector = { x: 0, y: 0 }, joystickPointer = null, sound = false, audioContext;
-  let movePointerId = null, boostPointerId = null;
+  let boostPointerId = null;
   let previousStatus = '', previousRound = -1, lastScore = 0, lastUpgradeKey = '', lastShatteredAt = 0;
-  let inputSeq = 0, lastInputAck = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
+  let inputSeq = 0, lastInputAck = 0, lastMovementSeq = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
   let renderedDust = 0, renderedCells = 0, camera = { x: NaN, y: NaN, scale: .95 };
   let bodyOverflowBefore = null;
   const keys = new Set(), drawnPlayers = new Map(), drawnDust = new Map(), particles = [], seenBlasts = new Set();
@@ -31,6 +31,7 @@
   const planetSprites = new Map(), dustSprites = new Map();
   const materializedDust = new Map();
   const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
+  const gameKeys = new Set([...movementKeys, 'Space', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
   const stars = Array.from({ length: 240 }, (_, i) => ({
     x: Math.abs(Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1,
     y: Math.abs(Math.sin(i * 269.5 + 183.3) * 29813.3719) % 1,
@@ -58,13 +59,14 @@
       <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
       <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">吞噬星尘 · 大球吃小球</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
-      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">鼠标左键 / WASD</span><span>按住移动 · 松开即停</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>引力爆破</span><kbd>E</kbd></button></div></div>
+      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">WASD / 方向键</span><span>按住移动 · 松开即停</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>引力爆破</span><kbd>E</kbd></button></div></div>
       <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
       <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><button class="sg-touch-boost" id="sgTouchBoost" aria-label="按住加速">加速</button><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button><button id="sgTouchEject">吐球</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
       <div class="sg-panel-backdrop" id="sgPanelBackdrop"><section class="sg-panel" id="sgPanel" aria-live="polite"></section></div>
     `;
     canvas = $('gameCanvas');
+    canvas.tabIndex = 0;
     ctx = canvas.getContext('2d', { alpha: false });
     $('sgExit').addEventListener('click', () => disconnect());
     $('sgFullscreen').addEventListener('click', toggleFullscreen);
@@ -79,24 +81,6 @@
     $('sgBlast').addEventListener('pointerdown', (e) => { e.preventDefault(); blast(); });
     $('sgTouchSplit').addEventListener('pointerdown', (e) => { e.preventDefault(); split(); });
     $('sgTouchEject').addEventListener('pointerdown', (e) => { e.preventDefault(); eject(); });
-    canvas.addEventListener('pointerdown', (e) => {
-      if (!room || room.status !== 'playing' || e.pointerType === 'touch') return;
-      if (e.button === 2) blast();
-      else if (e.button === 0 && ![...movementKeys].some((key) => keys.has(key))) {
-        e.preventDefault(); movePointerId = e.pointerId; pointerMove = { x: e.clientX, y: e.clientY };
-        try { canvas.setPointerCapture?.(e.pointerId); } catch (_) {}
-        sendInput();
-      }
-    });
-    canvas.addEventListener('pointermove', (e) => {
-      if (movePointerId !== e.pointerId || e.pointerType === 'touch' || room?.status !== 'playing') return;
-      if (!(e.buttons & 1)) { stopMouseSteering(); return; }
-      pointerMove = { x: e.clientX, y: e.clientY };
-    });
-    canvas.addEventListener('pointerup', () => stopMouseSteering());
-    canvas.addEventListener('pointercancel', () => stopMouseSteering());
-    canvas.addEventListener('lostpointercapture', (e) => { if (movePointerId === e.pointerId) stopMouseSteering(); });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     const joystick = $('sgJoystick');
     function moveJoystick(e) {
       const rect = joystick.getBoundingClientRect();
@@ -106,7 +90,10 @@
       touchVector = { x: x / max, y: y / max };
       $('sgJoystickKnob').style.transform = `translate(${x}px,${y}px)`;
     }
-    joystick.addEventListener('pointerdown', (e) => { e.preventDefault(); stopMouseSteering(false); joystickPointer = e.pointerId; joystick.setPointerCapture(e.pointerId); moveJoystick(e); sendInput(); });
+    joystick.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+      e.preventDefault(); joystickPointer = e.pointerId; joystick.setPointerCapture(e.pointerId); moveJoystick(e); sendInput();
+    });
     joystick.addEventListener('pointermove', (e) => { if (joystickPointer === e.pointerId) moveJoystick(e); });
     const releaseJoystick = () => { resetJoystick(); sendInput(); };
     joystick.addEventListener('pointerup', releaseJoystick);
@@ -118,10 +105,10 @@
     $('sgTouchBoost').addEventListener('pointercancel', releaseBoost);
     $('sgTouchBoost').addEventListener('lostpointercapture', releaseBoost);
     const releaseHeldPointer = (e) => {
-      if (movePointerId === e.pointerId) stopMouseSteering(false);
-      if (joystickPointer === e.pointerId) resetJoystick();
-      if (boostPointerId === e.pointerId) { boostTouch = false; boostPointerId = null; }
-      sendInput();
+      let released = false;
+      if (joystickPointer === e.pointerId) { resetJoystick(); released = true; }
+      if (boostPointerId === e.pointerId) { boostTouch = false; boostPointerId = null; released = true; }
+      if (released) sendInput();
     };
     addEventListener('pointerup', releaseHeldPointer);
     addEventListener('pointercancel', releaseHeldPointer);
@@ -129,18 +116,19 @@
     addEventListener('orientationchange', resize);
     window.visualViewport?.addEventListener('resize', resize);
     addEventListener('keydown', (e) => {
-      if (!active || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-      if (movementKeys.has(e.code)) stopMouseSteering(false);
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(e.code)) e.preventDefault();
-      if (e.code === 'Space' && !e.repeat) split();
-      if (e.code === 'KeyQ' && !e.repeat) eject();
-      if (e.code === 'KeyE' && !e.repeat) blast();
-      if (/^Digit[123]$/.test(e.code) && !e.repeat) chooseUpgrade(Number(e.code.slice(-1)) - 1);
-      if (e.code === 'Escape') { if (room?.status === 'playing') toast('点击右上角退出图标可返回大厅'); }
-      keys.add(e.code);
+      if (!active || isEditable(e.target)) return;
+      const code = keyboardCode(e);
+      if (!gameKeys.has(code)) return;
+      if (code !== 'Escape') e.preventDefault();
+      if (code === 'Space' && !e.repeat) split();
+      if (code === 'KeyQ' && !e.repeat) eject();
+      if (code === 'KeyE' && !e.repeat) blast();
+      if (/^Digit[123]$/.test(code) && !e.repeat) chooseUpgrade(Number(code.slice(-1)) - 1);
+      if (code === 'Escape') { if (room?.status === 'playing') toast('点击右上角退出图标可返回大厅'); }
+      keys.add(code);
       if (!e.repeat) sendInput();
     });
-    addEventListener('keyup', (e) => { keys.delete(e.code); if (active) sendInput(); });
+    addEventListener('keyup', (e) => { const code = keyboardCode(e); if (keys.delete(code) && active) sendInput(); });
     addEventListener('blur', () => resetHeldInputs());
     document.addEventListener('visibilitychange', () => { if (document.hidden) resetHeldInputs(); });
     resize();
@@ -150,17 +138,28 @@
     joystickPointer = null; touchVector = { x: 0, y: 0 };
     if ($('sgJoystickKnob')) $('sgJoystickKnob').style.transform = '';
   }
-  function stopMouseSteering(sendStop = true) {
-    const pointer = movePointerId;
-    movePointerId = null; pointerMove = null;
-    try { if (pointer !== null && canvas?.hasPointerCapture?.(pointer)) canvas.releasePointerCapture(pointer); } catch (_) {}
-    if (sendStop) sendInput();
-  }
   function resetHeldInputs(sendStop = true) {
     keys.clear(); boostTouch = false; boostPointerId = null;
-    stopMouseSteering(false); resetJoystick();
+    resetJoystick();
     inputPulse = false; splitPulse = false; ejectPulse = false;
     if (sendStop) sendInput();
+  }
+
+  function isEditable(target) { return Boolean(target?.isContentEditable || target?.closest?.('input, textarea, select')); }
+  function keyboardCode(event) {
+    if (gameKeys.has(event.code)) return event.code;
+    const key = event.key || '';
+    if (/^[wasdqe]$/i.test(key)) return `Key${key.toUpperCase()}`;
+    if (/^[123]$/.test(key)) return `Digit${key}`;
+    if (key === ' ' || key === 'Spacebar') return 'Space';
+    if (key === 'Shift') return event.location === 2 ? 'ShiftRight' : 'ShiftLeft';
+    if (['Up', 'Down', 'Left', 'Right'].includes(key)) return `Arrow${key}`;
+    return key;
+  }
+  function hasMovementKey() { for (const key of movementKeys) if (keys.has(key)) return true; return false; }
+  function focusGame() {
+    if (!active || root?.hidden) return;
+    try { canvas?.focus({ preventScroll: true }); } catch (_) { canvas?.focus(); }
   }
 
   function syncFullscreen() {
@@ -200,11 +199,12 @@
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastScore = 0; lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
     cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
-    inputSeq = 0; lastInputAck = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
+    inputSeq = 0; lastInputAck = 0; lastMovementSeq = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
     camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
     inputPulse = false; splitPulse = false; ejectPulse = false;
     $('sgUpgrades').hidden = true;
     root.hidden = false;
+    focusGame();
     bodyOverflowBefore = document.body.style.overflow; document.body.style.overflow = 'hidden';
     requestFullscreen();
     sound = window.StarAudio ? window.StarAudio.enabled : sound;
@@ -268,6 +268,7 @@
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
     reconnecting = true; retries += 1; resetHeldInputs(false);
+    predictedCells.clear(); inputHistory.length = 0;
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
@@ -335,6 +336,7 @@
     if (room.status !== previousStatus || room.round !== previousRound) {
       if (room.status === 'playing') {
         $('sgPanelBackdrop').hidden = true;
+        focusGame();
         if (previousStatus !== 'playing') { toast(room.mode === 'practice' ? '训练开始 · 吞噬星尘变大，空格分裂，E 引爆' : '全员就绪 · 大球吃小球，成长解锁强化！'); window.StarAudio?.play('start'); }
         $('sgBlast').disabled = false;
       }
@@ -474,6 +476,7 @@
     const input = getIntent(), view = getCamera(), seq = ++inputSeq;
     const at = performance.now();
     inputHistory.push({ seq, t: at, ...input });
+    if (Math.hypot(input.x, input.y) > 0) lastMovementSeq = seq;
     while (inputHistory.length > 60 || inputHistory[0]?.t < at - 2000) inputHistory.shift();
     send({ type: 'input', ...input, seq, viewport: { x: view.x, y: view.y, width: Math.min(3200, view.width), height: Math.min(2300, view.height) }, dustDeltas: true, supportsDustDelta: true, fire: inputPulse, split: splitPulse, eject: ejectPulse });
     inputPulse = false; splitPulse = false; ejectPulse = false;
@@ -494,11 +497,7 @@
   function getIntent() {
     let x = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
     let y = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
-    if (Math.hypot(touchVector.x, touchVector.y) > .1) { x = touchVector.x; y = touchVector.y; }
-    else if (!x && !y && movePointerId !== null && pointerMove) {
-      const me = getOwnCenter(), view = getCamera();
-      if (me) { const dx = (pointerMove.x - view.offsetX) / view.scale - me.x, dy = (pointerMove.y - view.offsetY) / view.scale - me.y, length = Math.hypot(dx, dy); if (length > 25 / view.scale) { x = dx / length; y = dy / length; } }
-    }
+    if (!hasMovementKey() && Math.hypot(touchVector.x, touchVector.y) > .1) { x = touchVector.x; y = touchVector.y; }
     const length = Math.hypot(x, y); if (length > 1) { x /= length; y /= length; }
     return { x, y, boost: keys.has('ShiftLeft') || keys.has('ShiftRight') || boostTouch };
   }
@@ -533,39 +532,74 @@
     return { x: latest.x + latest.vx * dt, y: latest.y + latest.vy * dt };
   }
 
+  function advanceOwnCell(state, cell, player, input, elapsed) {
+    const length = Math.hypot(input.x, input.y);
+    const directionX = length ? input.x / length : 0, directionY = length ? input.y / length : 0;
+    // The same directional rule as the server: released controls have no inertia,
+    // and a split launch cannot pull against a new direction or sideways.
+    const impulse = length ? Math.max(0, state.impulseX * directionX + state.impulseY * directionY) : 0;
+    const speed = (input.boost && player.energy > 1 && length ? 360 : 210) * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
+    const dt = Math.max(0, elapsed), decay = Math.exp(-5 * dt);
+    const impulseDistance = impulse * (1 - decay) / 5;
+    state.x = clamp(state.x + input.x * speed * dt + directionX * impulseDistance, cell.radius, WORLD.width - cell.radius);
+    state.y = clamp(state.y + input.y * speed * dt + directionY * impulseDistance, cell.radius, WORLD.height - cell.radius);
+    state.impulseX = directionX * impulse * decay; state.impulseY = directionY * impulse * decay;
+    return speed * length;
+  }
+
+  function replayOwnCell(cell, player, acknowledged, at) {
+    const state = { x: cell.x, y: cell.y, impulseX: cell.impulseX || 0, impulseY: cell.impulseY || 0 };
+    if (!acknowledged || !Number.isFinite(player.inputAge)) return state;
+    const pending = inputHistory.filter(input => input.seq > acknowledged.seq && input.t <= at);
+    // inputAge is time already simulated by the server for the acknowledged
+    // command. Replay only its remaining time, then every unacknowledged command.
+    // RTT estimates and previously corrected render positions never enter physics.
+    const remaining = Math.max(0, ((pending[0]?.t ?? at) - acknowledged.t) / 1000 - player.inputAge);
+    advanceOwnCell(state, cell, player, acknowledged, Math.min(2, remaining));
+    for (let i = 0; i < pending.length; i++) {
+      const duration = Math.max(0, ((pending[i + 1]?.t ?? at) - pending[i].t) / 1000);
+      advanceOwnCell(state, cell, player, pending[i], Math.min(2, duration));
+    }
+    return state;
+  }
+
   function ingestSnapshot(next, at) {
     if (next.arena?.width > 0) WORLD.width = next.arena.width;
     if (next.arena?.height > 0) WORLD.height = next.arena.height;
     const snapshotAt = Number.isFinite(next.serverTime) ? next.serverTime : (next.time || 0) * 1000;
     next._renderTime = snapshotAt;
     next._receivedAt = at;
+    const own = next.players.find((p) => p.id === myId);
+    const previousOwn = room?.players?.find((p) => p.id === myId);
+    const merged = own && previousOwn && own.cells.length < previousOwn.cells.length;
+    const acknowledged = inputHistory.find(input => input.seq === own?.lastInputSeq);
     const cellsPresent = new Set(), dustPresent = new Set();
     for (const player of next.players) {
       for (const cell of player.cells || []) {
         const key = `${player.id}:${cell.id}`; cellsPresent.add(key); addTrack(cellTracks, key, cell, snapshotAt);
         if (player.id !== myId) continue;
+        const model = replayOwnCell(cell, player, acknowledged, at);
         let predicted = predictedCells.get(cell.id);
-        if (!predicted || player.respawnIn > 0 || next.round !== room?.round) {
-          predicted = { x: cell.x, y: cell.y, correctionX: 0, correctionY: 0, impulseX: 0, impulseY: 0, history: [] };
+        const previousCell = previousOwn?.cells?.find(previous => previous.id === cell.id);
+        const relocated = previousCell && Math.hypot(cell.x - previousCell.x, cell.y - previousCell.y) > 350;
+        if (!predicted || player.respawnIn > 0 || next.round !== room?.round || merged || relocated) {
+          predicted = { x: model.x, y: model.y };
           predictedCells.set(cell.id, predicted);
-        } else {
-          // Compare the packet with our past simulation, preserving immediate current input.
-          const historyAt = at - clamp((rtt ?? 80) + 15, 12, 450);
-          const historical = sampleTrack(predicted.history, historyAt, 0) || predicted;
-          const dx = cell.x - historical.x, dy = cell.y - historical.y;
-          if (Math.hypot(dx, dy) > 350) { predicted.x = cell.x; predicted.y = cell.y; predicted.correctionX = predicted.correctionY = 0; predicted.history.length = 0; }
-          else if (Math.hypot(dx, dy) > 1.5) { predicted.correctionX = dx; predicted.correctionY = dy; }
         }
-        const speed = (player.boosting ? 360 : 210) * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
-        const velocity = Math.hypot(cell.vx || 0, cell.vy || 0);
-        if (velocity > speed * 1.3) { const f = Math.max(0, 1 - speed / velocity); predicted.impulseX = (cell.vx || 0) * f; predicted.impulseY = (cell.vy || 0) * f; }
+        // Keep the authoritative replay separate from its visible position.
+        // Replacing the model must not shove the rendered planet in an old direction.
+        predicted.model = model; predicted.modelAt = at;
+        predicted.stopConfirmed = Boolean(acknowledged && !acknowledged.x && !acknowledged.y);
       }
     }
     for (const key of cellTracks.keys()) if (!cellsPresent.has(key)) cellTracks.delete(key);
-    const own = next.players.find((p) => p.id === myId);
     const ownIds = new Set((own?.cells || []).map((c) => c.id));
     for (const id of predictedCells.keys()) if (!ownIds.has(id)) predictedCells.delete(id);
-    if (Number.isFinite(own?.lastInputSeq)) { lastInputAck = own.lastInputSeq; while (inputHistory.length && inputHistory[0].seq <= lastInputAck) inputHistory.shift(); }
+    if (Number.isFinite(own?.lastInputSeq)) {
+      lastInputAck = own.lastInputSeq;
+      // Retain the acknowledged command itself: its send time anchors replay.
+      while (inputHistory.length > 1 && inputHistory[0].seq < lastInputAck) inputHistory.shift();
+    }
     for (const dust of next.dust) { dustPresent.add(dust.id); addTrack(dustTracks, dust.id, dust, snapshotAt); }
     for (const id of dustTracks.keys()) if (!dustPresent.has(id)) dustTracks.delete(id);
     lastSnapshotAt = at;
@@ -574,22 +608,25 @@
   function predictOwn(dt, at) {
     const me = room?.players?.find((p) => p.id === myId);
     if (!me || room.status !== 'playing' || me.respawnIn > 0 || reconnecting || at - lastSnapshotAt > 650) return;
-    const input = getIntent(), center = getOwnCenter(), moving = Math.hypot(input.x, input.y) > .01;
-    if (!center) return;
-    const targetX = center.x + input.x * 260, targetY = center.y + input.y * 260;
+    const input = getIntent(), length = Math.hypot(input.x, input.y);
     for (const cell of me.cells || []) {
-      const p = predictedCells.get(cell.id); if (!p) continue;
-      const dx = targetX - p.x, dy = targetY - p.y, length = Math.hypot(dx, dy) || 1;
-      const speed = (input.boost && me.energy > 1 && moving ? 360 : 210) * (me.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
-      // Released controls stop steering; split and impact impulses still decay naturally.
-      const approach = moving ? Math.min(1, length / 50) : 0;
-      const correction = 1 - Math.exp(-dt * 9);
-      p.x = clamp(p.x + (dx / length * speed * approach + p.impulseX) * dt + p.correctionX * correction, cell.radius, WORLD.width - cell.radius);
-      p.y = clamp(p.y + (dy / length * speed * approach + p.impulseY) * dt + p.correctionY * correction, cell.radius, WORLD.height - cell.radius);
-      p.correctionX *= 1 - correction; p.correctionY *= 1 - correction;
-      p.impulseX *= Math.exp(-5 * dt); p.impulseY *= Math.exp(-5 * dt);
-      p.history.push({ t: at, x: p.x, y: p.y, vx: 0, vy: 0 });
-      while (p.history.length > 2 && p.history[0].t < at - 800) p.history.shift();
+      const p = predictedCells.get(cell.id); if (!p?.model) continue;
+      const visible = { x: p.x, y: p.y, impulseX: p.model.impulseX, impulseY: p.model.impulseY };
+      const speed = advanceOwnCell(visible, cell, me, input, dt);
+      advanceOwnCell(p.model, cell, me, input, clamp((at - p.modelAt) / 1000, 0, .1));
+      p.modelAt = at;
+      if (length) {
+        const ux = input.x / length, uy = input.y / length;
+        const forwardError = (p.model.x - visible.x) * ux + (p.model.y - visible.y) * uy;
+        // Visual smoothing can adjust speed slightly, never reverse the key or
+        // introduce lateral movement. It never feeds back into the replay model.
+        const adjustment = clamp(forwardError * (1 - Math.exp(-dt * 9)), -speed * dt * .25, speed * dt * .25);
+        p.x = clamp(visible.x + ux * adjustment, cell.radius, WORLD.width - cell.radius);
+        p.y = clamp(visible.y + uy * adjustment, cell.radius, WORLD.height - cell.radius);
+      } else if (p.stopConfirmed && lastInputAck > lastMovementSeq) {
+        // Wait for the actual stop acknowledgement, align once, then stay still.
+        p.x = p.model.x; p.y = p.model.y;
+      }
     }
   }
 
