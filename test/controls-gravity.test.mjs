@@ -18,20 +18,26 @@ function dustAt(fixture, distance, extra = {}) {
   return dust;
 }
 
-test('releasing movement stops a planet and dust gravity never moves its owner', () => {
+test('releasing movement coasts with damping while gravity never accelerates its owner', () => {
   const f = fixture();
   setPlayerInput(f.arena, f.player.id, { x: 1, y: 0 });
   stepArena(f.arena, 0.1);
   const releasedX = f.cell.x;
+  const releasedSpeed = f.cell.vx;
   assert.ok(releasedX > 1000);
   setPlayerInput(f.arena, f.player.id, { x: 0, y: 0 });
   dustAt(f, 90);
   for (let tick = 0; tick < 60; tick++) stepArena(f.arena, 1 / 30);
-  assert.equal(f.cell.x, releasedX);
+  assert.ok(f.cell.x > releasedX);
   assert.equal(f.cell.y, 1000);
-  assert.equal(f.cell.vx, 0);
+  assert.ok(f.cell.vx > 0 && f.cell.vx < releasedSpeed);
   assert.equal(f.cell.vy, 0);
   assert.ok(f.player.mass > 36, 'nearby dust should still be attracted and absorbed while idle');
+  for (let tick = 0; tick < 120; tick++) stepArena(f.arena, 1 / 30);
+  assert.equal(f.cell.vx, 0);
+  const stoppedX = f.cell.x;
+  stepArena(f.arena, 0.1);
+  assert.equal(f.cell.x, stoppedX);
 });
 
 test('separated cells do not automatically steer toward their centroid without input', () => {
@@ -47,7 +53,7 @@ test('separated cells do not automatically steer toward their centroid without i
   assert.ok(f.player.cells.every(cell => cell.vx === 0 && cell.vy === 0));
 });
 
-test('release cancels controlled-cell split impulse immediately without idle drift', () => {
+test('split launch becomes persistent velocity that coasts and eventually settles', () => {
   const f = fixture(100);
   setPlayerInput(f.arena, f.player.id, { x: 1, split: true });
   stepArena(f.arena, 0.01);
@@ -56,9 +62,9 @@ test('release cancels controlled-cell split impulse immediately without idle dri
   setPlayerInput(f.arena, f.player.id, {});
   const initialX = launched.x;
   stepArena(f.arena, 0.1);
-  assert.equal(launched.x, initialX, 'controlled cells should stop even after a split launch');
-  for (let tick = 0; tick < 90; tick++) stepArena(f.arena, 1 / 30);
-  assert.ok(f.player.cells.every(cell => cell.impulseX === 0 && cell.impulseY === 0));
+  assert.ok(launched.x > initialX, 'the split launch retains deliberate inertia after release');
+  for (let tick = 0; tick < 150; tick++) stepArena(f.arena, 1 / 30);
+  assert.ok(f.player.cells.every(cell => cell.vx === 0 && cell.vy === 0));
   const settled = f.player.cells.map(cell => ({ x: cell.x, y: cell.y }));
   for (let tick = 0; tick < 15; tick++) stepArena(f.arena, 1 / 30);
   assert.deepEqual(f.player.cells.map(cell => ({ x: cell.x, y: cell.y })), settled);

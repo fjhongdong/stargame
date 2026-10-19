@@ -30,6 +30,8 @@
   const cellTracks = new Map(), dustTracks = new Map(), predictedCells = new Map(), inputHistory = [], domCache = new Map();
   const planetSprites = new Map(), dustSprites = new Map();
   const materializedDust = new Map();
+  const remoteContactPositions = new Map();
+  let remoteContactFrame = -1;
   const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
   const gameKeys = new Set([...movementKeys, 'Space', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
   const stars = Array.from({ length: 240 }, (_, i) => ({
@@ -58,8 +60,8 @@
       <canvas id="gameCanvas" aria-label="星球大爆炸实时竞技场"></canvas>
       <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
-      <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">吞噬星尘 · 大球吃小球</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
-      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">WASD / 方向键</span><span>按住移动 · 松开即停</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>引力爆破</span><kbd>E</kbd></button></div></div>
+      <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
+      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>引力爆破</span><kbd>E</kbd></button></div></div>
       <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
       <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><button class="sg-touch-boost" id="sgTouchBoost" aria-label="按住加速">加速</button><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button><button id="sgTouchEject">吐球</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
@@ -322,6 +324,20 @@
     room.dust ||= []; room.blasts ||= [];
     const me = room.players.find((p) => p.id === myId);
     if (me?.shatteredAt > lastShatteredAt) { lastShatteredAt = me.shatteredAt; toast('撞击碎裂！守住核心，抢回碎片'); }
+    if (old?.status === 'playing' && old.round === room.round) {
+      for (const player of room.players) {
+        const previous = old.players.find((p) => p.id === player.id);
+        if (previous && player.shatteredAt >= 0 && player.shatteredAt > previous.shatteredAt) {
+          const color = safeColor(player.color), radius = Math.max(12, previous.radius || player.radius || 24);
+          particles.push({ kind: 'impact', x: player.x, y: player.y, radius, life: .42, duration: .42, color });
+          for (let i = 0; i < 9; i++) {
+            const angle = i * Math.PI * 2 / 9 + player.shatteredAt * 2.3, speed = 65 + i % 3 * 28;
+            particles.push({ kind: 'chip', x: player.x + Math.cos(angle) * radius * .55, y: player.y + Math.sin(angle) * radius * .55, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, rotation: angle, size: 2 + i % 3, life: .55, duration: .55, color });
+          }
+        }
+      }
+      if (particles.length > 180) particles.splice(0, particles.length - 180);
+    }
     if (me && old?.status === 'playing' && me.score > lastScore) {
       particles.push({ kind: 'score', x: me.x, y: me.y - 40, text: `+${me.score - lastScore}`, life: 1, color: '#b9f6ca' });
     }
@@ -337,7 +353,7 @@
       if (room.status === 'playing') {
         $('sgPanelBackdrop').hidden = true;
         focusGame();
-        if (previousStatus !== 'playing') { toast(room.mode === 'practice' ? '训练开始 · 吞噬星尘变大，空格分裂，E 引爆' : '全员就绪 · 大球吃小球，成长解锁强化！'); window.StarAudio?.play('start'); }
+        if (previousStatus !== 'playing') { toast(room.mode === 'practice' ? '训练开始 · 引力吸收碎片，碰撞碎裂，松键滑行' : '全员就绪 · 引力吸收，碰撞碎裂，成长解锁强化！'); window.StarAudio?.play('start'); }
         $('sgBlast').disabled = false;
       }
       previousStatus = room.status; previousRound = room.round;
@@ -533,22 +549,27 @@
   }
 
   function advanceOwnCell(state, cell, player, input, elapsed) {
-    const length = Math.hypot(input.x, input.y);
-    const directionX = length ? input.x / length : 0, directionY = length ? input.y / length : 0;
-    // The same directional rule as the server: released controls have no inertia,
-    // and a split launch cannot pull against a new direction or sideways.
-    const impulse = length ? Math.max(0, state.impulseX * directionX + state.impulseY * directionY) : 0;
-    const speed = (input.boost && player.energy > 1 && length ? 360 : 210) * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
-    const dt = Math.max(0, elapsed), decay = Math.exp(-5 * dt);
-    const impulseDistance = impulse * (1 - decay) / 5;
-    state.x = clamp(state.x + input.x * speed * dt + directionX * impulseDistance, cell.radius, WORLD.width - cell.radius);
-    state.y = clamp(state.y + input.y * speed * dt + directionY * impulseDistance, cell.radius, WORLD.height - cell.radius);
-    state.impulseX = directionX * impulse * decay; state.impulseY = directionY * impulse * decay;
-    return speed * length;
+    const moving = Math.hypot(input.x, input.y) > 0;
+    const speed = (input.boost && player.energy > 1 && moving ? 360 : 210) * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
+    const rate = moving ? 6 : 2, dt = Math.max(0, elapsed), decay = Math.exp(-rate * dt);
+    const targetX = input.x * speed, targetY = input.y * speed;
+    const initialX = state.vx || 0, initialY = state.vy || 0;
+    // Exact integration matches the server across different render/tick rates.
+    // Keys provide thrust; released controls coast with drag rather than snap.
+    state.x += targetX * dt + (initialX - targetX) * (1 - decay) / rate;
+    state.y += targetY * dt + (initialY - targetY) * (1 - decay) / rate;
+    state.vx = targetX + (initialX - targetX) * decay;
+    state.vy = targetY + (initialY - targetY) * decay;
+    if (!moving && Math.hypot(state.vx, state.vy) < .5) state.vx = state.vy = 0;
+    if (state.x < cell.radius) { state.x = cell.radius; if (state.vx < 0) state.vx *= -.2; }
+    if (state.x > WORLD.width - cell.radius) { state.x = WORLD.width - cell.radius; if (state.vx > 0) state.vx *= -.2; }
+    if (state.y < cell.radius) { state.y = cell.radius; if (state.vy < 0) state.vy *= -.2; }
+    if (state.y > WORLD.height - cell.radius) { state.y = WORLD.height - cell.radius; if (state.vy > 0) state.vy *= -.2; }
+    return Math.hypot(state.vx, state.vy);
   }
 
   function replayOwnCell(cell, player, acknowledged, at) {
-    const state = { x: cell.x, y: cell.y, impulseX: cell.impulseX || 0, impulseY: cell.impulseY || 0 };
+    const state = { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 };
     if (!acknowledged || !Number.isFinite(player.inputAge)) return state;
     const pending = inputHistory.filter(input => input.seq > acknowledged.seq && input.t <= at);
     // inputAge is time already simulated by the server for the acknowledged
@@ -572,6 +593,7 @@
     const own = next.players.find((p) => p.id === myId);
     const previousOwn = room?.players?.find((p) => p.id === myId);
     const merged = own && previousOwn && own.cells.length < previousOwn.cells.length;
+    const collided = previousOwn && Number.isFinite(own?.collisionRevision) && own.collisionRevision !== previousOwn.collisionRevision;
     const acknowledged = inputHistory.find(input => input.seq === own?.lastInputSeq);
     const cellsPresent = new Set(), dustPresent = new Set();
     for (const player of next.players) {
@@ -582,8 +604,8 @@
         let predicted = predictedCells.get(cell.id);
         const previousCell = previousOwn?.cells?.find(previous => previous.id === cell.id);
         const relocated = previousCell && Math.hypot(cell.x - previousCell.x, cell.y - previousCell.y) > 350;
-        if (!predicted || player.respawnIn > 0 || next.round !== room?.round || merged || relocated) {
-          predicted = { x: model.x, y: model.y };
+        if (!predicted || player.respawnIn > 0 || next.round !== room?.round || merged || relocated || collided) {
+          predicted = { x: model.x, y: model.y, vx: model.vx, vy: model.vy };
           predictedCells.set(cell.id, predicted);
         }
         // Keep the authoritative replay separate from its visible position.
@@ -608,26 +630,112 @@
   function predictOwn(dt, at) {
     const me = room?.players?.find((p) => p.id === myId);
     if (!me || room.status !== 'playing' || me.respawnIn > 0 || reconnecting || at - lastSnapshotAt > 650) return;
-    const input = getIntent(), length = Math.hypot(input.x, input.y);
+    const input = getIntent();
     for (const cell of me.cells || []) {
       const p = predictedCells.get(cell.id); if (!p?.model) continue;
-      const visible = { x: p.x, y: p.y, impulseX: p.model.impulseX, impulseY: p.model.impulseY };
-      const speed = advanceOwnCell(visible, cell, me, input, dt);
+      p._frameX = p.x; p._frameY = p.y;
+      const speed = advanceOwnCell(p, cell, me, input, dt);
       advanceOwnCell(p.model, cell, me, input, clamp((at - p.modelAt) / 1000, 0, .1));
       p.modelAt = at;
-      if (length) {
-        const ux = input.x / length, uy = input.y / length;
-        const forwardError = (p.model.x - visible.x) * ux + (p.model.y - visible.y) * uy;
-        // Visual smoothing can adjust speed slightly, never reverse the key or
-        // introduce lateral movement. It never feeds back into the replay model.
-        const adjustment = clamp(forwardError * (1 - Math.exp(-dt * 9)), -speed * dt * .25, speed * dt * .25);
-        p.x = clamp(visible.x + ux * adjustment, cell.radius, WORLD.width - cell.radius);
-        p.y = clamp(visible.y + uy * adjustment, cell.radius, WORLD.height - cell.radius);
-      } else if (p.stopConfirmed && lastInputAck > lastMovementSeq) {
-        // Wait for the actual stop acknowledgement, align once, then stay still.
-        p.x = p.model.x; p.y = p.model.y;
+      if (speed >= .5) {
+        const ux = p.vx / speed, uy = p.vy / speed;
+        const forwardError = (p.model.x - p.x) * ux + (p.model.y - p.y) * uy;
+        // Reconciliation follows physical momentum, including braking/coasting.
+        // A stale packet can only slightly adjust speed, never create a new thrust.
+        const adjustment = Math.abs(forwardError) > 1.5 ? clamp(forwardError * (1 - Math.exp(-dt * 9)), -speed * dt * .25, speed * dt * .25) : 0;
+        p.x = clamp(p.x + ux * adjustment, cell.radius, WORLD.width - cell.radius);
+        p.y = clamp(p.y + uy * adjustment, cell.radius, WORLD.height - cell.radius);
+      } else if (p.stopConfirmed && lastInputAck > lastMovementSeq && Math.hypot(p.model.vx, p.model.vy) < .5) {
+        p.x = p.model.x; p.y = p.model.y; p.vx = p.vy = 0;
       }
     }
+    collidePredictedBodies(at, dt);
+  }
+
+  function collidePredictedBodies(at, dt) {
+    const contacted = new Set();
+    remoteContactPositions.clear(); remoteContactFrame = at;
+    if (room?.status !== 'playing') return contacted;
+    const ownPlayer = room.players.find((player) => player.id === myId);
+    if (!ownPlayer || ownPlayer.respawnIn > 0) return contacted;
+    const sampleAt = room._renderTime + Math.max(0, at - room._receivedAt) - 100;
+    const ownBodies = [], otherBodies = [];
+    for (const player of room.players) {
+      if (player.respawnIn > 0) continue;
+      for (const cell of player.cells || []) {
+        const key = `${player.id}:${cell.id}`;
+        if (player.id === myId) {
+          const position = predictedCells.get(cell.id); if (!position) continue;
+          if (!Number.isFinite(position.vx)) position.vx = 0;
+          if (!Number.isFinite(position.vy)) position.vy = 0;
+          ownBodies.push({ cell, position, own: true, previousX: position._frameX ?? position.x, previousY: position._frameY ?? position.y });
+        } else {
+          const track = cellTracks.get(key), current = sampleTrack(track, sampleAt) || cell;
+          const previous = sampleTrack(track, sampleAt - dt * 1000) || current;
+          const position = { x: current.x, y: current.y, vx: dt > 0 ? (current.x - previous.x) / dt : cell.vx || 0, vy: dt > 0 ? (current.y - previous.y) / dt : cell.vy || 0 };
+          remoteContactPositions.set(key, position);
+          otherBodies.push({ cell, position, own: false, previousX: previous.x, previousY: previous.y });
+        }
+      }
+    }
+    function moveWithinBounds(body, dx, dy) {
+      const p = body.position, r = body.cell.radius;
+      p.x = clamp(p.x + dx, r, WORLD.width - r); p.y = clamp(p.y + dy, r, WORLD.height - r);
+    }
+    function separate(a, b, nx, ny, depth) {
+      const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass), total = inverseA + inverseB;
+      const ax = a.position.x, ay = a.position.y, bx = b.position.x, by = b.position.y;
+      moveWithinBounds(a, nx * depth * inverseA / total, ny * depth * inverseA / total);
+      moveWithinBounds(b, -nx * depth * inverseB / total, -ny * depth * inverseB / total);
+      // Transfer any blocked correction to the other body at a world boundary.
+      let remaining = depth - ((a.position.x - ax - b.position.x + bx) * nx + (a.position.y - ay - b.position.y + by) * ny);
+      if (remaining > .001) {
+        const x = a.position.x, y = a.position.y;
+        moveWithinBounds(a, nx * remaining, ny * remaining);
+        remaining -= (a.position.x - x) * nx + (a.position.y - y) * ny;
+        if (remaining > .001) moveWithinBounds(b, -nx * remaining, -ny * remaining);
+      }
+    }
+    function collide(a, b, swept) {
+      const pa = a.position, pb = b.position, radius = a.cell.radius + b.cell.radius;
+      let dx = pa.x - pb.x, dy = pa.y - pb.y, distance = Math.hypot(dx, dy);
+      let nx = distance > .00001 ? dx / distance : 1, ny = distance > .00001 ? dy / distance : 0, hit = distance <= radius + .02;
+      if (swept) {
+        const sx = a.previousX - b.previousX, sy = a.previousY - b.previousY;
+        const vx = dx - sx, vy = dy - sy, aa = vx * vx + vy * vy, bb = 2 * (sx * vx + sy * vy), cc = sx * sx + sy * sy - radius * radius;
+        const discriminant = bb * bb - 4 * aa * cc;
+        if (aa > .000001 && cc >= -.05 && discriminant >= 0) {
+          const impact = (-bb - Math.sqrt(discriminant)) / (2 * aa);
+          if (impact >= -.00001 && impact <= 1) {
+            const ix = sx + vx * clamp(impact, 0, 1), iy = sy + vy * clamp(impact, 0, 1), length = Math.hypot(ix, iy) || 1;
+            if (vx * ix + vy * iy < 0) {
+              nx = ix / length; ny = iy / length; hit = true;
+              const depth = radius + .02 - (dx * nx + dy * ny);
+              if (depth > 0) separate(a, b, nx, ny, depth);
+              dx = pa.x - pb.x; dy = pa.y - pb.y; distance = Math.hypot(dx, dy);
+            }
+          }
+        }
+      }
+      if (!hit) return;
+      if (distance < radius) separate(a, b, nx, ny, radius - distance + .02);
+      const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass);
+      const normalVelocity = (pa.vx - pb.vx) * nx + (pa.vy - pb.vy) * ny;
+      if (normalVelocity < 0) {
+        const impulse = -1.2 * normalVelocity / (inverseA + inverseB);
+        pa.vx += impulse * inverseA * nx; pa.vy += impulse * inverseA * ny;
+        pb.vx -= impulse * inverseB * nx; pb.vy -= impulse * inverseB * ny;
+      }
+      if (a.own) contacted.add(a.cell.id);
+      if (b.own) contacted.add(b.cell.id);
+    }
+    for (let iteration = 0; iteration < 4; iteration++) {
+      for (const own of ownBodies) for (const other of otherBodies) collide(own, other, iteration === 0);
+      for (let i = 0; i < ownBodies.length; i++) for (let j = i + 1; j < ownBodies.length; j++) {
+        if (ownBodies[i].cell.mergeIn > 0 || ownBodies[j].cell.mergeIn > 0) collide(ownBodies[i], ownBodies[j], iteration === 0);
+      }
+    }
+    return contacted;
   }
 
   function updateCamera(dt) {
@@ -682,17 +790,32 @@
         let primary = cells[0]; for (const c of cells) if (!primary || c.mass > primary.mass) primary = c;
         for (const cell of cells) {
           const own = player.id === myId;
-          const position = own ? predictedCells.get(cell.id) || cell : sampleTrack(cellTracks.get(`${player.id}:${cell.id}`), sampleAt) || cell;
+          const position = own ? predictedCells.get(cell.id) || cell : (remoteContactFrame === time ? remoteContactPositions.get(`${player.id}:${cell.id}`) : null) || sampleTrack(cellTracks.get(`${player.id}:${cell.id}`), sampleAt) || cell;
           if (own && cell.gravityRadius && visible(position.x, position.y, cell.gravityRadius, view)) drawGravity(position.x, position.y, cell.gravityRadius, player.color, time, primary === cell);
           if (!visible(position.x, position.y, cell.radius * 2.3 + 35, view)) continue;
           drawPlanet(player, cell, position, time, primary === cell); renderedCells++;
         }
       }
       for (let i = particles.length - 1; i >= 0; i--) {
-        const p = particles[i]; p.life -= dt; p.y -= dt * 23;
+        const p = particles[i]; p.life -= dt;
         if (p.life <= 0) { particles.splice(i, 1); continue; }
-        if (!visible(p.x, p.y, 30, view)) continue;
-        ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.font = '600 13px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.fillText(p.text, p.x, p.y); ctx.globalAlpha = 1;
+        if (p.kind === 'chip') {
+          p.x += p.vx * dt; p.y += p.vy * dt; p.rotation += dt * 2;
+          p.vx *= Math.exp(-dt * 3); p.vy *= Math.exp(-dt * 3);
+          if (!visible(p.x, p.y, 10, view)) continue;
+          ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rotation); ctx.globalAlpha = p.life / p.duration * .8; ctx.fillStyle = p.color;
+          ctx.beginPath(); ctx.moveTo(-p.size, -p.size * .35); ctx.lineTo(p.size * .7, -p.size); ctx.lineTo(p.size, p.size * .6); ctx.closePath(); ctx.fill(); ctx.restore();
+        } else if (p.kind === 'impact') {
+          const progress = 1 - p.life / p.duration, radius = p.radius + progress * 30;
+          if (!visible(p.x, p.y, radius, view)) continue;
+          ctx.save(); ctx.globalAlpha = (1 - progress) * .8; ctx.strokeStyle = p.color; ctx.lineWidth = 1.6 - progress;
+          ctx.beginPath(); ctx.arc(p.x, p.y, radius, 0, Math.PI * 2); ctx.stroke();
+          ctx.globalAlpha *= .45; ctx.lineWidth = .8; ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(1, radius - 5), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+        } else {
+          p.y -= dt * 23;
+          if (!visible(p.x, p.y, 30, view)) continue;
+          ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.font = '600 13px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.fillText(p.text, p.x, p.y); ctx.globalAlpha = 1;
+        }
       }
     } else {
       drawPlanet({ id: 'dec1', color: palette[0], hp: 100 }, { radius: 43, mass: 80 }, { x: view.x - 330, y: view.y - 90 }, time, false, true);
@@ -735,9 +858,9 @@
   function cachedPlanet(color, radius) {
     const r = clamp(Math.round(radius / 6) * 6, 12, 54), key = `${color}:${r}`;
     if (planetSprites.has(key)) return planetSprites.get(key);
-    const sprite = makeSprite(r * 4.3 + 8), c = sprite.c, p = sprite.center;
+    const sprite = makeSprite(r * 2.6 + 8), c = sprite.c, p = sprite.center;
     c.translate(p, p);
-    const halo = c.createRadialGradient(0, 0, r * .7, 0, 0, r * 2.1); halo.addColorStop(0, `${color}24`); halo.addColorStop(1, `${color}00`); c.fillStyle = halo; c.beginPath(); c.arc(0, 0, r * 2.1, 0, Math.PI * 2); c.fill();
+    const halo = c.createRadialGradient(0, 0, r * .95, 0, 0, r * 1.25); halo.addColorStop(0, `${color}16`); halo.addColorStop(1, `${color}00`); c.fillStyle = halo; c.beginPath(); c.arc(0, 0, r * 1.25, 0, Math.PI * 2); c.fill();
     c.save(); c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.clip();
     const surface = c.createRadialGradient(-r * .4, -r * .45, 1, r * .23, r * .25, r * 1.6);
     surface.addColorStop(0, '#f4f6ff'); surface.addColorStop(.14, color); surface.addColorStop(.56, color); surface.addColorStop(.84, '#30394a'); surface.addColorStop(1, '#0b1320'); c.fillStyle = surface; c.fillRect(-r, -r, r * 2, r * 2);
@@ -745,7 +868,6 @@
     for (let i = 0; i < 4; i++) { const y = -r * .7 + i * r * .43; c.beginPath(); c.ellipse(-r * .1, y, r * 1.05, r * .18, .08, 0, Math.PI * 2); c.stroke(); }
     for (const [x, y, rr] of [[-.42, -.16, .23], [.24, .34, .19], [.35, -.52, .12]]) { c.fillStyle = '#18203938'; c.beginPath(); c.ellipse(x * r, y * r, rr * r, rr * r * .7, .4, 0, Math.PI * 2); c.fill(); c.strokeStyle = '#f4edff40'; c.lineWidth = .7; c.stroke(); }
     c.restore(); c.strokeStyle = `${color}b0`; c.lineWidth = .8; c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.stroke();
-    c.save(); c.rotate(-.45); c.strokeStyle = `${color}55`; c.lineWidth = 1; c.beginPath(); c.ellipse(0, 0, r * 1.6, r * .4, 0, 0, Math.PI); c.stroke(); c.restore();
     sprite.radius = r; planetSprites.set(key, sprite); if (planetSprites.size > 64) planetSprites.delete(planetSprites.keys().next().value); return sprite;
   }
 
@@ -784,7 +906,8 @@
     else if (player.invulnerable > 0) ctx.globalAlpha = .75 + Math.sin(time * .015) * .2;
     if (player.boosting) { const velocity = Math.hypot(player.vx || 0, player.vy || 0); if (velocity > 0) { ctx.strokeStyle = `${color}33`; ctx.lineWidth = radius * .8; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(position.x, position.y); ctx.lineTo(position.x - player.vx / velocity * radius * 2.2, position.y - player.vy / velocity * radius * 2.2); ctx.stroke(); } }
     ctx.drawImage(sprite.canvas, position.x - sprite.center * scale, position.y - sprite.center * scale, sprite.canvas.width * scale, sprite.canvas.height * scale);
-    if (me && !decoration) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(position.x, position.y, radius + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(player.hp / (player.stats?.maxHp || 100), 0, 1)); ctx.stroke(); }
+    ctx.strokeStyle = `${color}dd`; ctx.lineWidth = .95 / Math.max(.3, camera.scale); ctx.beginPath(); ctx.arc(position.x, position.y, radius, 0, Math.PI * 2); ctx.stroke();
+    if (me && !decoration) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(position.x, position.y, Math.max(2, radius - 3), -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(player.hp / (player.stats?.maxHp || 100), 0, 1)); ctx.stroke(); }
     if (cell.protected || cell.protectedFor > 0) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.arc(position.x, position.y, radius + 11 + Math.sin(time * .008) * 2, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
     if (!decoration && radius > 15) { ctx.font = `600 ${clamp(radius * .43, 10, 20)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.fillStyle = '#eff4ffb0'; ctx.fillText(Math.floor(cell.mass || player.mass || 0), position.x, position.y + radius * .15); }
     if (!decoration && primary) { ctx.font = `${me ? '600' : '400'} 11px sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = me ? '#edf8f3' : '#a5b5c7'; ctx.fillText(`${player.name}${me ? ' · 你' : player.connected === false ? ' · 重连中' : ''}`, position.x, position.y + radius + 26); if (me) { ctx.fillStyle = '#b9f6ca'; ctx.beginPath(); ctx.moveTo(position.x - 3, position.y - radius - 18); ctx.lineTo(position.x + 3, position.y - radius - 18); ctx.lineTo(position.x, position.y - radius - 13); ctx.fill(); } }

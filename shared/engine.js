@@ -3,6 +3,7 @@ export const ARENA = Object.freeze({ width: 12000, height: 8000 });
 export const ROUND_DURATION = 180;
 export const COLORS = ['#5eefa8', '#d4b5ff', '#ffbd68', '#83d9ff', '#ff8eaf', '#9da8ff', '#ffe787', '#70f0e4'];
 export const BLAST_COST = 30;
+export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, restitution: 0.2 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];
 export const UPGRADE_POOL = [
   { id: 'speed', title: '光速引擎', description: '移动速度提升 10%', icon: '⚡' },
@@ -103,7 +104,7 @@ export function skinColor(skin, fallback = 0) {
 export function createArena({ random = Math.random } = {}) {
   return { status: 'lobby', time: 0, remaining: ROUND_DURATION, round: 0, winnerId: null,
     players: new Map(), dust: [], blasts: [], serial: 0, random,
-    dustGrid: null, activeDust: new Set(), naturalDustCount: 0 };
+    dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set() };
 }
 
 function spawnPosition(arena) {
@@ -124,7 +125,7 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], hp: 100, energy: 60,
     score: 0, kills: 0, boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
     input: normalizeInput(), fireQueued: false, splitQueued: false, ejectQueued: false, shatteredAt: -10,
-    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, direction: { x: 1, y: 0 } };
+    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
   resetProgress(player);
   arena.players.set(id, player);
@@ -154,6 +155,8 @@ function syncPlayer(player) {
     player.x = player.cells.reduce((sum, cell) => sum + cell.x * cell.mass, 0) / player.mass;
     player.y = player.cells.reduce((sum, cell) => sum + cell.y * cell.mass, 0) / player.mass;
     player.radius = Math.max(...player.cells.map(cell => cell.radius));
+    player.vx = player.cells.reduce((sum, cell) => sum + finite(cell.vx) * cell.mass, 0) / player.mass;
+    player.vy = player.cells.reduce((sum, cell) => sum + finite(cell.vy) * cell.mass, 0) / player.mass;
   }
 }
 
@@ -271,10 +274,11 @@ export function startRound(arena) {
   arena.naturalDustCount = 0;
   arena.activeDust = new Set();
   arena.blasts = [];
+  arena.bodyContacts = new Set();
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, hp: 100, energy: 60, score: 0, kills: 0,
       boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
-      ejectQueued: false, shatteredAt: -10, pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
+      ejectQueued: false, shatteredAt: -10, collisionRevision: 0, pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
     syncPlayer(player);
     resetProgress(player);
@@ -342,7 +346,7 @@ function splitPlayer(arena, player) {
     // halves makes collision separation push the parent against its input.
     const separation = cell.radius * 2 + 2;
     const child = newCell(arena, cell.x + x * separation, cell.y + y * separation, cell.mass,
-      { mergeIn: 12, impulseX: x * 650, impulseY: y * 650 });
+      { mergeIn: 12, vx: cell.vx + x * 650, vy: cell.vy + y * 650 });
     player.cells.push(child);
   }
 }
@@ -359,11 +363,28 @@ function ejectMass(arena, player) {
   }
 }
 
+/** Exact integration of acceleration toward a target velocity, in world units. */
+export function integrateMotion(cell, input, speed, dt) {
+  const moving = Math.hypot(input.x, input.y) > 0;
+  const rate = moving ? MOTION.response : MOTION.drag;
+  const targetX = input.x * speed, targetY = input.y * speed;
+  const decay = Math.exp(-rate * dt);
+  const initialX = finite(cell.vx), initialY = finite(cell.vy);
+  cell.x += targetX * dt + (initialX - targetX) * (1 - decay) / rate;
+  cell.y += targetY * dt + (initialY - targetY) * (1 - decay) / rate;
+  cell.vx = targetX + (initialX - targetX) * decay;
+  cell.vy = targetY + (initialY - targetY) * decay;
+  if (!moving && Math.hypot(cell.vx, cell.vy) < MOTION.stopSpeed) cell.vx = cell.vy = 0;
+}
+
+function confineCell(cell) {
+  if (cell.x < cell.radius) { cell.x = cell.radius; if (cell.vx < 0) cell.vx *= -MOTION.restitution; }
+  if (cell.x > ARENA.width - cell.radius) { cell.x = ARENA.width - cell.radius; if (cell.vx > 0) cell.vx *= -MOTION.restitution; }
+  if (cell.y < cell.radius) { cell.y = cell.radius; if (cell.vy < 0) cell.vy *= -MOTION.restitution; }
+  if (cell.y > ARENA.height - cell.radius) { cell.y = ARENA.height - cell.radius; if (cell.vy > 0) cell.vy *= -MOTION.restitution; }
+}
+
 function moveCells(player, input, dt) {
-  const intentLength = Math.hypot(input.x, input.y);
-  const moving = intentLength > 0;
-  const directionX = moving ? input.x / intentLength : 0;
-  const directionY = moving ? input.y / intentLength : 0;
   for (const cell of player.cells) {
     cell._stepX = cell.x;
     cell._stepY = cell.y;
@@ -371,20 +392,11 @@ function moveCells(player, input, dt) {
     cell.protectedFor = Math.max(0, cell.protectedFor - dt);
     cell.shatterCooldown = Math.max(0, cell.shatterCooldown - dt);
     const speed = (player.boosting ? 360 : 210) * player.stats.speed * Math.pow(START_MASS / cell.mass, 0.18);
-    if (moving) {
-      // Directional controls take priority over old split/impact momentum.
-      // Preserve forward launch speed, without sideways drift or reversal.
-      const forwardImpulse = Math.max(0, cell.impulseX * directionX + cell.impulseY * directionY);
-      cell.impulseX = directionX * forwardImpulse;
-      cell.impulseY = directionY * forwardImpulse;
-    } else cell.impulseX = cell.impulseY = 0;
-    // Apply the same direction to every controlled cell. A centroid target can
-    // sit behind a distant cell and make it move opposite to the pressed key.
-    cell.x = clamp(cell.x + (input.x * speed + cell.impulseX) * dt, cell.radius, ARENA.width - cell.radius);
-    cell.y = clamp(cell.y + (input.y * speed + cell.impulseY) * dt, cell.radius, ARENA.height - cell.radius);
-    cell.impulseX *= Math.exp(-5 * dt);
-    cell.impulseY *= Math.exp(-5 * dt);
-    if (Math.abs(cell.impulseX) + Math.abs(cell.impulseY) < 0.05) cell.impulseX = cell.impulseY = 0;
+    cell.vx = finite(cell.vx) + finite(cell.impulseX);
+    cell.vy = finite(cell.vy) + finite(cell.impulseY);
+    cell.impulseX = cell.impulseY = 0;
+    integrateMotion(cell, input, speed, dt);
+    confineCell(cell);
   }
   for (let i = 0; i < player.cells.length; i++) {
     for (let j = i + 1; j < player.cells.length; j++) {
@@ -395,6 +407,8 @@ function moveCells(player, input, dt) {
         const mass = a.mass + b.mass;
         a.x = (a.x * a.mass + b.x * b.mass) / mass;
         a.y = (a.y * a.mass + b.y * b.mass) / mass;
+        a.vx = (a.vx * a.mass + b.vx * b.mass) / mass;
+        a.vy = (a.vy * a.mass + b.vy * b.mass) / mass;
         a.mass = mass;
         a.radius = 4 * Math.sqrt(mass);
         player.cells.splice(j--, 1);
@@ -407,10 +421,7 @@ function moveCells(player, input, dt) {
     }
   }
   for (const cell of player.cells) {
-    cell.x = clamp(cell.x, cell.radius, ARENA.width - cell.radius);
-    cell.y = clamp(cell.y, cell.radius, ARENA.height - cell.radius);
-    cell.vx = dt ? (cell.x - cell._stepX) / dt : 0;
-    cell.vy = dt ? (cell.y - cell._stepY) / dt : 0;
+    confineCell(cell);
   }
   syncPlayer(player);
 }
@@ -424,8 +435,8 @@ function shatterCell(arena, player, cell, collider) {
   cell.radius = 4 * Math.sqrt(cell.mass);
   cell.protectedFor = 1;
   cell.shatterCooldown = 3;
-  cell.impulseX = Math.cos(angle) * 250;
-  cell.impulseY = Math.sin(angle) * 250;
+  cell.vx += Math.cos(angle) * 250;
+  cell.vy += Math.sin(angle) * 250;
   for (let i = 0; i < count; i++) {
     const direction = angle + (i - (count - 1) / 2) * (Math.PI / count);
     const ux = Math.cos(direction), uy = Math.sin(direction);
@@ -438,6 +449,144 @@ function shatterCell(arena, player, cell, collider) {
   player.shatteredAt = arena.time;
   syncPlayer(player);
   return true;
+}
+
+function chipCollider(arena, body, other) {
+  const cell = body.cell;
+  const lost = Math.min(cell.mass * 0.05, Math.max(0, cell.mass - 8));
+  if (lost <= 0) return;
+  const count = cell.mass >= 64 ? 3 : 2;
+  cell.mass -= lost;
+  cell.radius = 4 * Math.sqrt(cell.mass);
+  const angle = Math.atan2(other.y - cell.y, other.x - cell.x);
+  for (let i = 0; i < count; i++) {
+    const direction = angle + (i - (count - 1) / 2) * 0.7;
+    const ux = Math.cos(direction), uy = Math.sin(direction);
+    addDust(arena, clamp(cell.x + ux * (cell.radius + 14), 8, ARENA.width - 8),
+      clamp(cell.y + uy * (cell.radius + 14), 8, ARENA.height - 8), lost / count,
+      { fragment: true, color: body.player.color, ownerId: body.player.id,
+        collectAfter: arena.time + 0.3, availableAt: arena.time + 0.9,
+        vx: cell.vx + ux * 220, vy: cell.vy + uy * 220 });
+  }
+}
+
+function bodyContact(a, b) {
+  const ac = a.cell, bc = b.cell;
+  const ax = ac._stepX ?? ac.x, ay = ac._stepY ?? ac.y;
+  const bx = bc._stepX ?? bc.x, by = bc._stepY ?? bc.y;
+  const dx = bx - ax, dy = by - ay;
+  const vx = (bc.x - bx) - (ac.x - ax), vy = (bc.y - by) - (ac.y - ay);
+  const radius = ac.radius + bc.radius;
+  const c = dx * dx + dy * dy - radius * radius;
+  let time = 0;
+  if (c > 0.000001) {
+    const quadratic = vx * vx + vy * vy;
+    if (quadratic < 1e-12) return null;
+    const linear = 2 * (dx * vx + dy * vy);
+    const discriminant = linear * linear - 4 * quadratic * c;
+    if (discriminant < 0) return null;
+    time = (-linear - Math.sqrt(discriminant)) / (2 * quadratic);
+    if (time < 0 || time > 1) return null;
+  }
+  let nx = dx + vx * time, ny = dy + vy * time;
+  const length = Math.hypot(nx, ny);
+  if (length > 1e-9) { nx /= length; ny /= length; }
+  else { nx = 1; ny = 0; }
+  return { a, b, time, nx, ny, key: `${a.key}|${b.key}` };
+}
+
+function travelRoom(cell, nx, ny) {
+  let room = Infinity;
+  if (nx > 1e-9) room = Math.min(room, (ARENA.width - cell.radius - cell.x) / nx);
+  else if (nx < -1e-9) room = Math.min(room, (cell.radius - cell.x) / nx);
+  if (ny > 1e-9) room = Math.min(room, (ARENA.height - cell.radius - cell.y) / ny);
+  else if (ny < -1e-9) room = Math.min(room, (cell.radius - cell.y) / ny);
+  return Math.max(0, room);
+}
+
+function resolveBodyPair(a, b, nx, ny) {
+  const ac = a.cell, bc = b.cell;
+  const inverseA = 1 / ac.mass, inverseB = 1 / bc.mass;
+  const inverseSum = inverseA + inverseB;
+  const penetration = ac.radius + bc.radius - ((bc.x - ac.x) * nx + (bc.y - ac.y) * ny);
+  let changed = false;
+  if (penetration > 1e-7) {
+    const capacityA = travelRoom(ac, -nx, -ny), capacityB = travelRoom(bc, nx, ny);
+    const beforeAX = ac.x, beforeAY = ac.y, beforeBX = bc.x, beforeBY = bc.y;
+    let moveA = Math.min(capacityA, penetration * inverseA / inverseSum);
+    let moveB = Math.min(capacityB, penetration - moveA);
+    moveA = Math.min(capacityA, penetration - moveB);
+    ac.x -= nx * moveA; ac.y -= ny * moveA;
+    bc.x += nx * moveB; bc.y += ny * moveB;
+    if (moveA + moveB < penetration - 1e-7) {
+      // At a corner, each circle can have its normal blocked by a different
+      // wall. Project the remaining correction onto legal wall tangents.
+      const remaining = penetration - moveA - moveB;
+      const slideA = remaining * inverseA / inverseSum, slideB = remaining * inverseB / inverseSum;
+      ac.x = clamp(ac.x - nx * slideA, ac.radius, ARENA.width - ac.radius);
+      ac.y = clamp(ac.y - ny * slideA, ac.radius, ARENA.height - ac.radius);
+      bc.x = clamp(bc.x + nx * slideB, bc.radius, ARENA.width - bc.radius);
+      bc.y = clamp(bc.y + ny * slideB, bc.radius, ARENA.height - bc.radius);
+    }
+    changed = Math.abs(ac.x - beforeAX) + Math.abs(ac.y - beforeAY) + Math.abs(bc.x - beforeBX) + Math.abs(bc.y - beforeBY) > 1e-7;
+  }
+  const approaching = (bc.vx - ac.vx) * nx + (bc.vy - ac.vy) * ny;
+  if (approaching < -1e-7) {
+    const impulse = -(1 + MOTION.restitution) * approaching / inverseSum;
+    ac.vx -= impulse * inverseA * nx; ac.vy -= impulse * inverseA * ny;
+    bc.vx += impulse * inverseB * nx; bc.vy += impulse * inverseB * ny;
+    changed = true;
+  }
+  if (changed) { a.player.collisionRevision++; b.player.collisionRevision++; }
+}
+
+function resolvePlayerBodies(arena) {
+  const bodies = [];
+  for (const player of arena.players.values()) if (player.respawnIn <= 0) {
+    for (const cell of player.cells) bodies.push({ player, cell, key: `${player.id}:${cell.id}` });
+  }
+  bodies.sort((a, b) => a.key.localeCompare(b.key));
+  const contacts = [];
+  for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+    if (bodies[i].player === bodies[j].player) continue;
+    const contact = bodyContact(bodies[i], bodies[j]);
+    if (contact) contacts.push(contact);
+  }
+  contacts.sort((a, b) => a.time - b.time || a.key.localeCompare(b.key));
+  for (const contact of contacts) {
+    const { a, b, nx, ny, key } = contact;
+    resolveBodyPair(a, b, nx, ny);
+    if (arena.bodyContacts.has(key) || a.cell.mass === b.cell.mass) continue;
+    const big = a.cell.mass > b.cell.mass ? a : b;
+    const small = big === a ? b : a;
+    if (small.player.invulnerable <= 0 && shatterCell(arena, small.player, small.cell, big.cell)) {
+      chipCollider(arena, big, small.cell);
+      big.player.collisionRevision++; small.player.collisionRevision++;
+    }
+  }
+  // Resolve secondary overlaps in piles, including particles pinned to a wall.
+  for (let iteration = 0; iteration < 512; iteration++) {
+    let overlap = false;
+    for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i], b = bodies[j];
+      if (a.player === b.player) continue;
+      const dx = b.cell.x - a.cell.x, dy = b.cell.y - a.cell.y;
+      const distance = Math.hypot(dx, dy), radius = a.cell.radius + b.cell.radius;
+      if (distance >= radius - 1e-6) continue;
+      overlap = true;
+      resolveBodyPair(a, b, distance > 1e-9 ? dx / distance : 1, distance > 1e-9 ? dy / distance : 0);
+    }
+    if (!overlap) break;
+  }
+  const current = new Set();
+  for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+    const a = bodies[i], b = bodies[j];
+    if (a.player !== b.player && Math.hypot(a.cell.x - b.cell.x, a.cell.y - b.cell.y) <= a.cell.radius + b.cell.radius + 0.5) {
+      current.add(`${a.key}|${b.key}`);
+    }
+  }
+  arena.bodyContacts = current;
+  for (const player of arena.players.values()) syncPlayer(player);
 }
 
 export function gravityRadius(cell, player) {
@@ -558,13 +707,10 @@ export function stepArena(arena, elapsed) {
     if (player.splitQueued) splitPlayer(arena, player);
     if (player.ejectQueued) ejectMass(arena, player);
     player.splitQueued = player.ejectQueued = false;
-    const previousX = player.x, previousY = player.y;
     if (player.pendingInputSeq !== player.lastInputSeq) player.inputAge = 0;
     moveCells(player, input, dt);
     player.inputAge += dt;
     player.lastInputSeq = player.pendingInputSeq;
-    player.vx = dt ? (player.x - previousX) / dt : 0;
-    player.vy = dt ? (player.y - previousY) / dt : 0;
     if (player.fireQueued && player.energy >= player.stats.blastCost && player.cooldown <= 0) {
       player.energy -= player.stats.blastCost;
       player.cooldown = player.stats.blastCooldown;
@@ -577,42 +723,8 @@ export function stepArena(arena, elapsed) {
   attractDust(arena, dt);
   collectDust(arena);
 
-  // Bigger cells absorb smaller ones; splitting makes each piece vulnerable.
-  const players = [...arena.players.values()];
-  // Contact with a much bigger planet fractures the smaller one first, giving
-  // its controllable core an escape window. The other chunks float freely and
-  // can be recovered with gravity by anyone, including their original owner.
-  for (const attacker of players) {
-    if (attacker.respawnIn > 0) continue;
-    for (const victim of players) {
-      if (victim === attacker || victim.respawnIn > 0 || victim.invulnerable > 0) continue;
-      for (const prey of [...victim.cells]) {
-        if (!victim.cells.includes(prey)) continue;
-        const collider = attacker.cells.find(cell => cell.mass >= prey.mass * 1.5 &&
-          Math.hypot(cell.x - prey.x, cell.y - prey.y) <= cell.radius + prey.radius);
-        if (collider) shatterCell(arena, victim, prey, collider);
-      }
-    }
-  }
-  for (const attacker of players) {
-    if (attacker.respawnIn > 0) continue;
-    for (const victim of players) {
-      if (victim === attacker || victim.respawnIn > 0 || victim.invulnerable > 0) continue;
-      for (const cell of attacker.cells) {
-        for (let i = victim.cells.length - 1; i >= 0; i--) {
-          const prey = victim.cells[i];
-          if (prey.protectedFor > 0 || cell.mass < prey.mass * 1.25 || Math.hypot(cell.x - prey.x, cell.y - prey.y) >= cell.radius - prey.radius * 0.45) continue;
-          cell.mass += prey.mass;
-          cell.radius = 4 * Math.sqrt(cell.mass);
-          attacker.score += Math.round(prey.mass);
-          victim.cells.splice(i, 1);
-        }
-      }
-      syncPlayer(victim);
-      syncPlayer(attacker);
-      if (victim.cells.length === 0) destroyPlayer(arena, victim, attacker.id, false);
-    }
-  }
+  // Live controlled cores have solid bodies; only loose fragments are eaten.
+  resolvePlayerBodies(arena);
 
   for (const blast of arena.blasts) {
     blast.age += dt;
@@ -648,7 +760,7 @@ export function snapshotArena(arena, view) {
     round: arena.round, winnerId: arena.winnerId,
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
       x: round(p.x), y: round(p.y), vx: round(p.vx), vy: round(p.vy), radius: round(p.radius), mass: round(p.mass),
-      lastInputSeq: p.lastInputSeq, inputAge: p.inputAge,
+      lastInputSeq: p.lastInputSeq, inputAge: p.inputAge, collisionRevision: p.collisionRevision,
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),

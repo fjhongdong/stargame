@@ -24,6 +24,12 @@ function client() {
       packet(state) { ingestSnapshot(state, performance.now()); room = state; },
       frame(dt) { predictOwn(dt, performance.now()); },
       position: getOwnCenter,
+      bodies() {
+        return room.players.flatMap(player => player.cells.map(cell => {
+          const position = player.id === myId ? predictedCells.get(cell.id) : remoteContactPositions.get(player.id + ':' + cell.id) || cell;
+          return { id: player.id, x: position.x, y: position.y, radius: cell.radius };
+        }));
+      },
       ack() { return lastInputAck; },
     };
   `;
@@ -34,7 +40,7 @@ function client() {
   return { api: context.window.predictionTest, sent, time: value => { clock = value; } };
 }
 
-test('delayed acknowledgements cannot reverse held direction or keep an idle planet drifting', () => {
+test('delayed acknowledgements preserve inertial braking, coasting and eventual rest', () => {
   const arena = createArena({ random: () => 0.99 }); arena.status = 'playing';
   const player = addPlayer(arena, { id: 'pilot' });
   Object.assign(player, { x: 1000, y: 1000 });
@@ -48,7 +54,7 @@ test('delayed acknowledgements cannot reverse held direction or keep an idle pla
   c.api.press('ArrowRight');
   // Sixty render frames / thirty physics ticks / fifteen snapshots per second.
   // Incoming delay jumps from 16 ms to 450 ms while the RTT estimate stays low.
-  for (let frame = 1; frame <= 210; frame++) {
+  for (let frame = 1; frame <= 420; frame++) {
     const time = frame * 1000 / 60; c.time(time);
     if (frame === 72) c.api.press('ArrowLeft');
     if (frame === 120) { c.api.press(null); stopSeq = c.sent.at(-1).seq; }
@@ -69,12 +75,17 @@ test('delayed acknowledgements cannot reverse held direction or keep an idle pla
   for (let i = 1; i < samples.length; i++) {
     const row = samples[i], previous = samples[i - 1];
     if (row.frame < 72) assert.ok(row.x > previous.x, 'held right must keep moving right during the latency spike');
-    if (row.frame >= 72 && row.frame < 120) assert.ok(row.x < previous.x, 'left must take effect on the first frame and never reverse');
+    if (row.frame >= 84 && row.frame < 120) assert.ok(row.x < previous.x, 'after physical braking, held left must not be reversed by delayed packets');
     assert.equal(row.y, 1000, 'horizontal controls must not cause sideways drift');
   }
   const reverse = samples.filter(row => row.frame >= 72 && row.frame < 120);
-  assert.ok(reverse[0].x - reverse.at(-1).x > 140, 'network reconciliation cannot stall a held direction');
-  const stopped = samples.filter(row => row.ack >= stopSeq);
+  assert.ok(reverse[1].x > reverse[0].x, 'reversing thrust must first brake existing momentum');
+  assert.ok(reverse[0].x - reverse.at(-1).x > 80, 'network reconciliation cannot stall a held direction');
+  const coast = samples.filter(row => row.frame >= 120 && row.frame <= 150);
+  assert.ok(coast[0].x - coast.at(-1).x > 40, 'releasing thrust must retain visible coasting');
+  const earlyTravel = coast[0].x - coast[6].x, laterTravel = coast[24].x - coast[30].x;
+  assert.ok(earlyTravel > laterTravel && laterTravel > 0, 'coasting should gradually slow down');
+  const stopped = samples.filter(row => row.ack >= stopSeq && row.frame >= 360);
   assert.ok(stopped.length >= 30, 'the stopped state must be observed for at least half a second');
   assert.ok(Math.max(...stopped.map(row => row.x)) - Math.min(...stopped.map(row => row.x)) < 0.001,
     'repeated acknowledgements after stopping must not create ongoing motion');
@@ -98,4 +109,43 @@ test('merging and genuine authoritative relocations align before directional pre
   c.time(100 + 1000 / 60); c.api.frame(1 / 60);
   assert.ok(c.api.position().x > 1200);
   assert.equal(c.api.position().y, 1600);
+});
+
+test('client prediction keeps touching bodies solid while thrust and server corrections continue', () => {
+  const arena = createArena({ random: () => 0.99 }); arena.status = 'playing';
+  const pilot = addPlayer(arena, { id: 'pilot' }), other = addPlayer(arena, { id: 'other' });
+  Object.assign(pilot.cells[0], { x: 1000, y: 1000 });
+  Object.assign(other.cells[0], { x: 1080, y: 1000 });
+  arena.dust = Array.from({ length: 6000 }, (_, id) => ({ id: `far-${id}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
+  const snapshot = time => ({ code: 'SOLID', serverTime: time, ...snapshotArena(arena) });
+  const c = client(); c.api.start(snapshot(0)); c.api.press('ArrowRight');
+  let sent = 0;
+  let minDistance = Infinity;
+  for (let frame = 1; frame <= 120; frame++) {
+    const time = frame * 1000 / 60; c.time(time);
+    if (frame % 3 === 0) c.api.heartbeat();
+    for (const input of c.sent.slice(sent)) setPlayerInput(arena, pilot.id, input);
+    sent = c.sent.length;
+    if (frame % 2 === 0) stepArena(arena, 1 / 30);
+    if (frame % 4 === 0) c.api.packet(snapshot(time));
+    c.api.frame(1 / 60);
+    const [a, b] = c.api.bodies();
+    const distance = Math.hypot(a.x - b.x, a.y - b.y);
+    minDistance = Math.min(minDistance, distance);
+    assert.ok(distance >= a.radius + b.radius - 0.03, 'server blocking must also block the visible prediction');
+    assert.ok(a.x < b.x, 'bodies must not pass through each other');
+  }
+  assert.ok(minDistance < 48.1, 'the fixture must actually reach contact');
+});
+
+test('a high speed predicted path cannot jump through a nearby solid body', () => {
+  const arena = createArena(); arena.status = 'playing';
+  const pilot = addPlayer(arena, { id: 'pilot' }), other = addPlayer(arena, { id: 'other' });
+  Object.assign(pilot.cells[0], { x: 1000, y: 1000, vx: 2400 });
+  Object.assign(other.cells[0], { x: 1060, y: 1000 });
+  const c = client(); c.api.start({ serverTime: 0, ...snapshotArena(arena) });
+  c.time(50); c.api.frame(0.05);
+  const [a, b] = c.api.bodies();
+  assert.ok(a.x < b.x, 'swept collision must preserve which side of the contact each body occupies');
+  assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= a.radius + b.radius - 0.03);
 });

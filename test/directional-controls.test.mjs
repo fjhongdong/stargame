@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, startRound } from '../shared/engine.js';
+import { ARENA, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, startRound, integrateMotion } from '../shared/engine.js';
 
 function fixture(positions = [[1000, 1000]], mass = 36) {
   const arena = createArena({ random: () => 0.99 });
@@ -14,7 +14,7 @@ function fixture(positions = [[1000, 1000]], mass = 36) {
   return { arena, player };
 }
 
-test('single and separated multiple cells obey all four directions without perpendicular drift', () => {
+test('single and separated multiple cells accelerate in all four directions without centroid drift', () => {
   for (const positions of [[[1000, 1000]], [[1000, 1000], [1800, 1400]]]) {
     for (const direction of [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]) {
       const { arena, player } = fixture(positions);
@@ -22,26 +22,29 @@ test('single and separated multiple cells obey all four directions without perpe
       for (let tick = 0; tick < 6; tick++) stepArena(arena, 1 / 30);
       player.cells.forEach((cell, index) => {
         const dx = cell.x - positions[index][0], dy = cell.y - positions[index][1];
-        assert.ok(Math.abs(dx - direction.x * 42) < 1e-8, `x direction ${JSON.stringify(direction)} moved ${dx}`);
-        assert.ok(Math.abs(dy - direction.y * 42) < 1e-8, `y direction ${JSON.stringify(direction)} moved ${dy}`);
+        if (direction.x) assert.ok(dx * direction.x > 0 && Math.abs(dx) < 42);
+        else assert.equal(dx, 0);
+        if (direction.y) assert.ok(dy * direction.y > 0 && Math.abs(dy) < 42);
+        else assert.equal(dy, 0);
       });
     }
   }
 });
 
-test('switching direction immediately cancels opposing and sideways cell impulse', () => {
+test('opposite input first brakes persistent velocity, then reverses direction', () => {
   const { arena, player } = fixture([[1000, 1000], [1800, 1400]]);
-  for (const cell of player.cells) Object.assign(cell, { impulseX: 650, impulseY: 300 });
+  for (const cell of player.cells) Object.assign(cell, { vx: 210, vy: 0 });
   setPlayerInput(arena, player.id, { x: -1, y: 0 });
-  stepArena(arena, 0.1);
-  assert.equal(player.cells[0].x, 979);
+  stepArena(arena, 0.05);
+  assert.ok(player.cells.every(cell => cell.vx > 0 && cell.vx < 210));
   assert.equal(player.cells[0].y, 1000);
-  assert.equal(player.cells[1].x, 1779);
   assert.equal(player.cells[1].y, 1400);
-  assert.ok(player.cells.every(cell => cell.impulseX === 0 && cell.impulseY === 0));
+  for (let tick = 0; tick < 10; tick++) stepArena(arena, 0.05);
+  assert.ok(player.cells.every(cell => cell.vx < 0));
+  assert.ok(player.cells[0].x < 1000 && player.cells[1].x < 1800);
 });
 
-test('forward split impulse remains aligned with intent and release stops controlled cells', () => {
+test('split launch exposes persistent velocity and release damps it naturally', () => {
   const { arena, player } = fixture([[1000, 1000]], 100);
   setPlayerInput(arena, player.id, { x: 1, split: true });
   stepArena(arena, 0.01);
@@ -49,15 +52,16 @@ test('forward split impulse remains aligned with intent and release stops contro
   assert.equal(player.mass, 100);
   assert.ok(player.cells[0].x > 1000, 'splitting while moving right must not push the original cell left');
   assert.ok(player.cells.every(cell => cell.y === 1000));
-  assert.ok(player.cells[1].impulseX > 0);
+  assert.ok(player.cells[1].vx > player.cells[0].vx + 200);
   const snapshot = snapshotArena(arena).players[0];
-  assert.ok(snapshot.cells[1].impulseX > 0);
+  assert.ok(snapshot.cells[1].vx > 200);
+  assert.equal(snapshot.cells[1].impulseX, 0);
   assert.equal(snapshot.cells[1].impulseY, 0);
   setPlayerInput(arena, player.id, {});
   const before = player.cells.map(cell => ({ x: cell.x, y: cell.y }));
   stepArena(arena, 1 / 30);
-  assert.deepEqual(player.cells.map(cell => ({ x: cell.x, y: cell.y })), before);
-  assert.ok(player.cells.every(cell => cell.impulseX === 0 && cell.impulseY === 0 && cell.vx === 0 && cell.vy === 0));
+  assert.ok(player.cells[1].x > before[1].x);
+  assert.ok(player.cells[1].vx > 0 && player.cells[1].vx < snapshot.cells[1].vx);
 });
 
 test('diagonal movement has equal directional components and normalized total speed', () => {
@@ -67,13 +71,12 @@ test('diagonal movement has equal directional components and normalized total sp
   player.cells.forEach((cell, index) => {
     const dx = cell.x - [1000, 1800][index], dy = cell.y - [1000, 1400][index];
     assert.ok(Math.abs(dx + dy) < 1e-9);
-    assert.ok(Math.abs(Math.hypot(dx, dy) - 21) < 1e-9);
+    assert.ok(Math.hypot(dx, dy) > 0 && Math.hypot(dx, dy) < 21);
   });
 });
 
-test('free fragments retain their own drift when controlled cells stop', () => {
+test('free fragments drift while initially stationary controlled cells stay at rest', () => {
   const { arena, player } = fixture();
-  player.cells[0].impulseX = 250;
   const fragment = { id: 'free', x: 3000, y: 3000, vx: 200, vy: 0, value: 8, fragment: true };
   arena.dust = [fragment];
   setPlayerInput(arena, player.id, {});
@@ -108,4 +111,32 @@ test('acknowledged input age counts applied simulation time, resets for a new se
   startRound(arena);
   assert.equal(player.lastInputSeq, 0);
   assert.equal(player.inputAge, 0);
+});
+
+test('analytical inertia matches across different prediction step sizes', () => {
+  const whole = { x: 1000, y: 1000, vx: 150, vy: -80 };
+  const sliced = { ...whole };
+  integrateMotion(whole, { x: -1, y: 0 }, 210, 0.4);
+  for (let i = 0; i < 40; i++) integrateMotion(sliced, { x: -1, y: 0 }, 210, 0.01);
+  for (const property of ['x', 'y', 'vx', 'vy']) assert.ok(Math.abs(whole[property] - sliced[property]) < 1e-8);
+  integrateMotion(whole, { x: 0, y: 0 }, 210, 0.5);
+  for (let i = 0; i < 50; i++) integrateMotion(sliced, { x: 0, y: 0 }, 210, 0.01);
+  for (const property of ['x', 'y', 'vx', 'vy']) assert.ok(Math.abs(whole[property] - sliced[property]) < 1e-8);
+});
+
+test('bodies pinned to different walls at one corner separate by sliding along walls', () => {
+  const arena = createArena({ random: () => 0.99 });
+  arena.status = 'playing';
+  const a = addPlayer(arena, { id: 'corner' });
+  const b = addPlayer(arena, { id: 'bottom' });
+  for (const [p, mass, offset] of [[a, 315.630533333, 0], [b, 157.860755555, 118]]) {
+    const radius = 4 * Math.sqrt(mass);
+    Object.assign(p.cells[0], { mass, radius, x: ARENA.width - 4 * Math.sqrt(315.630533333) - offset,
+      y: ARENA.height - radius });
+    p.invulnerable = 10;
+  }
+  stepArena(arena, 0.03);
+  const ac = a.cells[0], bc = b.cells[0];
+  assert.ok(Math.hypot(ac.x - bc.x, ac.y - bc.y) >= ac.radius + bc.radius - 1e-5);
+  assert.ok(ac.x <= ARENA.width - ac.radius && bc.y <= ARENA.height - bc.radius);
 });

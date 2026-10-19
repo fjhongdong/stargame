@@ -58,17 +58,19 @@ test('split and recombine conserve mass; holding split does not split repeatedly
   assert.equal(p.mass, 100);
 });
 
-test('a sufficiently large overlapping cell absorbs smaller cells and scores', () => {
+test('live cores separate instead of being swallowed, including preexisting deep overlaps', () => {
   const { arena, player } = fixture();
   const larger = player('a', 300, 100);
   const smaller = player('b', 300, 36);
   smaller.cells[0].shatterCooldown = 3;
   stepArena(arena, 0.01);
-  assert.equal(larger.mass, 136);
-  assert.equal(smaller.cells.length, 0);
-  assert.equal(smaller.respawnIn, 2);
-  assert.ok(larger.score >= 36);
-  assert.equal(larger.kills, 1);
+  assert.equal(larger.mass, 100);
+  assert.equal(smaller.mass, 36);
+  assert.equal(smaller.cells.length, 1);
+  assert.equal(smaller.respawnIn, 0);
+  assert.equal(larger.score, 0);
+  assert.equal(larger.kills, 0);
+  assert.ok(Math.hypot(larger.x - smaller.x, larger.y - smaller.y) >= larger.radius + smaller.radius - 1e-5);
 });
 
 test('equal-sized cells and spawn protection prevent absorption', () => {
@@ -122,8 +124,8 @@ test('big impact leaves one controllable core and mass-conserving free fragments
   stepArena(arena, 0.01);
   assert.equal(small.cells.length, 1);
   assert.equal(small.mass, 18);
-  assert.equal(big.mass, 100);
-  const free = arena.dust.filter(d => d.fragment);
+  assert.equal(big.mass, 95);
+  const free = arena.dust.filter(d => d.fragment && d.ownerId === small.id);
   assert.equal(free.length, 2);
   assert.equal(small.mass + free.reduce((sum, fragment) => sum + fragment.value, 0), 36);
   assert.ok(small.cells.every(cell => cell.protectedFor === 1 && cell.shatterCooldown === 3));
@@ -131,12 +133,12 @@ test('big impact leaves one controllable core and mass-conserving free fragments
   for (const cell of small.cells) Object.assign(cell, { x: big.x, y: big.y, impulseX: 0, impulseY: 0 });
   stepArena(arena, 0.01);
   assert.equal(small.cells.length, 1);
-  assert.equal(big.mass, 100);
+  assert.equal(big.mass, 95);
   assert.ok(snapshotArena(arena).players.find(p => p.id === small.id).cells.every(c => c.protected));
   for (const cell of small.cells) Object.assign(cell, { x: big.x, y: big.y, protectedFor: 0, impulseX: 0, impulseY: 0 });
   stepArena(arena, 0.01);
-  assert.equal(small.cells.length, 0);
-  assert.equal(big.mass, 118);
+  assert.equal(small.cells.length, 1);
+  assert.equal(big.mass, 95);
 });
 
 test('higher-mass impact leaves one core and three free fragments', () => {
@@ -146,7 +148,7 @@ test('higher-mass impact leaves one core and three free fragments', () => {
   stepArena(arena, 0.01);
   assert.equal(small.cells.length, 1);
   assert.equal(small.mass, 40);
-  const free = arena.dust.filter(d => d.fragment);
+  const free = arena.dust.filter(d => d.fragment && d.ownerId === small.id);
   assert.equal(free.length, 3);
   assert.equal(small.mass + free.reduce((sum, fragment) => sum + fragment.value, 0), 80);
 });
@@ -158,17 +160,17 @@ test('owner may reabsorb free chunks after grace without multiplying recycled ma
   small.stats.growth = 1.8;
   stepArena(arena, 0.01);
   arena.players.delete('big');
-  const free = arena.dust.filter(d => d.fragment);
+  const free = arena.dust.filter(d => d.fragment && d.ownerId === small.id);
   for (const fragment of free) Object.assign(fragment, { x: small.x, y: small.y, vx: 0, vy: 0 });
   stepArena(arena, 0.01);
   assert.equal(small.mass, 18);
-  small.cells[0].impulseX = small.cells[0].impulseY = 0;
+  small.cells[0].vx = small.cells[0].vy = 0;
   for (const fragment of free) Object.assign(fragment, { x: small.cells[0].x, y: small.cells[0].y,
     vx: 0, vy: 0, collectAfter: 0, availableAt: 0 });
   stepArena(arena, 0.01);
   assert.equal(small.mass, 36);
   assert.equal(small.score, 0);
-  assert.equal(arena.dust.filter(d => d.fragment).length, 0);
+  assert.equal(arena.dust.filter(d => d.fragment && d.ownerId === small.id).length, 0);
 });
 
 test('gravity attracts dust outside collision range and eventually absorbs it', () => {
