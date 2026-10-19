@@ -29,7 +29,7 @@ function playerViewport(player, requested) {
 
 function sameDust(a, b) {
   return a && a.x === b.x && a.y === b.y && a.vx === b.vx && a.vy === b.vy
-    && a.value === b.value && a.fragment === b.fragment && a.ejected === b.ejected
+    && a.value === b.value && a.fragment === b.fragment
     && a.color === b.color && a.ownerId === b.ownerId;
 }
 
@@ -48,7 +48,7 @@ function prepareDustUpdate(session, snapshot) {
 
 /**
  * Wire API: create/join/quick/ready/start/input/leave/ping.
- * Input x/y are a direction vector; fire/split/eject are booleans. All match state is
+ * Input x/y are a direction vector; fire/split are booleans. All match state is
  * authoritative. Clients receive welcome, joined, state, left, pong, or error.
  * Reconnect with /ws?token=<reconnectToken> within 30 seconds.
  */
@@ -149,7 +149,7 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, broadc
     player.connected = false;
     player.disconnectedAt = now();
     player.input = normalizeInput();
-    player.fireQueued = player.splitQueued = player.ejectQueued = false;
+    player.fireQueued = player.splitQueued = false;
     nextHost(room);
     publish(room);
   }

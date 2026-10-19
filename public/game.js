@@ -19,7 +19,7 @@
   let active = false, intentionalClose = false, joined = false, reconnecting = false;
   let pendingResolve, pendingReject, connectionTimer, retryTimer, retries = 0;
   let width = innerWidth, height = innerHeight, dpr = 1, raf, inputTimer, pingTimer, backgroundCanvas;
-  let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false, ejectPulse = false;
+  let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false;
   let touchVector = { x: 0, y: 0 }, joystickPointer = null, sound = false, audioContext;
   let previousStatus = '', previousRound = -1, lastScore = 0, lastUpgradeKey = '', lastShatteredAt = 0;
   let inputSeq = 0, lastInputAck = 0, lastMovementSeq = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
@@ -39,7 +39,7 @@
   let renderTimeline = null;
   let remoteContactFrame = -1;
   const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
-  const gameKeys = new Set([...movementKeys, 'Space', 'KeyQ', 'KeyE', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
+  const gameKeys = new Set([...movementKeys, 'Space', 'KeyE', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
   const stars = Array.from({ length: 240 }, (_, i) => ({
     x: Math.abs(Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1,
     y: Math.abs(Math.sin(i * 269.5 + 183.3) * 29813.3719) % 1,
@@ -67,9 +67,9 @@
       <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
       <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
-      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向引力波</span><kbd>E</kbd></button></div></div>
+      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向引力波</span><kbd>E</kbd></button></div></div>
       <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
-      <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button><button id="sgTouchEject">吐球</button></div></div>
+      <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
       <div class="sg-panel-backdrop" id="sgPanelBackdrop"><section class="sg-panel" id="sgPanel" aria-live="polite"></section></div>
     `;
@@ -88,7 +88,6 @@
     });
     $('sgBlast').addEventListener('pointerdown', (e) => { e.preventDefault(); blast(); });
     $('sgTouchSplit').addEventListener('pointerdown', (e) => { e.preventDefault(); split(); });
-    $('sgTouchEject').addEventListener('pointerdown', (e) => { e.preventDefault(); eject(); });
     const joystick = $('sgJoystick');
     function moveJoystick(e) {
       const rect = joystick.getBoundingClientRect();
@@ -123,7 +122,6 @@
       if (!gameKeys.has(code)) return;
       if (code !== 'Escape') e.preventDefault();
       if (code === 'Space' && !e.repeat) split();
-      if (code === 'KeyQ' && !e.repeat) eject();
       if (code === 'KeyE' && !e.repeat) blast();
       if (/^Digit[123]$/.test(code) && !e.repeat) chooseUpgrade(Number(code.slice(-1)) - 1);
       if (code === 'Escape') { if (room?.status === 'playing') toast('点击右上角退出图标可返回大厅'); }
@@ -143,7 +141,7 @@
   function resetHeldInputs(sendStop = true) {
     keys.clear();
     resetJoystick();
-    inputPulse = false; splitPulse = false; ejectPulse = false;
+    inputPulse = false; splitPulse = false;
     if (sendStop) sendInput();
   }
 
@@ -151,7 +149,7 @@
   function keyboardCode(event) {
     if (gameKeys.has(event.code)) return event.code;
     const key = event.key || '';
-    if (/^[wasdqe]$/i.test(key)) return `Key${key.toUpperCase()}`;
+    if (/^[wasde]$/i.test(key)) return `Key${key.toUpperCase()}`;
     if (/^[123]$/.test(key)) return `Digit${key}`;
     if (key === ' ' || key === 'Spacebar') return 'Space';
     if (['Up', 'Down', 'Left', 'Right'].includes(key)) return `Arrow${key}`;
@@ -203,7 +201,7 @@
     cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
     inputSeq = 0; lastInputAck = 0; lastMovementSeq = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
     camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
-    inputPulse = false; splitPulse = false; ejectPulse = false;
+    inputPulse = false; splitPulse = false;
     $('sgUpgrades').hidden = true;
     root.hidden = false;
     focusGame();
@@ -547,10 +545,6 @@
     if (!(me.cells || [{ mass: me.mass }]).some((cell) => cell.mass >= 48)) { toast('单颗星球质量达到 48 后即可分裂'); return; }
     splitPulse = true; sendInput();
   }
-  function eject() {
-    if (room?.status !== 'playing' || reconnecting) return;
-    ejectPulse = true; sendInput();
-  }
   function sendInput() {
     if (!active || !room || room.status !== 'playing' || reconnecting) return;
     const input = getIntent(), view = getCamera(), seq = ++inputSeq;
@@ -558,8 +552,8 @@
     inputHistory.push({ seq, t: at, ...input });
     if (Math.hypot(input.x, input.y) > 0) lastMovementSeq = seq;
     while (inputHistory.length > 60 || inputHistory[0]?.t < at - 2000) inputHistory.shift();
-    send({ type: 'input', ...input, seq, viewport: { x: view.x, y: view.y, width: Math.min(3200, view.width), height: Math.min(2300, view.height) }, dustDeltas: true, supportsDustDelta: true, fire: inputPulse, split: splitPulse, eject: ejectPulse });
-    inputPulse = false; splitPulse = false; ejectPulse = false;
+    send({ type: 'input', ...input, seq, viewport: { x: view.x, y: view.y, width: Math.min(3200, view.width), height: Math.min(2300, view.height) }, dustDeltas: true, supportsDustDelta: true, fire: inputPulse, split: splitPulse });
+    inputPulse = false; splitPulse = false;
   }
 
   function playTone(frequency, duration, volume, type = 'sine') {
@@ -1208,8 +1202,8 @@
   }
 
   function cachedDust(dust) {
-    const color = dust.fragment || dust.ejected ? safeColor(dust.color) : '#c2e6cc';
-    const radius = dust.fragment ? clamp(Math.round(4 * Math.sqrt(dust.value || 1) / 6) * 6, 6, 54) : dust.ejected ? 4 : 1.5;
+    const color = dust.fragment ? safeColor(dust.color) : '#c2e6cc';
+    const radius = dust.fragment ? clamp(Math.round(4 * Math.sqrt(dust.value || 1) / 6) * 6, 6, 54) : 1.5;
     const key = `${color}:${dust.fragment ? 'f' : 'd'}:${radius}`;
     if (dustSprites.has(key)) return dustSprites.get(key);
     const sprite = makeSprite(dust.fragment ? radius * 2.6 + 8 : Math.max(18, radius * 5)), c = sprite.c;
@@ -1226,8 +1220,7 @@
     } else {
       const halo = c.createRadialGradient(0, 0, radius * .3, 0, 0, radius * 2.4); halo.addColorStop(0, `${color}77`); halo.addColorStop(1, `${color}00`); c.fillStyle = halo; c.beginPath(); c.arc(0, 0, radius * 2.4, 0, Math.PI * 2); c.fill();
       c.fillStyle = color;
-      if (dust.ejected) { c.beginPath(); c.arc(0, 0, radius, 0, Math.PI * 2); c.fill(); }
-      else { c.rotate(Math.PI / 4); c.fillRect(-radius, -radius, radius * 2, radius * 2); }
+      c.rotate(Math.PI / 4); c.fillRect(-radius, -radius, radius * 2, radius * 2);
     }
     sprite.radius = radius;
     dustSprites.set(key, sprite); if (dustSprites.size > 48) dustSprites.delete(dustSprites.keys().next().value); return sprite;
@@ -1291,7 +1284,7 @@
     ctx.globalAlpha = opacity; ctx.strokeStyle = '#eff9ff'; ctx.lineWidth = 1.6; ctx.stroke(); ctx.restore();
   }
   function drawPlanet(player, cell, position, time, primary, decoration = false) {
-    const color = safeColor(player.color), radius = Math.max(5, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;
+    const color = safeColor(player.color), radius = Math.max(4, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;
     ctx.save();
     if (player.connected === false) ctx.globalAlpha = .5;
     else if (player.invulnerable > 0) ctx.globalAlpha = .75 + Math.sin(time * .015) * .2;

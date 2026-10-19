@@ -16,7 +16,7 @@ function fixture(definitions = [
   });
   return { arena, players };
 }
-const loose = arena => arena.dust.filter(dust => dust.fragment || dust.ejected);
+const loose = arena => arena.dust.filter(dust => dust.fragment);
 const totalMass = arena => [...arena.players.values()].reduce((sum, p) => sum + p.mass, 0) + loose(arena).reduce((sum, dust) => sum + dust.value, 0);
 const near = (actual, expected, tolerance = 1e-8) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} should be within ${tolerance} of ${expected}`);
 function assertSolid(arena, tolerance = 1e-5) {
@@ -129,11 +129,11 @@ test('persistent contact cannot repeatedly fracture after cooldown; separating a
 
 test('cores too small to fracture still collide and are never swallowed whole', () => {
   const { arena, players: [big, small] } = fixture([
-    { id: 'big', mass: 100, x: 1000, y: 1000 }, { id: 'small', mass: 8, x: 1000, y: 1000 },
+    { id: 'big', mass: 100, x: 1000, y: 1000 }, { id: 'small', mass: 2, x: 1000, y: 1000 },
   ]);
   stepArena(arena, .01);
   assertSolid(arena);
-  assert.equal(big.mass, 100); assert.equal(small.mass, 8);
+  assert.equal(big.mass, 100); assert.equal(small.mass, 2);
   assert.equal(small.cells.length, 1); assert.equal(small.respawnIn, 0); assert.equal(loose(arena).length, 0);
 });
 

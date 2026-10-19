@@ -20,7 +20,7 @@ function game(count = 8) {
 test('large world has 6,000 natural particles, central encounters and nearby food', () => {
   const arena = game();
   assert.deepEqual(ARENA, { width: 12000, height: 8000 });
-  assert.equal(arena.dust.filter(dust => !dust.ejected && !dust.fragment).length, DUST_COUNT);
+  assert.equal(arena.dust.filter(dust => !dust.fragment).length, DUST_COUNT);
   for (const p of arena.players.values()) {
     assert.ok(Math.abs(p.x - ARENA.width / 2) <= 1000);
     assert.ok(Math.abs(p.y - ARENA.height / 2) <= 700);
@@ -61,7 +61,7 @@ test('moving free particles cross grid buckets and natural refill preserves free
   assert.ok(fragment.x > 256);
   const after = queryDust(arena, { x: fragment.x, y: fragment.y, width: 10, height: 10, margin: 0 });
   assert.ok(after.includes(fragment));
-  assert.equal(arena.dust.filter(dust => !dust.ejected && !dust.fragment).length, 6000);
+  assert.equal(arena.dust.filter(dust => !dust.fragment).length, 6000);
   assert.equal(arena.dust.find(dust => dust.id === 'free').value, 19);
   assert.equal(arena.dust.length, 6001);
 });

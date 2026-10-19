@@ -88,33 +88,22 @@ test('equal-sized cells and spawn protection prevent absorption', () => {
   assert.equal(b.cells.length, 1);
 });
 
-test('ejection transfers exactly 3 mass into a pellet with own pickup delay', () => {
-  const { arena, player } = fixture();
-  const p = player('a', 300, 60);
-  setPlayerInput(arena, p.id, { x: 1, eject: true });
-  stepArena(arena, 0.01);
-  const pellet = arena.dust.find(d => d.ejected);
-  assert.equal(p.mass, 57);
-  assert.equal(pellet.value, 3);
-  assert.equal(p.mass + pellet.value, 60);
-  pellet.x = p.x; pellet.y = p.y;
-  stepArena(arena, 0.01);
-  assert.ok(arena.dust.includes(pellet));
-});
-
-test('recovering an ejected pellet cannot farm score or energy', () => {
+test('legacy eject input is ignored without spending mass or creating loose fragments', () => {
   const { arena, player } = fixture();
   const p = player('a', 300, 60);
   p.energy = 10;
-  setPlayerInput(arena, p.id, { eject: true });
-  stepArena(arena, 0.01);
-  const pellet = arena.dust.find(d => d.ejected);
-  Object.assign(pellet, { x: p.x, y: p.y, vx: 0, vy: 0, availableAt: 0 });
-  const beforeEnergy = p.energy;
-  stepArena(arena, 0.01);
+  assert.ok(!('eject' in normalizeInput({ eject: true })));
+  for (let i = 0; i < 20; i++) {
+    setPlayerInput(arena, p.id, { eject: i % 2 === 0 });
+    stepArena(arena, 0.01);
+  }
   assert.equal(p.mass, 60);
+  assert.equal(p.cells.length, 1);
   assert.equal(p.score, 0);
-  assert.ok(p.energy - beforeEnergy < 0.04);
+  assert.ok(Math.abs(p.energy - 10.6) < 1e-8);
+  assert.ok(!('ejectQueued' in p));
+  assert.ok(arena.dust.every(dust => !dust.fragment && !('ejected' in dust)));
+  assert.ok(snapshotArena(arena).dust.every(dust => !('ejected' in dust)));
 });
 
 test('big impact leaves one controllable core and mass-conserving free fragments', () => {
@@ -135,7 +124,7 @@ test('big impact leaves one controllable core and mass-conserving free fragments
   stepArena(arena, 0.01);
   assert.equal(small.cells.length, 1);
   assert.equal(big.mass, 95);
-  assert.ok(snapshotArena(arena).players.find(p => p.id === small.id).cells.every(c => c.protected));
+  assert.ok(snapshotArena(arena).players.find(p => p.id === small.id).cells.every(c => c.protected && c.protectedFor > 2.9));
   for (const cell of small.cells) Object.assign(cell, { x: big.x, y: big.y, protectedFor: 0, impulseX: 0, impulseY: 0 });
   stepArena(arena, 0.01);
   assert.equal(small.cells.length, 1);

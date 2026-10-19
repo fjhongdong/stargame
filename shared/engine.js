@@ -86,7 +86,7 @@ export function normalizeInput(input = {}) {
   const length = Math.hypot(x, y);
   if (length > 1) { x /= length; y /= length; }
   return { x, y, fire: input.fire === true,
-    split: input.split === true, eject: input.eject === true };
+    split: input.split === true };
 }
 
 export function cleanName(value) {
@@ -104,7 +104,7 @@ export function skinColor(skin, fallback = 0) {
 export function createArena({ random = Math.random } = {}) {
   return { status: 'lobby', time: 0, remaining: ROUND_DURATION, round: 0, winnerId: null,
     players: new Map(), dust: [], blasts: [], serial: 0, random,
-    dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set(), impactSerial: 0 };
+    dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0 };
 }
 
 function spawnPosition(arena) {
@@ -124,8 +124,8 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
   const player = { id, name: cleanName(name), color: skinColor(skin, arena.players.size), bot, ready,
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], hp: 100, energy: 60,
     score: 0, kills: 0, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
-    input: normalizeInput(), fireQueued: false, splitQueued: false, ejectQueued: false, shatteredAt: -10,
-    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, direction: { x: 1, y: 0 } };
+    input: normalizeInput(), fireQueued: false, splitQueued: false, shatteredAt: -10,
+    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, botState: null, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
   resetProgress(player);
   arena.players.set(id, player);
@@ -139,7 +139,6 @@ export function setPlayerInput(arena, id, input) {
   const next = normalizeInput(input);
   if (next.fire && !player.input.fire) player.fireQueued = true;
   if (next.split && !player.input.split) player.splitQueued = true;
-  if (next.eject && !player.input.eject) player.ejectQueued = true;
   player.input = next;
   if (Number.isSafeInteger(input?.seq) && input.seq >= 0) player.pendingInputSeq = Math.max(player.pendingInputSeq, input.seq);
 }
@@ -164,7 +163,7 @@ function addDust(arena, x, y, value = 1, extra = {}) {
   const dust = { id: `d${++arena.serial}`, x: x ?? (35 + arena.random() * (ARENA.width - 70)),
     y: y ?? (35 + arena.random() * (ARENA.height - 70)), value, vx: 0, vy: 0, ...extra };
   arena.dust.push(dust);
-  if (!dust.fragment && !dust.ejected) arena.naturalDustCount++;
+  if (!dust.fragment) arena.naturalDustCount++;
   if (arena.dustGrid) insertDust(arena, dust);
   if (dust.vx || dust.vy) arena.activeDust.add(dust);
   arena._indexedCount = arena.dust.length;
@@ -198,7 +197,7 @@ function rebuildDustGrid(arena) {
   for (const dust of arena.dust) {
     insertDust(arena, dust);
     if (Math.abs(finite(dust.vx)) + Math.abs(finite(dust.vy)) > 0.05) arena.activeDust.add(dust);
-    if (!dust.ejected && !dust.fragment) arena.naturalDustCount++;
+    if (!dust.fragment) arena.naturalDustCount++;
   }
   arena._indexedDust = arena.dust;
   arena._indexedCount = arena.dust.length;
@@ -275,11 +274,12 @@ export function startRound(arena) {
   arena.activeDust = new Set();
   arena.blasts = [];
   arena.bodyContacts = new Set();
+  arena.fractureContacts = new Map();
   arena.impactSerial = 0;
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, hp: 100, energy: 60, score: 0, kills: 0,
       respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
-      ejectQueued: false, shatteredAt: -10, collisionRevision: 0, lastImpact: null,
+      shatteredAt: -10, collisionRevision: 0, lastImpact: null, botState: null,
       pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
     syncPlayer(player);
@@ -295,34 +295,93 @@ export function startRound(arena) {
 }
 
 function botInput(arena, player) {
-  let target = null;
-  let distance = Infinity;
-  for (const range of [300, 700, 1500]) {
-    visitDustRect(arena, player.x - range, player.y - range, player.x + range, player.y + range, dust => {
-      const dx = dust.x - player.x, dy = dust.y - player.y;
-      const d = dx * dx + dy * dy;
-      if (d < distance) { distance = d; target = dust; }
-    });
-    if (target) break;
+  // Decisions persist across physics/network ticks. Nearby particles already
+  // flow into the gravity field, so steer toward a food area rather than chase
+  // a different moving particle on every frame.
+  const state = player.botState ??= { mode: 'forage', target: null, nextDecisionAt: 0, threatId: null, enemyId: null };
+  const source = mainCell(player);
+  if (!source) return {};
+  let enemy = null, enemyDistance = Infinity, threat = null, threatDistance = Infinity;
+  for (const opponent of arena.players.values()) {
+    if (opponent.id === player.id || opponent.respawnIn > 0) continue;
+    const body = mainCell(opponent);
+    if (!body) continue;
+    const distance = Math.hypot(body.x - player.x, body.y - player.y);
+    if (distance < enemyDistance) { enemy = { player: opponent, cell: body }; enemyDistance = distance; }
+    const wasThreat = state.threatId === opponent.id;
+    const enterDistance = Math.max(240, source.radius + body.radius + 120);
+    const exitDistance = Math.max(330, enterDistance + 90);
+    if (body.mass > source.mass * (wasThreat ? 1.15 : 1.25) && distance < (wasThreat ? exitDistance : enterDistance) &&
+        (wasThreat || distance < threatDistance)) {
+      threat = { player: opponent, cell: body }; threatDistance = distance;
+      if (wasThreat) break;
+    }
   }
-  const opponents = [...arena.players.values()].filter(p => p.id !== player.id && p.respawnIn <= 0);
-  const enemy = opponents.sort((a, b) => Math.hypot(a.x - player.x, a.y - player.y) - Math.hypot(b.x - player.x, b.y - player.y))[0];
-  const enemyDistance = enemy ? Math.hypot(enemy.x - player.x, enemy.y - player.y) : Infinity;
-  if (enemyDistance < 240 && (player.mass > (enemy?.mass ?? Infinity) * 1.3 || player.energy >= player.stats.blastCost)) target = enemy;
-  if (!target) target = { x: ARENA.width / 2, y: ARENA.height / 2 };
-  const dx = target.x - player.x;
-  const dy = target.y - player.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const flee = enemyDistance < 200 && (enemy?.mass ?? 0) > player.mass * 1.25;
-  return { x: dx / length * (flee ? -1 : 1), y: dy / length * (flee ? -1 : 1),
-    split: enemyDistance > 140 && enemyDistance < 320 && player.cells.length === 1 && player.mass > (enemy?.mass ?? Infinity) * 3,
-    fire: enemyDistance < 175 && player.cooldown <= 0 && player.energy >= player.stats.blastCost };
+  if (threat) {
+    state.mode = 'flee'; state.threatId = threat.player.id;
+    state.target = null; state.nextDecisionAt = arena.time + 0.6;
+    // Flee from the actual threat, independently of any food target.
+    const dx = player.x - threat.cell.x, dy = player.y - threat.cell.y;
+    const length = Math.hypot(dx, dy);
+    return { x: length > 1e-6 ? dx / length : player.direction.x,
+      y: length > 1e-6 ? dy / length : player.direction.y, fire: false, split: false };
+  }
+  state.threatId = null;
+  if (state.mode === 'chase' && state.enemyId) {
+    const previous = arena.players.get(state.enemyId), body = previous?.respawnIn <= 0 ? mainCell(previous) : null;
+    const distance = body ? Math.hypot(body.x - player.x, body.y - player.y) : Infinity;
+    if (body && distance < 380 && source.mass > body.mass * 1.15) {
+      enemy = { player: previous, cell: body }; enemyDistance = distance;
+    }
+  }
+  const canChase = enemy && source.mass > enemy.cell.mass * (state.mode === 'chase' && state.enemyId === enemy.player.id ? 1.15 : 1.3);
+  const chaseDistance = state.mode === 'chase' ? 380 : 280;
+  if (canChase && enemyDistance < chaseDistance) {
+    state.mode = 'chase'; state.enemyId = enemy.player.id; state.target = { x: enemy.cell.x, y: enemy.cell.y };
+  } else {
+    if (state.mode !== 'forage') { state.mode = 'forage'; state.target = null; state.enemyId = null; }
+    const arrived = state.target && Math.hypot(state.target.x - player.x, state.target.y - player.y) < 60;
+    if (!state.target || (arena.time >= state.nextDecisionAt && (arrived || arena.time >= state.target.expiresAt))) {
+      let target = null, best = Infinity;
+      const gatheringRange = gravityRadius(source, player) * 0.8;
+      for (const range of [400, 800, 1500]) {
+        visitDustRect(arena, player.x - range, player.y - range, player.x + range, player.y + range, dust => {
+          if (arena.time < (dust.collectAfter ?? 0) || (dust.ownerId === player.id && arena.time < dust.availableAt)) return;
+          const dx = dust.x - player.x, dy = dust.y - player.y, distance = dx * dx + dy * dy;
+          if (distance < gatheringRange * gatheringRange) return;
+          // Do not route back through a stronger opponent just after fleeing.
+          if (enemy && enemy.cell.mass > source.mass * 1.15 &&
+              Math.hypot(dust.x - enemy.cell.x, dust.y - enemy.cell.y) < 300 + enemy.cell.radius) return;
+          if (distance < best) { best = distance; target = dust; }
+        });
+        if (target) break;
+      }
+      const heading = Math.hypot(player.vx, player.vy) > 5 ? Math.atan2(player.vy, player.vx) : Math.atan2(player.direction.y, player.direction.x);
+      state.target = target ? { x: target.x, y: target.y, expiresAt: arena.time + 3 } : {
+        x: clamp(player.x + Math.cos(heading) * 500, 150, ARENA.width - 150),
+        y: clamp(player.y + Math.sin(heading) * 500, 150, ARENA.height - 150), expiresAt: arena.time + 3 };
+      state.nextDecisionAt = arena.time + 0.8;
+    }
+  }
+  const dx = state.target.x - player.x, dy = state.target.y - player.y;
+  const distance = Math.hypot(dx, dy);
+  // Reduce the requested velocity on approach; this avoids overshooting a
+  // fixed food waypoint and immediately reversing just to reach its center.
+  const scale = state.mode === 'chase' ? 1 : Math.min(1, distance / 120);
+  const split = state.mode === 'chase' && enemyDistance > 140 && enemyDistance < 320 &&
+    player.cells.length === 1 && source.mass > enemy.cell.mass * 3;
+  const facing = enemyDistance > 0 && enemy ? ((enemy.cell.x - source.x) * player.direction.x +
+    (enemy.cell.y - source.y) * player.direction.y) / enemyDistance : -1;
+  return { x: distance > 1 ? dx / distance * scale : 0, y: distance > 1 ? dy / distance * scale : 0,
+    split, fire: state.mode === 'chase' && enemyDistance < 260 && facing > 0.8 &&
+      player.cooldown <= 0 && player.energy >= player.stats.blastCost };
 }
 
 function destroyPlayer(arena, victim, ownerId, dropDust = true) {
   const owner = arena.players.get(ownerId);
   if (owner && owner.id !== victim.id) { owner.score += 25; owner.kills++; }
   victim.hp = 0;
+  victim.botState = null;
   victim.respawnIn = 2;
   victim.vx = victim.vy = 0;
   victim.cells = [];
@@ -349,18 +408,6 @@ function splitPlayer(arena, player, direction = player.direction) {
     const child = newCell(arena, cell.x + x * separation, cell.y + y * separation, cell.mass,
       { mergeIn: 12, vx: cell.vx + x * 650, vy: cell.vy + y * 650 });
     player.cells.push(child);
-  }
-}
-
-function ejectMass(arena, player, direction = player.direction) {
-  const { x, y } = direction;
-  for (const cell of player.cells) {
-    if (cell.mass < 16) continue;
-    cell.mass -= 3;
-    cell.radius = 4 * Math.sqrt(cell.mass);
-    addDust(arena, clamp(cell.x + x * (cell.radius + 14), 8, ARENA.width - 8),
-      clamp(cell.y + y * (cell.radius + 14), 8, ARENA.height - 8), 3,
-      { ownerId: player.id, availableAt: arena.time + 0.9, ejected: true, color: player.color, vx: x * 270, vy: y * 270 });
   }
 }
 
@@ -435,7 +482,7 @@ function moveCells(player, input, dt) {
 }
 
 function shatterCell(arena, player, cell, collider, closingSpeed = 0) {
-  if (cell.mass < 16 || cell.protectedFor > 0 || cell.shatterCooldown > 0) return false;
+  if (cell.mass < 3 || cell.protectedFor > 0 || cell.shatterCooldown > 0) return false;
   const count = cell.mass >= 64 ? 3 : 2;
   const mass = cell.mass / (count + 1);
   const angle = Math.atan2(cell.y - collider.y, cell.x - collider.x);
@@ -463,7 +510,7 @@ function shatterCell(arena, player, cell, collider, closingSpeed = 0) {
 
 function chipCollider(arena, body, other, closingSpeed = 0) {
   const cell = body.cell;
-  const lost = Math.min(cell.mass * 0.05, Math.max(0, cell.mass - 8));
+  const lost = Math.min(cell.mass * 0.05, Math.max(0, cell.mass - 1));
   if (lost <= 0) return;
   const count = cell.mass >= 64 ? 3 : 2;
   const inheritedX = cell.vx, inheritedY = cell.vy;
@@ -728,20 +775,21 @@ function resolvePlayerBodies(arena, dt = 0, stepTime = arena.time) {
       }
       contacts.sort((left, right) => left.time - right.time || left.key.localeCompare(right.key));
     }
-    if (arena.bodyContacts.has(key)) continue;
+    const existingContact = arena.bodyContacts.has(key);
     const impactPoint = { x: swept?.x ?? a.cell.x + nx * a.cell.radius, y: swept?.y ?? a.cell.y + ny * a.cell.radius,
       radius: Math.min(32, Math.min(a.cell.radius, b.cell.radius) * 0.65) };
     let fractured = false;
-    if (a.cell.mass !== b.cell.mass) {
+    if (!arena.fractureContacts.has(key) && a.cell.mass !== b.cell.mass) {
       const big = a.cell.mass > b.cell.mass ? a : b;
       const small = big === a ? b : a;
       if (small.player.invulnerable <= 0 && shatterCell(arena, small.player, small.cell, big.cell, closingSpeed)) {
         chipCollider(arena, big, small.cell, closingSpeed);
         big.player.collisionRevision++; small.player.collisionRevision++;
         fractured = true;
+        arena.fractureContacts.set(key, { a, b, closestDistance: Math.hypot(a.cell.x - b.cell.x, a.cell.y - b.cell.y) });
       }
     }
-    if (closingSpeed > 12 || fractured) {
+    if ((!existingContact && closingSpeed > 12) || fractured) {
       const impact = { id: `impact-${arena.round}-${++arena.impactSerial}`, at: swept?.at ?? stepTime,
         x: impactPoint.x, y: impactPoint.y, normalX: nx, normalY: ny, speed: closingSpeed,
         radius: impactPoint.radius, fractured };
@@ -784,6 +832,18 @@ function resolvePlayerBodies(arena, dt = 0, stepTime = arena.time) {
     }
   }
   arena.bodyContacts = current;
+  // Only successful fractures lock an episode. Shrinking bodies alone does
+  // not count as separating; release after their centers actually move apart
+  // from the closest distance reached during this episode and a real gap opens.
+  for (const [key, lock] of arena.fractureContacts) {
+    const { a, b } = lock;
+    const distance = Math.hypot(a.cell.x - b.cell.x, a.cell.y - b.cell.y);
+    lock.closestDistance = Math.min(lock.closestDistance, distance);
+    if (!a.player.cells.includes(a.cell) || !b.player.cells.includes(b.cell) ||
+        (distance > a.cell.radius + b.cell.radius + 0.5 && distance > lock.closestDistance + 0.5)) {
+      arena.fractureContacts.delete(key);
+    }
+  }
   constrainContactVelocities(bodies);
   for (const player of arena.players.values()) syncPlayer(player);
 }
@@ -855,9 +915,9 @@ function collectDust(arena) {
           (dust.ownerId === player.id && arena.time < dust.availableAt)) return;
         const dx = dust.x - cell.x, dy = dust.y - cell.y;
         if (dx * dx + dy * dy > (cell.radius + 5) ** 2) return;
-        cell.mass += dust.value * (dust.ejected || dust.fragment ? 1 : player.stats.growth);
+        cell.mass += dust.value * (dust.fragment ? 1 : player.stats.growth);
         cell.radius = 4 * Math.sqrt(cell.mass);
-        if (!dust.ejected && !dust.fragment) {
+        if (!dust.fragment) {
           player.score += 2 * dust.value;
           player.energy = Math.min(100, player.energy + 4 * dust.value);
           arena.naturalDustCount--;
@@ -990,7 +1050,7 @@ export function stepArena(arena, elapsed) {
     player.invulnerable = Math.max(0, player.invulnerable - dt);
     if (player.respawnIn > 0) {
       player.respawnIn = Math.max(0, player.respawnIn - dt);
-      player.fireQueued = player.splitQueued = player.ejectQueued = false;
+      player.fireQueued = player.splitQueued = false;
       if (player.respawnIn === 0) {
         Object.assign(player, spawnPosition(arena), { hp: player.stats.maxHp, energy: 45, invulnerable: 2 });
         player.cells = [newCell(arena, player.x, player.y, START_MASS)];
@@ -1003,8 +1063,7 @@ export function stepArena(arena, elapsed) {
     const actionDirection = moving ? { x: input.x / Math.hypot(input.x, input.y), y: input.y / Math.hypot(input.x, input.y) } : player.direction;
     player.energy = clamp(player.energy + dt * player.stats.energyRegen, 0, 100);
     if (player.splitQueued) splitPlayer(arena, player, actionDirection);
-    if (player.ejectQueued) ejectMass(arena, player, actionDirection);
-    player.splitQueued = player.ejectQueued = false;
+    player.splitQueued = false;
     if (player.pendingInputSeq !== player.lastInputSeq) player.inputAge = 0;
     for (const cell of player.cells) { cell._frameX = cell.x; cell._frameY = cell.y; }
     movers.push({ player, input });
@@ -1070,7 +1129,8 @@ export function snapshotArena(arena, view) {
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),
-        mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: c.protectedFor > 0, protectedFor: round(c.protectedFor) })),
+        mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable) > 0,
+        protectedFor: round(Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable)) })),
       hp: p.hp, energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
       bot: p.bot, connected: p.connected, respawnIn: round(p.respawnIn),
       level: p.level, peakMass: round(p.peakMass), nextUpgradeMass: UPGRADE_THRESHOLDS[p.upgradeMilestones] ?? null,
@@ -1079,7 +1139,6 @@ export function snapshotArena(arena, view) {
       upgrades: Object.entries(p.upgrades).map(([id, count]) => ({ id, count })), stats: { ...p.stats },
       invulnerable: round(p.invulnerable), cooldown: round(p.cooldown) })),
     dust: visibleDust.map(d => ({ id: d.id, x: round(d.x), y: round(d.y), vx: round(finite(d.vx)), vy: round(finite(d.vy)), value: d.value,
-      ...(d.ejected ? { ejected: true, color: d.color } : {}),
       ...(d.fragment ? { fragment: true, color: d.color, ownerId: d.ownerId } : {}) })),
     blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, kind: b.kind, sourceCellId: b.sourceCellId,
       x: round(b.x), y: round(b.y), originX: round(b.originX), originY: round(b.originY), originOffset: round(b.originOffset),

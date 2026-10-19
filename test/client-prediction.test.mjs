@@ -36,6 +36,7 @@ function client() {
       velocity() { const model = predictedCells.values().next().value?.model; return { x: model?.vx, y: model?.vy }; },
       models() { return physicsBodies().map(body => ({ id: body.player.id, ...body.position })); },
       intent: getIntent,
+      split,
       wave(blast) { return wavePose(blast, performance.now()); },
       lead() { return simulationLead; },
       cacheWaves(state) { cacheWaveVisuals(state, room); },
@@ -233,6 +234,22 @@ test('ordinary movement has no keyboard boost or boost field in the network inpu
   c.api.press('ArrowRight');
   assert.equal(c.sent.at(-1).x, 1);
   assert.equal(Object.hasOwn(c.sent.at(-1), 'boost'), false);
+});
+
+test('retired Q actions emit no ejection protocol while active splitting remains available', () => {
+  const arena = createArena(); arena.status = 'playing';
+  const player = addPlayer(arena, { id: 'pilot' });
+  Object.assign(player.cells[0], { mass: 72, radius: 4 * Math.sqrt(72), x: 4000, y: 4000 });
+  const c = client(); c.api.start(snapshotArena(arena));
+  c.api.press('KeyQ');
+  assert.equal(c.sent.at(-1).x, 0); assert.equal(c.sent.at(-1).y, 0);
+  assert.equal(Object.hasOwn(c.sent.at(-1), 'eject'), false, 'removed ejection must not remain as an inactive network field');
+  c.api.split();
+  assert.equal(c.sent.at(-1).split, true, 'active splitting remains a playable action');
+  assert.equal(Object.hasOwn(c.sent.at(-1), 'eject'), false);
+  setPlayerInput(arena, player.id, c.sent.at(-1)); stepArena(arena, 1 / 120);
+  assert.equal(player.cells.length, 2);
+  assert.ok(Math.abs(player.cells.reduce((sum, cell) => sum + cell.mass, 0) - 72) < 1e-6);
 });
 
 test('a swept predicted impact preserves its damped post-impact remainder like the authoritative physics', () => {
