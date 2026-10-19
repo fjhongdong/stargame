@@ -5,7 +5,7 @@ export const COLORS = ['#5eefa8', '#d4b5ff', '#ffbd68', '#83d9ff', '#ff8eaf', '#
 export const BLAST_COST = 30;
 export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, restitution: 0.2,
   restingThreshold: 60, contactSlop: 0.01, physicsStep: 1 / 120 });
-export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8 });
+export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];
 export const UPGRADE_POOL = [
   { id: 'speed', title: '光速引擎', description: '移动速度提升 10%', icon: '⚡' },
@@ -13,7 +13,6 @@ export const UPGRADE_POOL = [
   { id: 'range', title: '超新星回响', description: '引力波射程增加 18%', icon: '◎' },
   { id: 'efficiency', title: '能量核心', description: '释放星爆的能量消耗降低 15%', icon: '◈' },
   { id: 'magnet', title: '引力透镜', description: '引力吸引范围增加 25', icon: '🧲' },
-  { id: 'shield', title: '行星护盾', description: '生命上限增加 25，并恢复 25 生命', icon: '◇' },
   { id: 'recovery', title: '恒星充能', description: '能量自然恢复速度提升 30%', icon: '☀' },
   { id: 'cooldown', title: '星波调谐', description: '星爆冷却时间缩短 15%', icon: '⟳' },
 ];
@@ -34,7 +33,7 @@ function resetProgress(player) {
   player.upgradeChoices = [];
   player.upgrades = {};
   player.stats = { speed: 1, growth: 1, blastRange: 1, blastCost: BLAST_COST,
-    magnet: 0, maxHp: 100, energyRegen: 3, blastCooldown: 0.85 };
+    magnet: 0, energyRegen: 3, blastCooldown: 0.85 };
 }
 
 function offerUpgrade(arena, player) {
@@ -59,7 +58,8 @@ function updateProgress(arena, player) {
 
 export function chooseUpgrade(arena, id, upgradeId) {
   const player = arena.players.get(id);
-  if (arena.status !== 'playing' || !player || !player.upgradeChoices.some(option => option.id === upgradeId)) {
+  if (arena.status !== 'playing' || !player || !UPGRADE_POOL.some(option => option.id === upgradeId) ||
+      !player.upgradeChoices.some(option => option.id === upgradeId)) {
     throw new Error('这个强化选项已经失效，请从当前三个选项中选择');
   }
   const count = (player.upgrades[upgradeId] ?? 0) + 1;
@@ -70,7 +70,6 @@ export function chooseUpgrade(arena, id, upgradeId) {
     case 'range': player.stats.blastRange = 1 + count * 0.18; break;
     case 'efficiency': player.stats.blastCost = BLAST_COST * Math.pow(0.85, count); break;
     case 'magnet': player.stats.magnet = count * 25; break;
-    case 'shield': player.stats.maxHp = 100 + count * 25; player.hp = Math.min(player.stats.maxHp, player.hp + 25); break;
     case 'recovery': player.stats.energyRegen = 3 * (1 + count * 0.3); break;
     case 'cooldown': player.stats.blastCooldown = 0.85 * Math.pow(0.85, count); break;
   }
@@ -85,7 +84,7 @@ export function normalizeInput(input = {}) {
   let y = clamp(finite(input.y), -1, 1);
   const length = Math.hypot(x, y);
   if (length > 1) { x /= length; y /= length; }
-  return { x, y, fire: input.fire === true,
+  return { x, y, fire: input.fire === true, rearFire: input.rearFire === true,
     split: input.split === true };
 }
 
@@ -122,10 +121,10 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
   if (arena.players.size >= 8) throw new Error('房间已满，最多容纳 8 人');
   const position = spawnPosition(arena);
   const player = { id, name: cleanName(name), color: skinColor(skin, arena.players.size), bot, ready,
-    connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], hp: 100, energy: 60,
+    connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], energy: 60,
     score: 0, kills: 0, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
-    input: normalizeInput(), fireQueued: false, splitQueued: false, shatteredAt: -10,
-    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, botState: null, direction: { x: 1, y: 0 } };
+    input: normalizeInput(), fireQueued: false, rearFireQueued: false, splitQueued: false, shatteredAt: -10,
+    pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, lastWaveHit: null, botState: null, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
   resetProgress(player);
   arena.players.set(id, player);
@@ -138,6 +137,7 @@ export function setPlayerInput(arena, id, input) {
   if (Number.isSafeInteger(input?.seq) && input.seq <= player.pendingInputSeq) return;
   const next = normalizeInput(input);
   if (next.fire && !player.input.fire) player.fireQueued = true;
+  if (next.rearFire && !player.input.rearFire) player.rearFireQueued = true;
   if (next.split && !player.input.split) player.splitQueued = true;
   player.input = next;
   if (Number.isSafeInteger(input?.seq) && input.seq >= 0) player.pendingInputSeq = Math.max(player.pendingInputSeq, input.seq);
@@ -145,7 +145,7 @@ export function setPlayerInput(arena, id, input) {
 
 function newCell(arena, x, y, mass, extra = {}) {
   return { id: `c${++arena.serial}`, x, y, mass, radius: 4 * Math.sqrt(mass),
-    vx: 0, vy: 0, mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, ...extra };
+    vx: 0, vy: 0, mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, lastWaveHitId: null, ...extra };
 }
 
 function syncPlayer(player) {
@@ -277,9 +277,9 @@ export function startRound(arena) {
   arena.fractureContacts = new Map();
   arena.impactSerial = 0;
   for (const player of arena.players.values()) {
-    Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, hp: 100, energy: 60, score: 0, kills: 0,
-      respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
-      shatteredAt: -10, collisionRevision: 0, lastImpact: null, botState: null,
+    Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, energy: 60, score: 0, kills: 0,
+      respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, rearFireQueued: false, splitQueued: false,
+      shatteredAt: -10, collisionRevision: 0, lastImpact: null, lastWaveHit: null, botState: null,
       pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
     syncPlayer(player);
@@ -318,13 +318,18 @@ function botInput(arena, player) {
     }
   }
   if (threat) {
+    if (state.mode !== 'flee' || state.threatId !== threat.player.id) state.fleeSince = arena.time;
     state.mode = 'flee'; state.threatId = threat.player.id;
     state.target = null; state.nextDecisionAt = arena.time + 0.6;
     // Flee from the actual threat, independently of any food target.
     const dx = player.x - threat.cell.x, dy = player.y - threat.cell.y;
     const length = Math.hypot(dx, dy);
+    const speed = Math.hypot(source.vx, source.vy);
+    const behind = speed > 5 && length > 1e-6 && (source.vx * dx + source.vy * dy) / (speed * length) > 0.8;
     return { x: length > 1e-6 ? dx / length : player.direction.x,
-      y: length > 1e-6 ? dy / length : player.direction.y, fire: false, split: false };
+      y: length > 1e-6 ? dy / length : player.direction.y, fire: false, split: false,
+      rearFire: arena.time - state.fleeSince >= 0.2 && threatDistance < 260 && behind &&
+        player.cooldown <= 0 && player.energy >= player.stats.blastCost };
   }
   state.threatId = null;
   if (state.mode === 'chase' && state.enemyId) {
@@ -375,23 +380,6 @@ function botInput(arena, player) {
   return { x: distance > 1 ? dx / distance * scale : 0, y: distance > 1 ? dy / distance * scale : 0,
     split, fire: state.mode === 'chase' && enemyDistance < 260 && facing > 0.8 &&
       player.cooldown <= 0 && player.energy >= player.stats.blastCost };
-}
-
-function destroyPlayer(arena, victim, ownerId, dropDust = true) {
-  const owner = arena.players.get(ownerId);
-  if (owner && owner.id !== victim.id) { owner.score += 25; owner.kills++; }
-  victim.hp = 0;
-  victim.botState = null;
-  victim.respawnIn = 2;
-  victim.vx = victim.vy = 0;
-  victim.cells = [];
-  victim.mass = 0;
-  for (let i = 0; dropDust && i < 7; i++) {
-    const angle = arena.random() * Math.PI * 2;
-    const distance = 12 + arena.random() * 48;
-    addDust(arena, clamp(victim.x + Math.cos(angle) * distance, 24, ARENA.width - 24),
-      clamp(victim.y + Math.sin(angle) * distance, 24, ARENA.height - 24));
-  }
 }
 
 function splitPlayer(arena, player, direction = player.direction) {
@@ -951,20 +939,51 @@ function updateFacing(player, input) {
   }
 }
 
-function launchWave(arena, player) {
+function launchWave(arena, player, mode = 'forward') {
   const source = mainCell(player);
   if (!source || player.respawnIn > 0 || player.energy < player.stats.blastCost || player.cooldown > 0) return;
   const speed = Math.hypot(source.vx, source.vy);
-  const direction = speed >= 5 ? { x: source.vx / speed, y: source.vy / speed } : player.direction;
+  const facing = speed >= 5 ? { x: source.vx / speed, y: source.vy / speed } : player.direction;
+  const sign = mode === 'rear' ? -1 : 1;
+  const direction = { x: facing.x * sign, y: facing.y * sign };
   const originOffset = source.radius + WAVE.curvature + WAVE.thickness / 2 + 4;
   const x = source.x + direction.x * originOffset, y = source.y + direction.y * originOffset;
   player.energy -= player.stats.blastCost;
   player.cooldown = player.stats.blastCooldown;
-  arena.blasts.push({ id: `b${++arena.serial}`, ownerId: player.id, kind: 'wave', sourceCellId: source.id,
+  arena.blasts.push({ id: `b${++arena.serial}`, ownerId: player.id, kind: 'wave', mode, sourceCellId: source.id,
     x, y, originX: x, originY: y, originOffset, directionX: direction.x, directionY: direction.y,
     width: WAVE.width, thickness: WAVE.thickness, curvature: WAVE.curvature,
     speed: WAVE.speed, distance: WAVE.distance * player.stats.blastRange, travel: 0,
     color: player.color, radius: WAVE.width / 2 + WAVE.curvature + WAVE.thickness / 2, hit: new Set() });
+}
+
+function chipWaveCell(arena, player, cell, wave) {
+  const lost = Math.min(cell.mass * WAVE.chipFraction, Math.max(0, cell.mass - 1));
+  if (lost <= 0) return 0;
+  cell.mass -= lost;
+  cell.radius = 4 * Math.sqrt(cell.mass);
+  // Equal triangle vectors sum to zero. All fragments inherit the post-wave
+  // velocity, conserving the momentum after the external wave impulse.
+  const angle = Math.atan2(wave.directionY, wave.directionX);
+  for (let i = 0; i < WAVE.fragmentCount; i++) {
+    const direction = angle + i * Math.PI * 2 / WAVE.fragmentCount;
+    const ux = Math.cos(direction), uy = Math.sin(direction);
+    const distance = cell.radius + 14;
+    let x = clamp(cell.x + ux * distance, 8, ARENA.width - 8);
+    let y = clamp(cell.y + uy * distance, 8, ARENA.height - 8);
+    // A wall clamp can fold a fragment back inside its source body. Choose a
+    // nearby legal opening while retaining the balanced velocity scatter.
+    for (let turn = 1; Math.hypot(x - cell.x, y - cell.y) <= cell.radius + 5 && turn <= 12; turn++) {
+      const opening = direction + turn * Math.PI / 6;
+      x = clamp(cell.x + Math.cos(opening) * distance, 8, ARENA.width - 8);
+      y = clamp(cell.y + Math.sin(opening) * distance, 8, ARENA.height - 8);
+    }
+    addDust(arena, x, y, lost / WAVE.fragmentCount,
+      { fragment: true, color: player.color, ownerId: player.id,
+        collectAfter: arena.time + 0.3, availableAt: arena.time + 0.9,
+        vx: cell.vx + ux * WAVE.fragmentSpeed, vy: cell.vy + uy * WAVE.fragmentSpeed });
+  }
+  return lost;
 }
 
 /** A forward arc; its tips trail its center by curvature world units. */
@@ -1013,7 +1032,7 @@ function advanceWaves(arena, dt) {
     }
     for (const player of arena.players.values()) {
       if (player.id === wave.ownerId || player.respawnIn > 0 || player.invulnerable > 0 || wave.hit.has(player.id)) continue;
-      const hit = player.cells.some(cell => {
+      const hitCells = player.cells.filter(cell => {
         const radiusSquared = (cell.radius + wave.thickness / 2) ** 2;
         const startX = cell._frameX ?? cell._stepX ?? cell.x, startY = cell._frameY ?? cell._stepY ?? cell.y;
         const endX = startX + (cell.x - startX) * activeFraction - deltaX;
@@ -1024,10 +1043,27 @@ function advanceWaves(arena, dt) {
         }
         return false;
       });
-      if (hit) {
+      if (hitCells.length) {
         wave.hit.add(player.id);
-        player.hp = Math.max(0, player.hp - 40);
-        if (player.hp === 0) destroyPlayer(arena, player, wave.ownerId);
+        const eventId = `${wave.id}:${player.id}`;
+        const primary = hitCells[0];
+        const impulseFor = cell => clamp(WAVE.knockback * Math.pow(START_MASS / cell.mass, 0.35), WAVE.minKnockback, WAVE.maxKnockback);
+        const primaryImpulse = impulseFor(primary);
+        const point = { x: primary.x - wave.directionX * primary.radius,
+          y: primary.y - wave.directionY * primary.radius };
+        let lostMass = 0;
+        for (const cell of hitCells) {
+          const impulse = impulseFor(cell);
+          cell.lastWaveHitId = eventId;
+          cell.vx += wave.directionX * impulse;
+          cell.vy += wave.directionY * impulse;
+          lostMass += chipWaveCell(arena, player, cell, wave);
+        }
+        player.collisionRevision++;
+        player.lastWaveHit = { id: eventId, waveId: wave.id, at: arena.time,
+          ownerId: wave.ownerId, cellId: primary.id, ...point, directionX: wave.directionX, directionY: wave.directionY,
+          mode: wave.mode, lostMass, hitCells: hitCells.length, hitCellIds: hitCells.map(cell => cell.id), impulse: primaryImpulse };
+        syncPlayer(player);
       }
     }
   }
@@ -1050,9 +1086,9 @@ export function stepArena(arena, elapsed) {
     player.invulnerable = Math.max(0, player.invulnerable - dt);
     if (player.respawnIn > 0) {
       player.respawnIn = Math.max(0, player.respawnIn - dt);
-      player.fireQueued = player.splitQueued = false;
+      player.fireQueued = player.rearFireQueued = player.splitQueued = false;
       if (player.respawnIn === 0) {
-        Object.assign(player, spawnPosition(arena), { hp: player.stats.maxHp, energy: 45, invulnerable: 2 });
+        Object.assign(player, spawnPosition(arena), { energy: 45, invulnerable: 2 });
         player.cells = [newCell(arena, player.x, player.y, START_MASS)];
         syncPlayer(player);
       }
@@ -1097,8 +1133,9 @@ export function stepArena(arena, elapsed) {
   }
   for (const player of arena.players.values()) {
     updateFacing(player, player.connected ? player.input : normalizeInput());
-    if (player.fireQueued) launchWave(arena, player);
-    player.fireQueued = false;
+    if (player.fireQueued) launchWave(arena, player, 'forward');
+    else if (player.rearFireQueued) launchWave(arena, player, 'rear');
+    player.fireQueued = player.rearFireQueued = false;
   }
   advanceWaves(arena, dt);
   refillDust(arena);
@@ -1124,14 +1161,15 @@ export function snapshotArena(arena, view) {
       x: round(p.x), y: round(p.y), vx: round(p.vx), vy: round(p.vy), radius: round(p.radius), mass: round(p.mass),
       lastInputSeq: p.lastInputSeq, inputAge: p.inputAge, collisionRevision: p.collisionRevision,
       lastImpact: p.lastImpact ? { ...p.lastImpact } : null,
+      lastWaveHit: p.lastWaveHit ? { ...p.lastWaveHit, hitCellIds: [...p.lastWaveHit.hitCellIds] } : null,
       direction: { ...p.direction },
       steering: { x: p.connected ? p.input.x : 0, y: p.connected ? p.input.y : 0 },
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),
-        mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable) > 0,
+        lastWaveHitId: c.lastWaveHitId ?? null, mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable) > 0,
         protectedFor: round(Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable)) })),
-      hp: p.hp, energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
+      energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
       bot: p.bot, connected: p.connected, respawnIn: round(p.respawnIn),
       level: p.level, peakMass: round(p.peakMass), nextUpgradeMass: UPGRADE_THRESHOLDS[p.upgradeMilestones] ?? null,
       upgradePending: p.upgradePending, upgradeChoices: p.upgradeChoices.map(option => ({ ...option })),
@@ -1140,7 +1178,7 @@ export function snapshotArena(arena, view) {
       invulnerable: round(p.invulnerable), cooldown: round(p.cooldown) })),
     dust: visibleDust.map(d => ({ id: d.id, x: round(d.x), y: round(d.y), vx: round(finite(d.vx)), vy: round(finite(d.vy)), value: d.value,
       ...(d.fragment ? { fragment: true, color: d.color, ownerId: d.ownerId } : {}) })),
-    blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, kind: b.kind, sourceCellId: b.sourceCellId,
+    blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, kind: b.kind, mode: b.mode, sourceCellId: b.sourceCellId,
       x: round(b.x), y: round(b.y), originX: round(b.originX), originY: round(b.originY), originOffset: round(b.originOffset),
       directionX: b.directionX, directionY: b.directionY, width: b.width, thickness: b.thickness, curvature: b.curvature,
       speed: b.speed, distance: round(b.distance), travel: round(b.travel),

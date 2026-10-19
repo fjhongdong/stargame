@@ -19,7 +19,7 @@
   let active = false, intentionalClose = false, joined = false, reconnecting = false;
   let pendingResolve, pendingReject, connectionTimer, retryTimer, retries = 0;
   let width = innerWidth, height = innerHeight, dpr = 1, raf, inputTimer, pingTimer, backgroundCanvas;
-  let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false;
+  let lastFrame = 0, lastHud = 0, inputPulse = false, rearPulse = false, splitPulse = false;
   let touchVector = { x: 0, y: 0 }, joystickPointer = null, sound = false, audioContext;
   let previousStatus = '', previousRound = -1, lastUpgradeKey = '', lastShatteredAt = 0;
   let inputSeq = 0, lastInputAck = 0, lastMovementSeq = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
@@ -32,6 +32,8 @@
   const seenImpacts = new Map();
   const predictedContactEffects = new Map();
   const waveVisuals = new Map();
+  const combatFeedback = new Map(), seenCombatEvents = new Map();
+  let combatMarkerTimer;
   const remoteContactPositions = new Map();
   const remotePhysics = new Map(), contactEpisodes = new Map();
   const defaultMotion = { response: 6, drag: 2, stopSpeed: .5, restitution: .2, restingThreshold: 60, contactSlop: .01, physicsStep: 1 / 120 };
@@ -39,7 +41,7 @@
   let renderTimeline = null;
   let remoteContactFrame = -1;
   const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
-  const gameKeys = new Set([...movementKeys, 'Space', 'KeyE', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
+  const gameKeys = new Set([...movementKeys, 'Space', 'KeyE', 'KeyR', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
   const stars = Array.from({ length: 240 }, (_, i) => ({
     x: Math.abs(Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1,
     y: Math.abs(Math.sin(i * 269.5 + 183.3) * 29813.3719) % 1,
@@ -52,8 +54,8 @@
     root = $('gameOverlay') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'gameOverlay', hidden: true }));
     const style = document.createElement('style');
     style.textContent = `
-      #gameOverlay{position:fixed;inset:0;z-index:1000;background:#070b15;color:#f2f5fc;font-family:inherit;overflow:hidden;isolation:isolate;touch-action:none}#gameOverlay[hidden]{display:none!important}#gameOverlay *{box-sizing:border-box}#gameOverlay button{font:inherit;cursor:pointer}#gameOverlay button:focus-visible{outline:2px solid #b7f4d5;outline-offset:5px}#gameOverlay button:disabled{cursor:not-allowed;opacity:.4}#gameOverlay svg{width:20px;height:20px;display:block}#gameCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}#gameOverlay .sg-top{position:absolute;top:28px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;gap:14px}#gameOverlay .sg-top>*{pointer-events:auto}.sg-brand{display:flex;align-items:center;gap:12px}.sg-symbol{width:38px;height:38px;border:1px solid #b8f3d450;border-radius:50%;display:grid;place-items:center;color:#b7f4d5;font-size:25px;box-shadow:0 0 28px #a0f9cb12}.sg-title{font-size:15px;font-weight:750;letter-spacing:2px}.sg-subtitle{font-size:9px;letter-spacing:2.2px;color:#84909f;margin-top:5px}.sg-round{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:17px;padding:11px 19px;background:#101722c9;border:1px solid #768b982b;border-radius:11px;backdrop-filter:blur(12px)}.sg-live-dot{width:6px;height:6px;background:#b9f6ca;border-radius:50%;box-shadow:0 0 10px #b9f6ca}.sg-round-label{font-size:10px;letter-spacing:2px;color:#a5b1bd}.sg-timer{font:600 21px ui-monospace,monospace;letter-spacing:2px}.sg-actions{display:flex;gap:9px}.sg-icon-btn{width:39px;height:39px;display:grid;place-items:center;background:#101722c9;border:1px solid #768b9835;border-radius:10px;color:#a6b1c0;backdrop-filter:blur(12px)}.sg-icon-btn:hover{color:#ddf8e9;border-color:#b9f6ca70}.sg-icon-btn[aria-pressed=false]{color:#687584}.sg-rank{position:absolute;left:34px;top:112px;width:198px;padding:18px 17px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;backdrop-filter:blur(16px)}.sg-eyebrow{color:#8c9aa8;font-size:9px;letter-spacing:2.2px;font-weight:650}.sg-rank-title{display:flex;justify-content:space-between;gap:10px;padding-bottom:13px;border-bottom:1px solid #afc4d912}.sg-rank-count{font:10px ui-monospace,monospace;color:#b9f6ca}.sg-rank-row{display:grid;grid-template-columns:15px 9px 1fr auto;gap:7px;align-items:center;font-size:11px;margin-top:15px;color:#b7c0ce}.sg-rank-row.me{color:#effcf4}.sg-rank-num{font:10px ui-monospace,monospace;color:#718092}.sg-player-dot{width:6px;height:6px;border-radius:50%;background:var(--planet);box-shadow:0 0 10px var(--planet)}.sg-rank-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sg-rank-score{font:11px ui-monospace,monospace;color:#f4f7fb}.sg-stat{position:absolute;right:34px;top:112px;width:159px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;padding:17px 18px;backdrop-filter:blur(16px)}.sg-score{font:500 36px ui-monospace,monospace;letter-spacing:-2px;margin:10px 0 4px}.sg-score-label{color:#738191;font-size:10px}.sg-health{display:flex;gap:4px;margin-top:18px}.sg-health i{height:3px;flex:1;border-radius:3px;background:#b9f6ca}.sg-health i.empty{background:#293242}.sg-hp-label{display:flex;justify-content:space-between;color:#84909f;font-size:9px;margin-top:7px;letter-spacing:1px}.sg-bottom{position:absolute;bottom:27px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:end;pointer-events:none;gap:24px}.sg-controls{display:flex;gap:20px;color:#83909f;font-size:10px;align-items:center;line-height:1.9}.sg-control{display:flex;align-items:center;gap:7px}.sg-key{font:10px ui-monospace,monospace;display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:23px;border:1px solid #61728455;border-radius:5px;color:#bac5d4;background:#101724aa;padding:0 6px}.sg-energy{width:210px;pointer-events:auto}.sg-energy-caption{display:flex;justify-content:space-between;margin-bottom:10px;font-size:9px;color:#9faab8;letter-spacing:1px}.sg-energy-track{height:4px;background:#273040;border-radius:10px;overflow:hidden}.sg-energy-fill{height:100%;width:60%;background:linear-gradient(90deg,#a68cff,#d4b5ff);box-shadow:0 0 12px #d4b5ff;transition:width .12s linear}.sg-blast-button{margin-top:12px;width:100%;display:flex;justify-content:center;align-items:center;gap:10px;background:#c9b5ff13;border:1px solid #ccb5ff50;border-radius:8px;color:#decfff;font-size:11px;padding:11px 12px;letter-spacing:1px}.sg-blast-button:hover{background:#c9b5ff26}.sg-blast-button svg{width:15px;height:15px}.sg-blast-button kbd{font:9px ui-monospace,monospace;padding:2px 5px;border:1px solid #ccb5ff40;border-radius:3px;color:#9e8fc1}.sg-room-code{position:absolute;bottom:29px;left:50%;transform:translateX(-50%);color:#667588;font:9px ui-monospace,monospace;letter-spacing:2px}.sg-panel-backdrop{position:absolute;inset:0;display:grid;place-items:center;padding:90px 24px;background:#05091366;backdrop-filter:blur(5px)}.sg-panel-backdrop[hidden]{display:none}.sg-panel{position:relative;width:100%;max-width:470px;border:1px solid #97afc32b;background:linear-gradient(145deg,#172130f5,#0d1421fa);box-shadow:0 30px 120px #0009;border-radius:22px;padding:33px}.sg-panel-topline{display:flex;align-items:center;justify-content:space-between;gap:10px}.sg-badge{font-size:9px;letter-spacing:2px;padding:6px 9px;border:1px solid #b9f6ca30;border-radius:5px;color:#b9f6ca;background:#b9f6ca08}.sg-panel h2{margin:20px 0 10px;font-size:30px;font-weight:600;letter-spacing:-.6px;line-height:1.25}.sg-panel-desc{font-size:12px;color:#8c9baa;line-height:1.9;margin:0}.sg-code-box{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid #7a91a52e;border-radius:11px;background:#080e19a8;margin:22px 0;padding:15px 17px}.sg-code-label{font-size:9px;color:#7f90a1;letter-spacing:2px}.sg-code{font:500 26px ui-monospace,monospace;color:#d4b5ff;letter-spacing:6px;margin-top:6px}.sg-copy{border:0;background:#d4b5ff0e;color:#b9a4e8;width:37px;height:37px;border-radius:8px;display:grid;place-items:center}.sg-copy:hover{background:#d4b5ff22}.sg-roster-title{display:flex;justify-content:space-between;font-size:10px;color:#9ca9b8;margin:0 0 10px;letter-spacing:1px}.sg-roster{display:flex;flex-direction:column;gap:7px}.sg-roster-row{display:flex;align-items:center;gap:11px;padding:10px 11px;background:#d8e6f305;border:1px solid #a4b8cc10;border-radius:9px;font-size:12px}.sg-mini-planet{width:23px;height:23px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#ffffffa8,var(--planet) 27%,#152237 95%);box-shadow:0 0 12px color-mix(in srgb,var(--planet) 18%,transparent);flex-shrink:0}.sg-roster-name{flex:1;color:#cbd6e3;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.sg-small-tag{font-size:8px;color:#7e8c9e;border:1px solid #7e8c9e35;border-radius:3px;padding:2px 4px;letter-spacing:1px;margin-left:6px}.sg-ready-status{font-size:9px;color:#7e8c9e;white-space:nowrap}.sg-ready-status.ready{color:#b9f6ca}.sg-panel-buttons{display:flex;gap:9px;margin-top:22px}.sg-primary,.sg-secondary{border-radius:9px;min-height:44px;padding:12px 17px;font-size:12px;letter-spacing:1px;border:1px solid transparent;flex:1}.sg-primary{background:#b9f6ca;color:#10221b;font-weight:700;box-shadow:0 0 28px #b9f6ca0b}.sg-primary:hover{background:#d2ffdf}.sg-secondary{background:#c5d4e806;border-color:#afc3d72b;color:#b0bece}.sg-secondary:hover{background:#c5d4e810;border-color:#afc3d75b}.sg-panel-note{text-align:center;font-size:10px;line-height:1.8;color:#6f8092;margin:13px 0 0}.sg-progress{width:30px;height:30px;border:2px solid #b9f6ca20;border-top-color:#b9f6ca;border-radius:50%;animation:sg-spin 1s linear infinite;margin-bottom:24px}@keyframes sg-spin{to{transform:rotate(360deg)}}.sg-status{position:absolute;top:87px;left:50%;transform:translateX(-50%);padding:7px 13px;border:1px solid #e2c18f3b;background:#171c26d9;color:#e4c698;font-size:10px;border-radius:6px;white-space:nowrap}.sg-status[hidden]{display:none}.sg-toast{position:absolute;left:50%;top:110px;transform:translateX(-50%);color:#c9f7dc;background:#101d1dec;border:1px solid #b9f6ca35;border-radius:8px;font-size:12px;padding:11px 19px;transition:opacity .2s;pointer-events:none;opacity:0}.sg-toast.show{opacity:1}.sg-result-place{font:500 70px ui-monospace,monospace;color:#d4b5ff;letter-spacing:-5px;margin:15px 0 6px}.sg-result-grid{display:flex;gap:20px;margin:20px 0;padding:17px 0;border-top:1px solid #a4b8cc20;border-bottom:1px solid #a4b8cc20}.sg-result-grid>div{flex:1}.sg-result-number{font:500 23px ui-monospace,monospace;color:#e6edf8;margin-bottom:6px}.sg-result-label{font-size:9px;color:#7f90a1;letter-spacing:1px}.sg-touch{display:none;position:absolute;inset:0;pointer-events:none}.sg-joystick{position:absolute;bottom:38px;left:27px;width:108px;height:108px;border:1px solid #b6cde42b;background:#b6cde407;border-radius:50%;pointer-events:auto;touch-action:none}.sg-joystick:before{content:'';position:absolute;inset:26px;border:1px dashed #b6cde424;border-radius:50%}.sg-joystick-knob{position:absolute;left:34px;top:34px;width:38px;height:38px;border:1px solid #b6cde46b;background:#b6cde415;border-radius:50%;box-shadow:0 0 22px #b6cde40b;pointer-events:none}.sg-mobile-hint{display:none}.sg-respawn{position:absolute;left:50%;top:58%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;color:#c7b7ed;font-size:12px;letter-spacing:2px}.sg-respawn strong{display:block;font:500 48px ui-monospace,monospace;margin-bottom:9px}.sg-respawn[hidden]{display:none}
-      @media(max-width:700px){#gameOverlay .sg-top{top:18px;left:18px;right:18px}.sg-brand{gap:9px}.sg-symbol{width:30px;height:30px;font-size:21px}.sg-title{font-size:12px;letter-spacing:1px}.sg-subtitle{font-size:7px;letter-spacing:1.2px}.sg-round{top:54px;padding:8px 12px;gap:10px}.sg-round-label{font-size:8px}.sg-timer{font-size:17px}.sg-icon-btn{width:32px;height:32px;border-radius:8px}.sg-icon-btn svg{width:16px;height:16px}.sg-actions{gap:6px}.sg-rank{left:18px;top:119px;width:145px;padding:12px}.sg-rank-row{font-size:9px;gap:5px;margin-top:11px;grid-template-columns:11px 6px 1fr auto}.sg-rank-num,.sg-rank-score{font-size:9px}.sg-eyebrow{font-size:8px;letter-spacing:1.2px}.sg-rank-count{font-size:8px}.sg-rank-title{padding-bottom:9px}.sg-stat{right:18px;top:119px;width:112px;padding:12px}.sg-score{font-size:28px;margin-top:7px}.sg-score-label{font-size:8px}.sg-health{margin-top:12px}.sg-bottom{left:18px;right:24px;bottom:35px}.sg-controls{display:none}.sg-energy{width:105px;margin-left:auto}.sg-blast-button{border-radius:50%;width:84px;height:84px;flex-direction:column;padding:13px;gap:6px;font-size:10px;margin:13px auto 0;background:#bda1ff18;border-color:#ccb5ff73}.sg-blast-button svg{width:23px;height:23px}.sg-blast-button kbd{display:none}.sg-energy-caption{font-size:8px;letter-spacing:0}.sg-touch{display:block}.sg-room-code{bottom:13px;font-size:8px;letter-spacing:1px}.sg-panel-backdrop{padding:98px 18px 24px}.sg-panel{padding:24px;max-width:410px;border-radius:17px;max-height:calc(100dvh - 122px);overflow:auto}.sg-panel h2{font-size:26px;margin-top:17px}.sg-panel-desc{font-size:11px}.sg-code-box{margin:17px 0;padding:12px 14px}.sg-code{font-size:23px}.sg-roster-row{font-size:11px;padding:8px}.sg-panel-buttons{margin-top:18px}.sg-primary,.sg-secondary{padding:10px 9px;font-size:11px}.sg-status{top:103px;font-size:8px;padding:5px 9px}.sg-toast{top:102px;font-size:10px}.sg-result-place{font-size:50px}.sg-result-grid{margin:14px 0;padding:13px 0}.sg-result-number{font-size:20px}}
+      #gameOverlay{position:fixed;inset:0;z-index:1000;background:#070b15;color:#f2f5fc;font-family:inherit;overflow:hidden;isolation:isolate;touch-action:none}#gameOverlay[hidden]{display:none!important}#gameOverlay *{box-sizing:border-box}#gameOverlay button{font:inherit;cursor:pointer}#gameOverlay button:focus-visible{outline:2px solid #b7f4d5;outline-offset:5px}#gameOverlay button:disabled{cursor:not-allowed;opacity:.4}#gameOverlay svg{width:20px;height:20px;display:block}#gameCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}#gameOverlay .sg-top{position:absolute;top:28px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;gap:14px}#gameOverlay .sg-top>*{pointer-events:auto}.sg-brand{display:flex;align-items:center;gap:12px}.sg-symbol{width:38px;height:38px;border:1px solid #b8f3d450;border-radius:50%;display:grid;place-items:center;color:#b7f4d5;font-size:25px;box-shadow:0 0 28px #a0f9cb12}.sg-title{font-size:15px;font-weight:750;letter-spacing:2px}.sg-subtitle{font-size:9px;letter-spacing:2.2px;color:#84909f;margin-top:5px}.sg-round{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:17px;padding:11px 19px;background:#101722c9;border:1px solid #768b982b;border-radius:11px;backdrop-filter:blur(12px)}.sg-live-dot{width:6px;height:6px;background:#b9f6ca;border-radius:50%;box-shadow:0 0 10px #b9f6ca}.sg-round-label{font-size:10px;letter-spacing:2px;color:#a5b1bd}.sg-timer{font:600 21px ui-monospace,monospace;letter-spacing:2px}.sg-actions{display:flex;gap:9px}.sg-icon-btn{width:39px;height:39px;display:grid;place-items:center;background:#101722c9;border:1px solid #768b9835;border-radius:10px;color:#a6b1c0;backdrop-filter:blur(12px)}.sg-icon-btn:hover{color:#ddf8e9;border-color:#b9f6ca70}.sg-icon-btn[aria-pressed=false]{color:#687584}.sg-rank{position:absolute;left:34px;top:112px;width:198px;padding:18px 17px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;backdrop-filter:blur(16px)}.sg-eyebrow{color:#8c9aa8;font-size:9px;letter-spacing:2.2px;font-weight:650}.sg-rank-title{display:flex;justify-content:space-between;gap:10px;padding-bottom:13px;border-bottom:1px solid #afc4d912}.sg-rank-count{font:10px ui-monospace,monospace;color:#b9f6ca}.sg-rank-row{display:grid;grid-template-columns:15px 9px 1fr auto;gap:7px;align-items:center;font-size:11px;margin-top:15px;color:#b7c0ce}.sg-rank-row.me{color:#effcf4}.sg-rank-num{font:10px ui-monospace,monospace;color:#718092}.sg-player-dot{width:6px;height:6px;border-radius:50%;background:var(--planet);box-shadow:0 0 10px var(--planet)}.sg-rank-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sg-rank-score{font:11px ui-monospace,monospace;color:#f4f7fb}.sg-stat{position:absolute;right:34px;top:112px;width:159px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;padding:17px 18px;backdrop-filter:blur(16px)}.sg-score{font:500 36px ui-monospace,monospace;letter-spacing:-2px;margin:10px 0 4px}.sg-score-label{color:#738191;font-size:10px}.sg-bottom{position:absolute;bottom:27px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:end;pointer-events:none;gap:24px}.sg-controls{display:flex;gap:20px;color:#83909f;font-size:10px;align-items:center;line-height:1.9}.sg-control{display:flex;align-items:center;gap:7px}.sg-key{font:10px ui-monospace,monospace;display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:23px;border:1px solid #61728455;border-radius:5px;color:#bac5d4;background:#101724aa;padding:0 6px}.sg-energy{width:210px;pointer-events:auto}.sg-energy-caption{display:flex;justify-content:space-between;margin-bottom:10px;font-size:9px;color:#9faab8;letter-spacing:1px}.sg-energy-track{height:4px;background:#273040;border-radius:10px;overflow:hidden}.sg-energy-fill{height:100%;width:60%;background:linear-gradient(90deg,#a68cff,#d4b5ff);box-shadow:0 0 12px #d4b5ff;transition:width .12s linear}.sg-blast-button{margin-top:12px;width:100%;display:flex;justify-content:center;align-items:center;gap:10px;background:#c9b5ff13;border:1px solid #ccb5ff50;border-radius:8px;color:#decfff;font-size:11px;padding:11px 12px;letter-spacing:1px}.sg-blast-button:hover{background:#c9b5ff26}.sg-blast-button svg{width:15px;height:15px}.sg-blast-button kbd{font:9px ui-monospace,monospace;padding:2px 5px;border:1px solid #ccb5ff40;border-radius:3px;color:#9e8fc1}.sg-room-code{position:absolute;bottom:29px;left:50%;transform:translateX(-50%);color:#667588;font:9px ui-monospace,monospace;letter-spacing:2px}.sg-panel-backdrop{position:absolute;inset:0;display:grid;place-items:center;padding:90px 24px;background:#05091366;backdrop-filter:blur(5px)}.sg-panel-backdrop[hidden]{display:none}.sg-panel{position:relative;width:100%;max-width:470px;border:1px solid #97afc32b;background:linear-gradient(145deg,#172130f5,#0d1421fa);box-shadow:0 30px 120px #0009;border-radius:22px;padding:33px}.sg-panel-topline{display:flex;align-items:center;justify-content:space-between;gap:10px}.sg-badge{font-size:9px;letter-spacing:2px;padding:6px 9px;border:1px solid #b9f6ca30;border-radius:5px;color:#b9f6ca;background:#b9f6ca08}.sg-panel h2{margin:20px 0 10px;font-size:30px;font-weight:600;letter-spacing:-.6px;line-height:1.25}.sg-panel-desc{font-size:12px;color:#8c9baa;line-height:1.9;margin:0}.sg-code-box{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid #7a91a52e;border-radius:11px;background:#080e19a8;margin:22px 0;padding:15px 17px}.sg-code-label{font-size:9px;color:#7f90a1;letter-spacing:2px}.sg-code{font:500 26px ui-monospace,monospace;color:#d4b5ff;letter-spacing:6px;margin-top:6px}.sg-copy{border:0;background:#d4b5ff0e;color:#b9a4e8;width:37px;height:37px;border-radius:8px;display:grid;place-items:center}.sg-copy:hover{background:#d4b5ff22}.sg-roster-title{display:flex;justify-content:space-between;font-size:10px;color:#9ca9b8;margin:0 0 10px;letter-spacing:1px}.sg-roster{display:flex;flex-direction:column;gap:7px}.sg-roster-row{display:flex;align-items:center;gap:11px;padding:10px 11px;background:#d8e6f305;border:1px solid #a4b8cc10;border-radius:9px;font-size:12px}.sg-mini-planet{width:23px;height:23px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#ffffffa8,var(--planet) 27%,#152237 95%);box-shadow:0 0 12px color-mix(in srgb,var(--planet) 18%,transparent);flex-shrink:0}.sg-roster-name{flex:1;color:#cbd6e3;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.sg-small-tag{font-size:8px;color:#7e8c9e;border:1px solid #7e8c9e35;border-radius:3px;padding:2px 4px;letter-spacing:1px;margin-left:6px}.sg-ready-status{font-size:9px;color:#7e8c9e;white-space:nowrap}.sg-ready-status.ready{color:#b9f6ca}.sg-panel-buttons{display:flex;gap:9px;margin-top:22px}.sg-primary,.sg-secondary{border-radius:9px;min-height:44px;padding:12px 17px;font-size:12px;letter-spacing:1px;border:1px solid transparent;flex:1}.sg-primary{background:#b9f6ca;color:#10221b;font-weight:700;box-shadow:0 0 28px #b9f6ca0b}.sg-primary:hover{background:#d2ffdf}.sg-secondary{background:#c5d4e806;border-color:#afc3d72b;color:#b0bece}.sg-secondary:hover{background:#c5d4e810;border-color:#afc3d75b}.sg-panel-note{text-align:center;font-size:10px;line-height:1.8;color:#6f8092;margin:13px 0 0}.sg-progress{width:30px;height:30px;border:2px solid #b9f6ca20;border-top-color:#b9f6ca;border-radius:50%;animation:sg-spin 1s linear infinite;margin-bottom:24px}@keyframes sg-spin{to{transform:rotate(360deg)}}.sg-status{position:absolute;top:87px;left:50%;transform:translateX(-50%);padding:7px 13px;border:1px solid #e2c18f3b;background:#171c26d9;color:#e4c698;font-size:10px;border-radius:6px;white-space:nowrap}.sg-status[hidden]{display:none}.sg-toast{position:absolute;left:50%;top:110px;transform:translateX(-50%);color:#c9f7dc;background:#101d1dec;border:1px solid #b9f6ca35;border-radius:8px;font-size:12px;padding:11px 19px;transition:opacity .2s;pointer-events:none;opacity:0}.sg-toast.show{opacity:1}.sg-result-place{font:500 70px ui-monospace,monospace;color:#d4b5ff;letter-spacing:-5px;margin:15px 0 6px}.sg-result-grid{display:flex;gap:20px;margin:20px 0;padding:17px 0;border-top:1px solid #a4b8cc20;border-bottom:1px solid #a4b8cc20}.sg-result-grid>div{flex:1}.sg-result-number{font:500 23px ui-monospace,monospace;color:#e6edf8;margin-bottom:6px}.sg-result-label{font-size:9px;color:#7f90a1;letter-spacing:1px}.sg-touch{display:none;position:absolute;inset:0;pointer-events:none}.sg-joystick{position:absolute;bottom:38px;left:27px;width:108px;height:108px;border:1px solid #b6cde42b;background:#b6cde407;border-radius:50%;pointer-events:auto;touch-action:none}.sg-joystick:before{content:'';position:absolute;inset:26px;border:1px dashed #b6cde424;border-radius:50%}.sg-joystick-knob{position:absolute;left:34px;top:34px;width:38px;height:38px;border:1px solid #b6cde46b;background:#b6cde415;border-radius:50%;box-shadow:0 0 22px #b6cde40b;pointer-events:none}.sg-mobile-hint{display:none}.sg-respawn{position:absolute;left:50%;top:58%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;color:#c7b7ed;font-size:12px;letter-spacing:2px}.sg-respawn strong{display:block;font:500 48px ui-monospace,monospace;margin-bottom:9px}.sg-respawn[hidden]{display:none}
+      @media(max-width:700px){#gameOverlay .sg-top{top:18px;left:18px;right:18px}.sg-brand{gap:9px}.sg-symbol{width:30px;height:30px;font-size:21px}.sg-title{font-size:12px;letter-spacing:1px}.sg-subtitle{font-size:7px;letter-spacing:1.2px}.sg-round{top:54px;padding:8px 12px;gap:10px}.sg-round-label{font-size:8px}.sg-timer{font-size:17px}.sg-icon-btn{width:32px;height:32px;border-radius:8px}.sg-icon-btn svg{width:16px;height:16px}.sg-actions{gap:6px}.sg-rank{left:18px;top:119px;width:145px;padding:12px}.sg-rank-row{font-size:9px;gap:5px;margin-top:11px;grid-template-columns:11px 6px 1fr auto}.sg-rank-num,.sg-rank-score{font-size:9px}.sg-eyebrow{font-size:8px;letter-spacing:1.2px}.sg-rank-count{font-size:8px}.sg-rank-title{padding-bottom:9px}.sg-stat{right:18px;top:119px;width:112px;padding:12px}.sg-score{font-size:28px;margin-top:7px}.sg-score-label{font-size:8px}.sg-bottom{left:18px;right:24px;bottom:35px}.sg-controls{display:none}.sg-energy{width:105px;margin-left:auto}.sg-blast-button{border-radius:50%;width:84px;height:84px;flex-direction:column;padding:13px;gap:6px;font-size:10px;margin:13px auto 0;background:#bda1ff18;border-color:#ccb5ff73}.sg-blast-button svg{width:23px;height:23px}.sg-blast-button kbd{display:none}.sg-energy-caption{font-size:8px;letter-spacing:0}.sg-touch{display:block}.sg-room-code{bottom:13px;font-size:8px;letter-spacing:1px}.sg-panel-backdrop{padding:98px 18px 24px}.sg-panel{padding:24px;max-width:410px;border-radius:17px;max-height:calc(100dvh - 122px);overflow:auto}.sg-panel h2{font-size:26px;margin-top:17px}.sg-panel-desc{font-size:11px}.sg-code-box{margin:17px 0;padding:12px 14px}.sg-code{font-size:23px}.sg-roster-row{font-size:11px;padding:8px}.sg-panel-buttons{margin-top:18px}.sg-primary,.sg-secondary{padding:10px 9px;font-size:11px}.sg-status{top:103px;font-size:8px;padding:5px 9px}.sg-toast{top:102px;font-size:10px}.sg-result-place{font-size:50px}.sg-result-grid{margin:14px 0;padding:13px 0}.sg-result-number{font-size:20px}}
       @media(max-height:580px) and (min-width:701px){.sg-panel-backdrop{padding:65px 24px 20px}.sg-panel{max-height:calc(100vh - 85px);overflow:auto;padding:24px}.sg-panel h2{margin-top:12px}.sg-code-box{margin:13px 0}.sg-rank,.sg-stat{top:90px}.sg-bottom{bottom:18px}.sg-panel-buttons{margin-top:14px}.sg-roster-row{padding:7px 10px}}
       .sg-mass-label{font-size:9px;color:#b9f6ca;margin-top:10px;letter-spacing:1px}.sg-growth{margin-top:10px;height:3px;background:#283343;border-radius:5px;overflow:hidden}.sg-growth>i{display:block;background:#b9f6ca;height:100%;transition:width .2s}.sg-growth-caption{font-size:8px;color:#718295;margin-top:6px;line-height:1.6}.sg-upgrades{position:absolute;left:50%;bottom:113px;transform:translateX(-50%);width:min(670px,calc(100% - 60px));pointer-events:auto;padding:17px;border:1px solid #d4b5ff55;border-radius:15px;background:#101826f2;box-shadow:0 12px 60px #0008,0 0 70px #b79bff0b;backdrop-filter:blur(20px)}.sg-upgrades[hidden]{display:none}.sg-upgrade-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:13px}.sg-upgrade-title{font-size:13px;color:#e4d8ff;font-weight:650;letter-spacing:1px}.sg-upgrade-hint{font-size:9px;color:#8293a5}.sg-upgrade-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.sg-upgrade-card{position:relative;text-align:left;border:1px solid #a5b5cc26;background:linear-gradient(150deg,#27263d99,#131d2c80);color:#e6ddf8;border-radius:10px;padding:15px 13px;min-height:115px;transition:transform .15s,border-color .15s}.sg-upgrade-card:hover,.sg-upgrade-card:focus-visible{transform:translateY(-4px);border-color:#d4b5ff90;background:linear-gradient(150deg,#423257aa,#1b2835aa)}.sg-upgrade-card:nth-child(2){background:linear-gradient(150deg,#233c3890,#131d2c80)}.sg-upgrade-card:nth-child(3){background:linear-gradient(150deg,#34332b90,#131d2c80)}.sg-upgrade-icon{font-size:22px;line-height:1;display:block;margin-bottom:12px;color:#d4b5ff}.sg-upgrade-card:nth-child(2) .sg-upgrade-icon{color:#b9f6ca}.sg-upgrade-card:nth-child(3) .sg-upgrade-icon{color:#e4cd9c}.sg-upgrade-name{font-size:12px;font-weight:600;display:block;margin-bottom:7px}.sg-upgrade-desc{font-size:10px;color:#98a8b9;line-height:1.7;display:block}.sg-upgrade-key{position:absolute;right:10px;top:11px;color:#7c7a93;font:9px ui-monospace,monospace;border:1px solid #7c7a9344;padding:2px 5px;border-radius:3px}.sg-upgrade-active{position:absolute;right:34px;top:300px;width:159px;color:#8191a5;font-size:9px;line-height:1.9;pointer-events:none}.sg-upgrade-active b{color:#c8b6ef;font-weight:400}.sg-touch-utility{display:none;position:absolute;right:128px;bottom:40px;gap:10px;pointer-events:auto;flex-direction:column}.sg-touch-utility button{width:46px;height:46px;border:1px solid #b8d2ed44;background:#182435dc;color:#c1d2e5;border-radius:50%;font-size:10px}.sg-touch-utility button:first-child{border-color:#b9f6ca66;color:#b9f6ca}
       @media(max-width:700px){.sg-mass-label{font-size:8px;margin-top:7px}.sg-growth-caption{font-size:7px}.sg-upgrades{bottom:160px;width:calc(100% - 28px);padding:13px;border-radius:12px}.sg-upgrade-head{margin-bottom:10px;flex-wrap:wrap;gap:5px}.sg-upgrade-title{font-size:11px}.sg-upgrade-hint{font-size:8px}.sg-upgrade-cards{gap:7px}.sg-upgrade-card{padding:12px 9px;min-height:133px}.sg-upgrade-icon{font-size:21px;margin-bottom:12px}.sg-upgrade-name{font-size:10px}.sg-upgrade-desc{font-size:8px;line-height:1.6}.sg-upgrade-key{font-size:8px;padding:1px 4px;right:7px;top:8px}.sg-upgrade-active{top:305px;right:18px;width:112px;font-size:8px}.sg-touch-utility{display:flex}.sg-controls{display:none}}
@@ -62,13 +64,14 @@
       @media(prefers-reduced-motion:reduce){#gameOverlay *{transition:none!important}}
     `;
     document.head.appendChild(style);
+    style.textContent += `.sg-wave-actions{display:flex;gap:7px}.sg-wave-actions .sg-blast-button{min-width:0;font-size:10px;letter-spacing:0;padding:11px 7px;gap:5px}.sg-rear-blast svg{transform:rotate(180deg)}.sg-rear-blast:disabled{opacity:.4}@media(max-width:700px){.sg-wave-actions{display:block}.sg-wave-actions .sg-blast-button{font-size:10px;padding:13px;gap:6px}.sg-wave-actions .sg-rear-blast{position:fixed;right:128px;bottom:96px;width:46px;height:46px;padding:5px;margin:0;gap:3px;font-size:8px}#sgRearBlast{padding:5px;gap:3px;font-size:9px;line-height:1.1}#sgRearBlast svg{width:14px;height:14px;flex-shrink:0}#sgRearBlast span{white-space:nowrap;font-size:9px;line-height:1.1}}.sg-wave-feedback{position:absolute;top:153px;left:50%;transform:translateX(-50%);max-width:calc(100% - 40px);padding:10px 17px;border:1px solid #d4b5ff77;border-radius:9px;background:#151c2fed;color:#eadfff;font-size:12px;white-space:nowrap;pointer-events:none}.sg-wave-feedback[hidden]{display:none}.sg-wave-feedback[data-tone=victim]{border-color:#ffb69e88;color:#ffd2bd}@media(max-width:700px){.sg-wave-feedback{top:141px;font-size:10px;padding:8px 12px}}`;
     root.innerHTML = `
       <canvas id="gameCanvas" aria-label="星球大爆炸实时竞技场"></canvas>
       <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
-      <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
-      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向引力波</span><kbd>E</kbd></button></div></div>
-      <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
+      <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div></div>
+      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><div class="sg-wave-actions"><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向波</span><kbd>E</kbd></button><button id="sgRearBlast" class="sg-blast-button sg-rear-blast" aria-label="向后发射引力波，R">${icons.bolt}<span>后向波</span><kbd>R</kbd></button></div></div></div>
+      <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div><div class="sg-wave-feedback" id="sgWaveFeedback" role="status" aria-live="polite" hidden></div>
       <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
       <div class="sg-panel-backdrop" id="sgPanelBackdrop"><section class="sg-panel" id="sgPanel" aria-live="polite"></section></div>
@@ -87,6 +90,7 @@
       if (sound) { if (window.StarAudio) window.StarAudio.play('click'); else playTone(440, .08, .025); }
     });
     $('sgBlast').addEventListener('pointerdown', (e) => { e.preventDefault(); blast(); });
+    $('sgRearBlast').addEventListener('pointerdown', (e) => { e.preventDefault(); blast(true); });
     $('sgTouchSplit').addEventListener('pointerdown', (e) => { e.preventDefault(); split(); });
     const joystick = $('sgJoystick');
     function moveJoystick(e) {
@@ -123,6 +127,7 @@
       if (code !== 'Escape') e.preventDefault();
       if (code === 'Space' && !e.repeat) split();
       if (code === 'KeyE' && !e.repeat) blast();
+      if (code === 'KeyR' && !e.repeat) blast(true);
       if (/^Digit[123]$/.test(code) && !e.repeat) chooseUpgrade(Number(code.slice(-1)) - 1);
       if (code === 'Escape') { if (room?.status === 'playing') toast('点击右上角退出图标可返回大厅'); }
       keys.add(code);
@@ -141,7 +146,7 @@
   function resetHeldInputs(sendStop = true) {
     keys.clear();
     resetJoystick();
-    inputPulse = false; splitPulse = false;
+    inputPulse = false; rearPulse = false; splitPulse = false;
     if (sendStop) sendInput();
   }
 
@@ -149,7 +154,7 @@
   function keyboardCode(event) {
     if (gameKeys.has(event.code)) return event.code;
     const key = event.key || '';
-    if (/^[wasde]$/i.test(key)) return `Key${key.toUpperCase()}`;
+    if (/^[wasder]$/i.test(key)) return `Key${key.toUpperCase()}`;
     if (/^[123]$/.test(key)) return `Digit${key}`;
     if (key === ' ' || key === 'Spacebar') return 'Space';
     if (['Up', 'Down', 'Left', 'Right'].includes(key)) return `Arrow${key}`;
@@ -195,13 +200,14 @@
     currentOptions = { ...options, mode };
     active = true; joined = false; reconnecting = false; intentionalClose = false; retries = 0;
     resetHeldInputs(false);
+    resetWaveFeedback();
     renderTimeline = null;
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
     cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
     inputSeq = 0; lastInputAck = 0; lastMovementSeq = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
     camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
-    inputPulse = false; splitPulse = false;
+    inputPulse = false; rearPulse = false; splitPulse = false;
     $('sgUpgrades').hidden = true;
     root.hidden = false;
     focusGame();
@@ -267,14 +273,14 @@
   function attemptReconnect() {
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
-    reconnecting = true; retries += 1; resetHeldInputs(false);
+    reconnecting = true; retries += 1; resetHeldInputs(false); resetWaveFeedback();
     predictedCells.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); inputHistory.length = 0; waveVisuals.clear(); renderTimeline = null;
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
 
   function showConnectionError(message) {
-    reconnecting = false; clearTimeout(retryTimer);
+    reconnecting = false; clearTimeout(retryTimer); resetWaveFeedback();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); renderTimeline = null;
     resetHeldInputs(false);
@@ -294,7 +300,7 @@
 
   function send(data) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); }
   function closeSession(notify = true) {
-    intentionalClose = true; active = false;
+    intentionalClose = true; active = false; resetWaveFeedback();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); remoteContactPositions.clear(); renderTimeline = null;
     clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
@@ -328,6 +334,7 @@
     const me = room.players.find((p) => p.id === myId);
     if (me?.shatteredAt > lastShatteredAt) { lastShatteredAt = me.shatteredAt; toast('撞击碎裂！守住核心，抢回碎片'); }
     emitContactEffects(room, old);
+    receiveWaveFeedback(room, old);
     for (const blast of room.blasts) {
       if (!seenBlasts.has(blast.id)) {
         seenBlasts.add(blast.id);
@@ -345,6 +352,48 @@
       previousStatus = room.status; previousRound = room.round;
     }
     updateHud(room.status !== old?.status || room.round !== old?.round);
+  }
+
+  function resetWaveFeedback() {
+    combatFeedback.clear(); seenCombatEvents.clear(); clearTimeout(combatMarkerTimer);
+    const marker = $('sgWaveFeedback'); if (marker) marker.hidden = true;
+  }
+  function receiveWaveFeedback(current, previous) {
+    if (previous?.code !== current.code || previous?.round !== current.round) resetWaveFeedback();
+    const now = performance.now();
+    for (const player of current.players) {
+      const hit = player.lastWaveHit;
+      if (!hit?.id || seenCombatEvents.has(hit.id)) continue;
+      seenCombatEvents.set(hit.id, hit.at);
+      const previousHit = previous?.players?.find(p => p.id === player.id)?.lastWaveHit;
+      const age = current.time - hit.at;
+      if (previousHit?.id === hit.id || previous?.status !== 'playing' || current.status !== 'playing' || previous.round !== current.round || !Number.isFinite(age) || age < -.02 || age > .8) continue;
+      const body = drawnPlayers.get(`${player.id}:${hit.cellId}`) || { x: player.x, y: player.y, radius: player.radius || 24 };
+      const cellIds = hit.hitCellIds || [hit.cellId];
+      combatFeedback.set(player.id, { hit, cellIds, startedAt: now - Math.max(0, age) * 1000, recentUntil: now + 2800, fallback: { ...body } });
+      const directionLength = Math.hypot(hit.directionX, hit.directionY) || 1, dx = (hit.directionX || 0) / directionLength, dy = (hit.directionY || 0) / directionLength;
+      const x = body.x - dx * body.radius, y = body.y - dy * body.radius;
+      for (let i = 0; i < 5; i++) {
+        const tangent = (i - 2) * 27, duration = .2 + i % 2 * .08;
+        if (age >= duration) continue;
+        particles.push({ kind: 'chip', x, y, vx: dx * (40 + i * 11) - dy * tangent, vy: dy * (40 + i * 11) + dx * tangent, rotation: i, size: 1.3, life: duration - Math.max(0, age), duration, updatedAt: now, color: '#ffd3b5' });
+      }
+      if (player.id === myId || hit.ownerId === myId) {
+        const marker = $('sgWaveFeedback'), victim = player.id === myId;
+        if (marker) {
+          marker.dataset.kind = 'wave'; marker.dataset.tone = victim ? 'victim' : 'shooter';
+          marker.dataset.mode = hit.mode || 'forward';
+          const lost = Math.max(0, hit.lostMass || 0).toFixed(1).replace(/\.0$/, '');
+          marker.textContent = victim ? `遭到引力波击退${hit.lostMass > 0 ? ` · 震落 ${lost} 质量的碎片` : ''}` : `引力波命中 · 击退 ${player.name}${hit.lostMass > 0 ? ` · 震落 ${lost} 质量的碎片` : ''}`;
+          marker.hidden = false; clearTimeout(combatMarkerTimer);
+          combatMarkerTimer = setTimeout(() => { marker.hidden = true; }, 1300);
+        }
+      }
+    }
+    for (const [id, at] of seenCombatEvents) if (current.time - at > 5) seenCombatEvents.delete(id);
+    while (seenCombatEvents.size > 128) seenCombatEvents.delete(seenCombatEvents.keys().next().value);
+    while (combatFeedback.size > 64) combatFeedback.delete(combatFeedback.keys().next().value);
+    if (particles.length > 180) particles.splice(0, particles.length - 180);
   }
 
   function emitContactEffects(current, previous) {
@@ -474,7 +523,7 @@
         $('sgUpgradeCards').querySelectorAll('button').forEach((button) => { button.onclick = () => chooseUpgrade(Number(button.dataset.choice)); });
       }
     } else lastUpgradeKey = '';
-    const names = { speed: '光速引擎', growth: '星尘滋养', blast: '超新星回响', blastRange: '超新星回响', range: '超新星回响', energy: '能量核心', efficiency: '能量核心', magnet: '引力场', shield: '行星护盾', recovery: '恒星充能', regen: '恒星充能', cooldown: '星波调谐' };
+    const names = { speed: '光速引擎', growth: '星尘滋养', blast: '超新星回响', blastRange: '超新星回响', range: '超新星回响', energy: '能量核心', efficiency: '能量核心', magnet: '引力场', recovery: '恒星充能', regen: '恒星充能', cooldown: '星波调谐' };
     setMarkup('sgUpgradeActive', (me?.upgrades || []).length ? `<span class="sg-eyebrow">已获得强化</span><br>${me.upgrades.map((u) => `<b>✧ ${esc(u.title || names[u.id] || u.id)}</b>${u.count > 1 ? ` ×${u.count}` : ''}`).join('<br>')}` : '');
   }
   function chooseUpgrade(index) {
@@ -508,13 +557,13 @@
     $('sgGrowthFill').style.width = `${next ? clamp(peak / next * 100, 0, 100) : 100}%`;
     const gravity = Math.max(0, ...(me?.cells || []).map((cell) => cell.gravityRadius || 0));
     $('sgGrowthText').textContent = `${next ? `巅峰 ${Math.floor(peak)} / ${next} · 三选一` : '所有强化已解锁'}${gravity ? ` · 引力 ${Math.round(gravity)}` : ''}`;
-    const maxHp = me?.stats?.maxHp || 100, hp = clamp(me?.hp ?? maxHp, 0, maxHp), energy = clamp(me?.energy ?? 60, 0, 100);
-    $('sgHp').textContent = `${Math.ceil(hp)} / ${maxHp}`;
-    setMarkup('sgHealth', Array.from({ length: 5 }, (_, i) => `<i${hp / maxHp <= i / 5 ? ' class="empty"' : ''}></i>`).join(''));
+    const energy = clamp(me?.energy ?? 60, 0, 100);
     $('sgEnergyText').textContent = `${Math.floor(energy)} / 100`;
     $('sgEnergyFill').style.width = `${energy}%`;
-    $('sgBlast').disabled = !room || room.status !== 'playing' || energy < (me?.stats?.blastCost || 30) || (me?.respawnIn || 0) > 0 || reconnecting || (me?.cooldown || 0) > 0;
+    const waveDisabled = !room || room.status !== 'playing' || energy < (me?.stats?.blastCost || 30) || (me?.respawnIn || 0) > 0 || reconnecting || (me?.cooldown || 0) > 0;
+    $('sgBlast').disabled = waveDisabled; $('sgRearBlast').disabled = waveDisabled;
     $('sgBlast').title = `沿前进方向发射 · 消耗 ${me?.stats?.blastCost || 30} 能量${me?.cooldown > 0 ? ` · 冷却 ${me.cooldown.toFixed(1)} 秒` : ''}`;
+    $('sgRearBlast').title = `向后反击，不改变移动方向 · 与前向波共用能量和冷却`;
     $('sgRoomFooter').textContent = room ? `${endless ? 'ENDLESS TRAINING / 无尽训练' : `ROOM / ${room.code}`}  ·  STAY CURIOUS, KEEP EXPLODING` : 'CONNECTING TO YOUR UNIVERSE';
     $('sgDiagnostics').textContent = `${fps > 0 ? fps : '—'} FPS / ${rtt === null ? '—' : Math.round(rtt)} ms`;
     const respawn = me?.respawnIn || 0;
@@ -530,12 +579,12 @@
     $('sgToast').textContent = message; $('sgToast').classList.add('show');
     clearTimeout(toast.timer); toast.timer = setTimeout(() => $('sgToast')?.classList.remove('show'), 2800);
   }
-  function blast() {
+  function blast(rear = false) {
     const me = room?.players?.find((p) => p.id === myId);
     if (room?.status !== 'playing' || !me || me.respawnIn > 0) return;
     if (me.energy < (me.stats?.blastCost || 30)) { toast('能量不足 · 收集星尘补充能量'); return; }
     if (me.cooldown > 0) return;
-    inputPulse = true; sendInput();
+    inputPulse = !rear; rearPulse = rear; sendInput();
     window.StarAudio?.play('blast');
   }
   function split() {
@@ -551,8 +600,8 @@
     inputHistory.push({ seq, t: at, ...input });
     if (Math.hypot(input.x, input.y) > 0) lastMovementSeq = seq;
     while (inputHistory.length > 60 || inputHistory[0]?.t < at - 2000) inputHistory.shift();
-    send({ type: 'input', ...input, seq, viewport: { x: view.x, y: view.y, width: Math.min(3200, view.width), height: Math.min(2300, view.height) }, dustDeltas: true, supportsDustDelta: true, fire: inputPulse, split: splitPulse });
-    inputPulse = false; splitPulse = false;
+    send({ type: 'input', ...input, seq, viewport: { x: view.x, y: view.y, width: Math.min(3200, view.width), height: Math.min(2300, view.height) }, dustDeltas: true, supportsDustDelta: true, fire: inputPulse, rearFire: rearPulse, split: splitPulse });
+    inputPulse = false; rearPulse = false; splitPulse = false;
   }
 
   function playTone(frequency, duration, volume, type = 'sine') {
@@ -682,6 +731,9 @@
         const previousCell = previousPlayer?.cells?.find((c) => c.id === cell.id);
         const relocated = previousCell && Math.hypot(cell.x - previousCell.x, cell.y - previousCell.y) > 350;
         const fractured = previousCell && cell.mass < previousCell.mass * .8;
+        const waveHit = player.lastWaveHit;
+        const cellWaveImpulse = cell.lastWaveHitId && cell.lastWaveHitId !== previousCell?.lastWaveHitId;
+        const newWaveImpulse = cellWaveImpulse || (waveHit?.id && waveHit.id !== previousPlayer?.lastWaveHit?.id && next.time - waveHit.at <= .8 && (waveHit.hitCellIds || [waveHit.cellId]).includes(cell.id));
         if (player.id === myId) {
           const model = replayOwnCell(cell, player, acknowledged, at);
           let p = predictedCells.get(cell.id);
@@ -696,7 +748,7 @@
             const newImpact = player.lastImpact?.id && player.lastImpact.id !== previousPlayer?.lastImpact?.id;
             const revised = player.collisionRevision !== previousPlayer?.collisionRevision;
             const velocityError = Math.hypot(model.vx - p.model.vx, model.vy - p.model.vy);
-            if ((newImpact && velocityError > 1) || (p.contactUntil <= at && revised && velocityError > motionSettings.restingThreshold)) {
+            if ((newWaveImpulse && velocityError > 1) || (newImpact && velocityError > 1) || (p.contactUntil <= at && revised && velocityError > motionSettings.restingThreshold)) {
               // A server-only impact is real momentum, unlike ordinary ACK
               // phase noise. Apply it once without moving the visible body.
               p.model.vx = model.vx; p.model.vy = model.vy;
@@ -717,7 +769,7 @@
             remotePhysics.set(key, proxy);
           } else {
             proxy.authority = target;
-            if (fractured) { proxy.model.vx = cell.vx || 0; proxy.model.vy = cell.vy || 0; }
+            if (fractured || newWaveImpulse) { proxy.model.vx = target.vx; proxy.model.vy = target.vy; }
           }
           proxy.cell = cell; proxy.player = player; proxy.steering = steering;
           proxy.modelAt ??= at; proxy.authorityAt = at;
@@ -1108,6 +1160,7 @@
         const extent = Math.hypot((blast.width || 160) / 2, (blast.curvature || 30) + pose.tail) + (blast.thickness || 20) + 10;
         if (visible(pose.x, pose.y, extent, view)) drawBlast(blast, time, pose);
       }
+      drawnPlayers.clear();
       for (const player of room.players) {
         if (player.respawnIn > 0) continue;
         const cells = player.cells || [];
@@ -1115,11 +1168,13 @@
         for (const cell of cells) {
           const own = player.id === myId;
           const position = own ? predictedCells.get(cell.id) || cell : (remoteContactFrame === time ? remoteContactPositions.get(`${player.id}:${cell.id}`) : null) || sampleTrack(cellTracks.get(`${player.id}:${cell.id}`), sampleAt) || cell;
+          drawnPlayers.set(`${player.id}:${cell.id}`, { x: position.x, y: position.y, radius: cell.radius });
           if (own && cell.gravityRadius && visible(position.x, position.y, cell.gravityRadius, view)) drawGravity(position.x, position.y, cell.gravityRadius, player.color, time, primary === cell);
           if (!visible(position.x, position.y, cell.radius * 2.3 + 35, view)) continue;
           drawPlanet(player, cell, position, time, primary === cell); renderedCells++;
         }
       }
+      drawWaveFeedback(time, view);
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i], particleDt = p.updatedAt === undefined ? dt : Math.max(0, (time - p.updatedAt) / 1000);
         if (p.updatedAt !== undefined) p.updatedAt = Math.max(p.updatedAt, time);
@@ -1143,8 +1198,8 @@
         }
       }
     } else {
-      drawPlanet({ id: 'dec1', color: palette[0], hp: 100 }, { radius: 43, mass: 80 }, { x: view.x - 330, y: view.y - 90 }, time, false, true);
-      drawPlanet({ id: 'dec2', color: palette[3], hp: 100 }, { radius: 28, mass: 40 }, { x: view.x + 360, y: view.y + 170 }, time, false, true);
+      drawPlanet({ id: 'dec1', color: palette[0] }, { radius: 43, mass: 80 }, { x: view.x - 330, y: view.y - 90 }, time, false, true);
+      drawPlanet({ id: 'dec2', color: palette[3] }, { radius: 28, mass: 40 }, { x: view.x + 360, y: view.y + 170 }, time, false, true);
     }
     ctx.restore();
     if (room?.status === 'playing') drawMinimap(view);
@@ -1284,8 +1339,12 @@
     if (player.connected === false) ctx.globalAlpha = .5;
     else if (player.invulnerable > 0) ctx.globalAlpha = .75 + Math.sin(time * .015) * .2;
     ctx.drawImage(sprite.canvas, position.x - sprite.center * scale, position.y - sprite.center * scale, sprite.canvas.width * scale, sprite.canvas.height * scale);
+    const feedback = combatFeedback.get(player.id), hitAge = feedback ? (time - feedback.startedAt) / 1000 : Infinity;
+    if (!decoration && feedback?.cellIds.includes(cell.id) && hitAge >= 0 && hitAge < .16) {
+      ctx.globalAlpha = .45 * (1 - hitAge / .16); ctx.fillStyle = '#fff0df';
+      ctx.beginPath(); ctx.arc(position.x, position.y, radius, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+    }
     ctx.strokeStyle = `${color}dd`; ctx.lineWidth = .95 / Math.max(.3, camera.scale); ctx.beginPath(); ctx.arc(position.x, position.y, radius, 0, Math.PI * 2); ctx.stroke();
-    if (me && !decoration) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(position.x, position.y, Math.max(2, radius - 3), -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(player.hp / (player.stats?.maxHp || 100), 0, 1)); ctx.stroke(); }
     if (cell.protected || cell.protectedFor > 0) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.arc(position.x, position.y, radius + 11 + Math.sin(time * .008) * 2, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
     if (!decoration && radius > 15) { ctx.font = `600 ${clamp(radius * .43, 10, 20)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.fillStyle = '#eff4ffb0'; ctx.fillText(Math.floor(cell.mass || player.mass || 0), position.x, position.y + radius * .15); }
     if (me && primary && !decoration) {
@@ -1295,6 +1354,18 @@
     }
     if (!decoration && primary) { ctx.font = `${me ? '600' : '400'} 11px sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = me ? '#edf8f3' : '#a5b5c7'; ctx.fillText(`${player.name}${me ? ' · 你' : player.connected === false ? ' · 重连中' : ''}`, position.x, position.y + radius + 26);  }
     ctx.restore();
+  }
+  function drawWaveFeedback(time, view) {
+    for (const [id, feedback] of combatFeedback) {
+      if (time > feedback.recentUntil) { combatFeedback.delete(id); continue; }
+      const age = (time - feedback.startedAt) / 1000;
+      if (age < 0 || age > .48) continue;
+      const position = drawnPlayers.get(`${id}:${feedback.hit.cellId}`) || feedback.fallback;
+      if (!visible(position.x, position.y, position.radius + 25, view)) continue;
+      const progress = age / .48;
+      ctx.save(); ctx.globalAlpha = (1 - progress) * .85; ctx.strokeStyle = '#ffd4b1'; ctx.lineWidth = (2 - progress) / camera.scale;
+      ctx.beginPath(); ctx.arc(position.x, position.y, position.radius + 4 + progress * 14, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    }
   }
   function drawMinimap(view) {
     const mobile = width < 700, w = mobile ? 105 : 160, h = w * WORLD.height / WORLD.width, x = mobile ? 18 : 34, y = height - (mobile ? 174 : 103) - h;

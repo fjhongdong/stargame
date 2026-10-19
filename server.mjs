@@ -48,7 +48,7 @@ function prepareDustUpdate(session, snapshot) {
 
 /**
  * Wire API: create/join/quick/ready/start/input/leave/ping.
- * Input x/y are a direction vector; fire/split are booleans. All match state is
+ * Input x/y are a direction vector; fire/rearFire/split are booleans. All match state is
  * authoritative. Clients receive welcome, joined, state, left, pong, or error.
  * Reconnect with /ws?token=<reconnectToken> within 30 seconds.
  */
@@ -150,7 +150,7 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, broadc
     player.connected = false;
     player.disconnectedAt = now();
     player.input = normalizeInput();
-    player.fireQueued = player.splitQueued = false;
+    player.fireQueued = player.rearFireQueued = player.splitQueued = false;
     nextHost(room);
     publish(room);
   }

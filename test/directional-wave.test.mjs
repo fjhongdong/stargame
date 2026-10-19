@@ -30,26 +30,33 @@ test('directional waves hit the front while side, rear and out-of-range planets 
     const side = player('side', 1000 + direction.x * 180 - direction.y * 200, 1000 + direction.y * 180 + direction.x * 200);
     const beyond = player('beyond', 1000 + direction.x * 700, 1000 + direction.y * 700);
     fire(arena, owner); advance(arena, .8);
-    assert.equal(front.hp, 60); assert.equal(back.hp, 100); assert.equal(side.hp, 100); assert.equal(beyond.hp, 100);
-    assert.equal(owner.hp, 100); assert.equal(arena.blasts.length, 0);
+    near(front.mass, 36 * .88); assert.ok(front.lastWaveHit);
+    for (const safe of [owner, back, side, beyond]) {
+      near(safe.mass, 36); assert.equal(safe.lastWaveHit, null);
+    }
+    assert.equal(arena.blasts.length, 0);
   }
 });
 
-test('one wave damages a multi-cell victim once rather than once per cell or simulation step', () => {
+test('one wave sheds each intersected cell once and keeps one hit record per victim', () => {
   const { arena, player } = fixture(), owner = player('owner'), target = player('target', 1260, 970);
   target.cells[0].mergeIn = 12;
   target.cells.push({ ...target.cells[0], id: 'other-target-cell', y: 1030 }); target.mass = 72;
   const wave = fire(arena, owner); advance(arena, .6);
-  assert.equal(target.hp, 60); assert.equal(wave.hit.size, 1); assert.ok(wave.hit.has(target.id));
+  near(target.mass, 72 * .88); assert.equal(wave.hit.size, 1); assert.ok(wave.hit.has(target.id));
+  assert.equal(target.lastWaveHit.hitCells, 2);
+  assert.equal(arena.dust.filter(dust => dust.fragment && dust.ownerId === target.id).length, 6);
   assert.equal(owner.score, 0); assert.equal(owner.kills, 0);
 });
 
-test('wave kill scoring happens once for a victim and never hits its owner', () => {
-  const { arena, player } = fixture(), owner = player('owner'), target = player('target', 1260);
-  target.hp = 40;
+test('a wave leaves a tiny live core without a kill reward or a respawn', () => {
+  const { arena, player } = fixture(), owner = player('owner'), target = player('target', 1260, 1000, 1.01);
+  const originalCore = target.cells[0].id;
   fire(arena, owner); advance(arena, .65);
-  assert.equal(owner.kills, 1); assert.equal(owner.score, 25); assert.equal(owner.hp, 100);
-  assert.ok(target.respawnIn > 0);
+  near(target.mass, 1); near(target.lastWaveHit.lostMass, .01);
+  assert.equal(target.cells.length, 1); assert.equal(target.cells[0].id, originalCore);
+  assert.equal(target.respawnIn, 0); assert.equal(owner.score, 0); assert.equal(owner.kills, 0);
+  near(owner.mass, 36); assert.equal(owner.lastWaveHit, null);
 });
 
 test('waves honor upgraded energy cost, cooldown and edge-triggered firing', () => {
@@ -102,7 +109,7 @@ test('a range upgrade increases wave travel distance without changing forward pr
   const target = player('target', 1000 + 24 + WAVE.curvature + WAVE.thickness / 2 + 4 + 480);
   const wave = fire(arena, owner);
   near(wave.distance, WAVE.distance * 1.36); assert.equal(wave.speed, WAVE.speed);
-  advance(arena, .8); assert.equal(target.hp, 60); assert.ok(arena.blasts.includes(wave));
+  advance(arena, .8); near(target.mass, 36 * .88); assert.ok(arena.blasts.includes(wave));
   advance(arena, .3); assert.ok(!arena.blasts.includes(wave));
 });
 
@@ -112,7 +119,7 @@ test('snapshot geometry and viewport culling follow the travelling arc rather th
   const visible = snapshotArena(arena, { x: wave.x, y: wave.y, width: 40, height: 40, margin: 0 });
   assert.equal(visible.blasts.length, 1);
   const wire = visible.blasts[0];
-  assert.equal(wire.kind, 'wave'); assert.equal(wire.sourceCellId, owner.cells[0].id);
+  assert.equal(wire.kind, 'wave'); assert.equal(wire.mode, 'forward'); assert.equal(wire.sourceCellId, owner.cells[0].id);
   for (const field of ['originX','originY','originOffset','directionX','directionY','width','thickness','curvature','speed','distance','travel','radius','progress']) assert.ok(Number.isFinite(wire[field]), `wire ${field} is finite`);
   near(wire.x, wave.x, .01); near(wire.y, wave.y, .01); assert.ok(wire.progress > 0 && wire.progress < 1);
   const oldOrigin = snapshotArena(arena, { x: wave.originX, y: wave.originY, width: 40, height: 40, margin: 0 });
@@ -123,12 +130,12 @@ test('snapshot geometry and viewport culling follow the travelling arc rather th
 test('wave sweep hits a tiny target between 100ms endpoints', () => {
   const { arena, player } = fixture(), owner = player('owner'); const wave = fire(arena, owner);
   const target = player('tiny', wave.originX + 100, wave.originY, 8);
-  stepArena(arena, .1); assert.equal(target.hp, 100, 'target is still ahead of the thick wavefront');
+  stepArena(arena, .1); assert.equal(target.mass, 8, 'target is still ahead of the thick wavefront');
   const before = wave.x;
   stepArena(arena, .1);
   assert.ok(Math.abs(target.x - before) > target.radius + wave.thickness / 2);
   assert.ok(Math.abs(target.x - wave.x) > target.radius + wave.thickness / 2);
-  assert.equal(target.hp, 60, 'crossing during the step is detected even when both endpoints miss');
+  near(target.mass, 8 * .88); assert.ok(target.lastWaveHit, 'crossing during the step is detected even when both endpoints miss');
 });
 
 test('relative motion sweep catches a fast target crossing the wave with both endpoints outside its width', () => {
@@ -137,7 +144,7 @@ test('relative motion sweep catches a fast target crossing the wave with both en
   target.cells[0].vy = -260 * 2 / (1 - Math.exp(-.2));
   stepArena(arena, .1);
   assert.ok(target.y < wave.originY - 120, 'target ends beyond the far side of the arc');
-  assert.equal(target.hp, 60);
+  near(target.mass, 8 * .88); assert.ok(target.lastWaveHit);
 });
 
 test('collision divides each small planet into three or four equal parts and retains one original core', () => {

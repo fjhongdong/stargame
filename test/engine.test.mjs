@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { WebSocket } from 'ws';
-import { createArena, addPlayer, normalizeInput, cleanName, setPlayerInput, stepArena, snapshotArena, chooseUpgrade, startRound, gravityRadius } from '../shared/engine.js';
+import { createArena, addPlayer, normalizeInput, cleanName, setPlayerInput, stepArena, snapshotArena, chooseUpgrade, startRound, gravityRadius, UPGRADE_POOL } from '../shared/engine.js';
 import { createRoomManager, createGameServer } from '../server.mjs';
 
 function fixture() {
@@ -184,22 +184,26 @@ test('gravity attracts dust outside collision range and eventually absorbs it', 
   assert.equal(gravityRadius(p.cells[0], p), baseRange + 25);
 });
 
-test('blast damages each opponent once and awards kill score', () => {
+test('successive waves shed mass without killing a live core or awarding kill score', () => {
   const { arena, player } = fixture();
   const a = player('a', 300);
   const b = player('b', 420);
   setPlayerInput(arena, a.id, { fire: true });
-  for (let i = 0; i < 12; i++) stepArena(arena, 0.1);
-  assert.equal(b.hp, 60);
-  assert.equal(arena.blasts.length, 0);
+  for (let i = 0; i < 4; i++) stepArena(arena, 0.05);
+  assert.ok(Math.abs(b.mass - 36 * .88) < 1e-8);
+  const firstEvent = b.lastWaveHit;
   assert.ok(a.energy < 40);
-  b.hp = 40;
+  // Keep the next hit inside the fragment pickup grace period. Cooldown rules
+  // have separate coverage; this fixture isolates the repeated-hit outcome.
+  a.cooldown = 0;
+  Object.assign(b.cells[0], { x: 420, y: 300, vx: 0, vy: 0 });
   setPlayerInput(arena, a.id, { fire: false });
   setPlayerInput(arena, a.id, { fire: true });
-  for (let i = 0; i < 6; i++) stepArena(arena, 0.1);
-  assert.equal(a.kills, 1);
-  assert.equal(a.score, 25);
-  assert.ok(b.respawnIn > 0);
+  for (let i = 0; i < 4; i++) stepArena(arena, 0.05);
+  assert.ok(Math.abs(b.mass - 36 * .88 ** 2) < 1e-8);
+  assert.notEqual(b.lastWaveHit.id, firstEvent.id);
+  assert.equal(a.kills, 0); assert.equal(a.score, 0);
+  assert.equal(b.cells.length, 1); assert.equal(b.respawnIn, 0);
 });
 
 test('round ends authoritatively after 180 seconds and snapshots omit private internals', () => {
@@ -249,19 +253,27 @@ test('growth offers three unique upgrades once per peak milestone and rejects in
   assert.deepEqual(p.upgrades, {});
 });
 
-test('selected growth and shield upgrades modify authoritative gameplay', () => {
+test('selected growth and gravity upgrades modify gameplay while removed shield choices are rejected', () => {
   const { arena, player } = fixture();
   const p = player('a');
   p.upgradePending = 2;
-  p.upgradeChoices = [{ id: 'growth' }, { id: 'shield' }, { id: 'speed' }];
+  p.upgradeChoices = [{ id: 'growth' }, { id: 'magnet' }, { id: 'speed' }];
   chooseUpgrade(arena, 'a', 'growth');
   arena.dust = [{ id: 'growth-dust', x: 300, y: 300, value: 5 }];
   stepArena(arena, 0.01);
   assert.equal(p.mass, 42);
-  p.upgradeChoices = [{ id: 'shield' }, { id: 'speed' }, { id: 'range' }];
-  chooseUpgrade(arena, 'a', 'shield');
-  assert.equal(p.hp, 125);
-  assert.equal(p.stats.maxHp, 125);
+  const beforeRange = gravityRadius(p.cells[0], p);
+  p.upgradeChoices = [{ id: 'magnet' }, { id: 'speed' }, { id: 'range' }];
+  chooseUpgrade(arena, 'a', 'magnet');
+  assert.equal(p.stats.magnet, 25);
+  assert.equal(gravityRadius(p.cells[0], p), beforeRange + 25);
+  assert.ok(!UPGRADE_POOL.some(option => option.id === 'shield'));
+  p.upgradeChoices = [{ id: 'shield' }];
+  assert.throws(() => chooseUpgrade(arena, 'a', 'shield'), /失效/);
+  assert.ok(!('hp' in p)); assert.ok(!('maxHp' in p.stats));
+  assert.ok(!('hp' in snapshotArena(arena).players[0]));
+  assert.ok(!('shield' in p.upgrades));
+  assert.ok(!('shield' in snapshotArena(arena).players[0]));
 });
 
 test('room lifecycle enforces readiness, host authority and host succession', () => {

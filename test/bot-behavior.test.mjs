@@ -87,3 +87,21 @@ test('real practice bots grow from natural dust without rapid alternating steeri
   assert.ok(sharpTurns < 80, `too many abrupt target reversals: ${sharpTurns}`);
   assert.ok(velocityReversals < 15, `too many physical direction reversals: ${velocityReversals}`);
 });
+
+
+test('a fleeing bot counterattacks a larger opponent behind it after a short reaction delay', () => {
+  const { arena, bot } = fixture({ enemy: true });
+  const opponent = arena.players.get('strong-opponent');
+  opponent.invulnerable = 0;
+  for (let i = 0; i < 6; i++) stepArena(arena, 1 / 30);
+  assert.equal(arena.blasts.length, 0, 'AI must not counterattack immediately on detecting a threat');
+  for (let i = 0; i < 30 && !opponent.lastWaveHit; i++) stepArena(arena, 1 / 30);
+  assert.ok(opponent.lastWaveHit, 'the bot demonstrates the rear-wave counter in actual training simulation');
+  assert.equal(opponent.lastWaveHit.ownerId, bot.id);
+  assert.equal(opponent.lastWaveHit.mode, 'rear');
+  assert.ok(opponent.lastWaveHit.at - bot.botState.fleeSince >= .2);
+  assert.ok(opponent.lastWaveHit.directionX < -.99);
+  assert.ok(opponent.mass < 100);
+  assert.equal(bot.mass, 36);
+  assert.ok(bot.vx > 0, 'counterattacking does not accelerate or reverse the caster');
+});

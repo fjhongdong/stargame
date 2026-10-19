@@ -49,7 +49,7 @@ test('practice crosses the old time limit and continues moving, collecting and r
   assert.ok(room.arena.dust.filter(dust => !dust.fragment).length >= DUST_COUNT);
 });
 
-test('bots killed after three minutes still respawn and keep simulating in endless training', () => {
+test('bots hit after three minutes retain their core and keep simulating in endless training', () => {
   const arena = createArena({ endless: true, random: () => .99 });
   arena.status = 'playing';
   arena.time = 600;
@@ -57,21 +57,23 @@ test('bots killed after three minutes still respawn and keep simulating in endle
   const bot = addPlayer(arena, { id: 'bot', bot: true });
   place(attacker, 6000, 4000);
   place(bot, 6100, 4000);
-  bot.hp = 40;
   const previousCore = bot.cells[0].id;
+  const originalMass = bot.mass;
   setPlayerInput(arena, attacker.id, { fire: true });
   stepArena(arena, .1);
-  assert.equal(bot.hp, 0, 'an actual authoritative wave kills the bot after the former round boundary');
-  assert.equal(bot.cells.length, 0);
-  assert.equal(bot.respawnIn, 2);
+  assert.ok(bot.lastWaveHit, 'the authoritative wave still hits after the former round boundary');
+  assert.ok(Math.abs(bot.mass - originalMass * .88) < 1e-8);
+  assert.equal(bot.cells.length, 1); assert.equal(bot.cells[0].id, previousCore);
+  assert.equal(bot.respawnIn, 0);
+  const hitPosition = { x: bot.x, y: bot.y };
   for (let i = 0; i < 22; i++) stepArena(arena, .1);
   assert.equal(arena.status, 'playing');
   assert.equal(arena.remaining, null);
   assert.equal(arena.winnerId, null);
   assert.equal(bot.respawnIn, 0);
-  assert.equal(bot.hp, bot.stats.maxHp);
   assert.equal(bot.cells.length, 1);
-  assert.notEqual(bot.cells[0].id, previousCore);
+  assert.equal(bot.cells[0].id, previousCore);
+  assert.ok(Math.hypot(bot.x - hitPosition.x, bot.y - hitPosition.y) > 1);
   assert.ok(Math.hypot(bot.vx, bot.vy) > 0);
 });
 
