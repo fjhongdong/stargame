@@ -370,11 +370,14 @@ function moveCells(player, input, dt) {
     const dy = targetY - cell.y;
     const distance = Math.hypot(dx, dy) || 1;
     const speed = (player.boosting ? 360 : 210) * player.stats.speed * Math.pow(START_MASS / cell.mass, 0.18);
-    const approach = moving ? Math.min(1, distance / 50) : Math.min(1, distance / 100);
+    // Steering needs active intent. Separated cells stay where they are when
+    // controls are released; only deliberate split/impact momentum remains.
+    const approach = moving ? Math.min(1, distance / 50) : 0;
     cell.x = clamp(cell.x + (dx / distance * speed * approach + cell.impulseX) * dt, cell.radius, ARENA.width - cell.radius);
     cell.y = clamp(cell.y + (dy / distance * speed * approach + cell.impulseY) * dt, cell.radius, ARENA.height - cell.radius);
     cell.impulseX *= Math.exp(-5 * dt);
     cell.impulseY *= Math.exp(-5 * dt);
+    if (Math.abs(cell.impulseX) + Math.abs(cell.impulseY) < 0.05) cell.impulseX = cell.impulseY = 0;
   }
   for (let i = 0; i < player.cells.length; i++) {
     for (let j = i + 1; j < player.cells.length; j++) {
@@ -431,7 +434,14 @@ function shatterCell(arena, player, cell, collider) {
 }
 
 export function gravityRadius(cell, player) {
-  return Math.min(220, cell.radius + 70 + Math.sqrt(cell.mass) * 3) + player.stats.magnet;
+  return cell.radius + 70 + Math.sqrt(cell.mass) * 3 + player.stats.magnet;
+}
+
+function gravityStrength(cell) {
+  // Smoothly bounded, strictly increasing mass scaling. Base-mass planets
+  // retain their original pull; large planets have stronger, faster inflow.
+  const scale = Math.pow(Math.max(1, finite(cell.mass)) / START_MASS, 0.35);
+  return 6 * scale / (5 + scale);
 }
 
 function attractDust(arena, dt) {
@@ -440,6 +450,7 @@ function attractDust(arena, dt) {
     if (player.respawnIn > 0) continue;
     for (const cell of player.cells) {
       const range = gravityRadius(cell, player);
+      const strength = gravityStrength(cell);
       visitDustRect(arena, cell.x - range, cell.y - range, cell.x + range, cell.y + range, dust => {
         if (arena.time < (dust.collectAfter ?? 0) || (dust.ownerId === player.id && arena.time < dust.availableAt)) return;
         const dx = cell.x - dust.x, dy = cell.y - dust.y;
@@ -447,7 +458,7 @@ function attractDust(arena, dt) {
         if (distanceSquared > range * range) return;
         const force = cell.mass / Math.max(1, distanceSquared);
         const previous = targets.get(dust);
-        if (!previous || force > previous.force) targets.set(dust, { force, cell, distanceSquared, range });
+        if (!previous || force > previous.force) targets.set(dust, { force, cell, distanceSquared, range, strength });
         arena.activeDust.add(dust);
       });
     }
@@ -458,12 +469,13 @@ function attractDust(arena, dt) {
     let vx = finite(dust.vx), vy = finite(dust.vy);
     if (target && target.distanceSquared > 0.000001) {
       const distance = Math.sqrt(target.distanceSquared);
-      const acceleration = 280 + 600 * (1 - distance / target.range);
+      const acceleration = (280 + 600 * (1 - distance / target.range)) * target.strength;
       vx += (target.cell.x - dust.x) / distance * acceleration * dt;
       vy += (target.cell.y - dust.y) / distance * acceleration * dt;
     }
     const speed = Math.hypot(vx, vy);
-    if (speed > 420) { vx *= 420 / speed; vy *= 420 / speed; }
+    const maxSpeed = target ? 420 * Math.sqrt(target.strength) : 420;
+    if (speed > maxSpeed) { vx *= maxSpeed / speed; vy *= maxSpeed / speed; }
     dust.x = clamp(dust.x + vx * dt, 8, ARENA.width - 8);
     dust.y = clamp(dust.y + vy * dt, 8, ARENA.height - 8);
     dust.vx = vx * damping;
