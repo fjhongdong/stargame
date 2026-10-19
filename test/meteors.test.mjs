@@ -32,7 +32,7 @@ const ownedFragments = (arena, player) => free(arena).filter(dust => dust.ownerI
 const neutralFragments = arena => free(arena).filter(dust => dust.ownerId == null);
 const planetMass = arena => [...arena.players.values()].reduce((mass, player) => mass + player.mass, 0);
 
-test('a round creates a real bounded meteor population with fast nonzero velocities and safe nearby traffic', () => {
+test('a round creates a real bounded meteor population with the configured slower velocities and safe nearby traffic', () => {
   const arena = createArena({ endless: true, random: seeded() });
   assert.deepEqual(arena.meteors, []);
   const humans = [addPlayer(arena, { id: 'one' }), addPlayer(arena, { id: 'two' })];
@@ -42,7 +42,7 @@ test('a round creates a real bounded meteor population with fast nonzero velocit
   assert.equal(arena.dust.length, DUST_COUNT);
   for (const meteor of arena.meteors) {
     const speed = Math.hypot(meteor.vx, meteor.vy);
-    assert.ok(speed >= 450 - 1e-7 && speed <= 750 + 1e-7);
+    assert.ok(speed >= METEOR.minSpeed - 1e-7 && speed <= METEOR.maxSpeed + 1e-7);
     assert.ok(meteor.radius >= 3 && meteor.radius <= 5);
     assert.ok(meteor.x >= 0 && meteor.x <= ARENA.width && meteor.y >= 0 && meteor.y <= ARENA.height);
     assert.ok(meteor.tailLength >= METEOR.minTail && meteor.tailLength <= METEOR.maxTail);
@@ -110,7 +110,7 @@ test('endless simulation retains a bounded population and fresh ids through sust
   }
   assert.ok(arena.time > 299); assert.equal(arena.status, 'playing'); assert.equal(arena.remaining, null);
   assert.equal(arena.round, initialRound); assert.equal(arena.dust.length, DUST_COUNT);
-  assert.ok(seen.size > 500, 'the bounded population must keep turning over rather than freezing in a permanent starfield');
+  assert.ok(seen.size > METEOR.count * 3, 'the slower bounded population must keep turning over rather than freezing in a permanent starfield');
 });
 
 test('viewport snapshots include incoming trajectories and tails while omitting distant meteors and private simulation fields', () => {

@@ -9,9 +9,9 @@ export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, rest
 export const SIBLING = Object.freeze({ launchGrace: 0.9, rangeBase: 600, rangeScale: 2,
   attraction: 900, radialDamping: 12, maxAcceleration: 4000, fusionDuration: 1.2 });
 export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, clashRetention: 1.5, clashLimit: 64 });
-export const METEOR = Object.freeze({ count: 72, minSpeed: 450, maxSpeed: 750, minRadius: 3, maxRadius: 5,
+export const METEOR = Object.freeze({ count: 72, minSpeed: 180, maxSpeed: 300, minRadius: 3, maxRadius: 5,
   mass: 4, interaction: 'impact', nearPlayerCount: 3, nearRadius: 1200, nearSpawnMinDistance: 450,
-  nearSpawnMaxDistance: 900, spawnClearance: 80, tailScale: 0.14, minTail: 60, maxTail: 120,
+  nearSpawnMaxDistance: 900, spawnClearance: 80, tailScale: 0.22, minTail: 40, maxTail: 75,
   viewportLead: 0.25, knockback: 160, minKnockback: 60, maxKnockback: 240, restitution: 0.2,
   chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, pickupGrace: 0.3 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];

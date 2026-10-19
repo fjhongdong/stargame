@@ -7,7 +7,7 @@ const source = await readFile(new URL('../public/game.js', import.meta.url), 'ut
 function client() {
   let clock = 0, drawnArcs = 0;
   const canvasContext = new Proxy({}, { get: (_target, key) => key === 'arc' ? () => { drawnArcs++; } : () => {}, set: () => true });
-  const context = vm.createContext({ innerWidth: 1280, innerHeight: 800, window: {}, performance: { now: () => clock }, requestAnimationFrame() {}, reviewCanvasContext: canvasContext });
+  const context = vm.createContext({ innerWidth: 1280, innerHeight: 800, window: {}, document: { hidden: false }, performance: { now: () => clock }, requestAnimationFrame() {}, reviewCanvasContext: canvasContext });
   const hooks = `window.contactVisualTest = {
     setupRoom() { myId='pilot';room={code:'VISUAL',round:1,status:'playing',time:2,players:[{id:'pilot',color:'#83d9ff',cells:[{id:'core',radius:24,mass:36}],mass:36},{id:'remote',color:'#ffbd68',cells:[{id:'other-core',radius:24,mass:36}],mass:36}]}; },
     predict(impact, other='remote', reverse=false) {

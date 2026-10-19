@@ -24,6 +24,8 @@
   let previousStatus = '', previousRound = -1, lastUpgradeKey = '', lastShatteredAt = 0;
   let inputSeq = 0, lastInputAck = 0, lastMovementSeq = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
   let renderedDust = 0, renderedCells = 0, renderedMeteors = 0, camera = { x: NaN, y: NaN, scale: .95 };
+  const canvasPixelBudget = 1920 * 1080;
+  let renderScale = 1, renderQuality = { windowAt: 0, frames: 0, total: 0, slow: 0, warmUntil: 0, lastChange: 0, headroomSince: null };
   let bodyOverflowBefore = null;
   const keys = new Set(), drawnPlayers = new Map(), drawnDust = new Map(), particles = [], seenBlasts = new Set();
   const cellTracks = new Map(), dustTracks = new Map(), predictedCells = new Map(), inputHistory = [], domCache = new Map();
@@ -141,7 +143,7 @@
     });
     addEventListener('keyup', (e) => { const code = keyboardCode(e); if (keys.delete(code) && active) sendInput(); });
     addEventListener('blur', () => resetHeldInputs());
-    document.addEventListener('visibilitychange', () => { if (document.hidden) resetHeldInputs(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) resetHeldInputs(); resetRenderQuality(); });
     resize();
   }
 
@@ -189,9 +191,44 @@
 
   function resize() {
     if (!canvas) return;
-    width = innerWidth; height = innerHeight; dpr = Math.min(devicePixelRatio || 1, width < 700 ? 1 : 1.5);
-    canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
-    backgroundCanvas = null;
+    if (width !== innerWidth || height !== innerHeight) backgroundCanvas = null;
+    width = innerWidth; height = innerHeight;
+    resetRenderQuality(); applyCanvasResolution();
+  }
+  function applyCanvasResolution() {
+    if (!canvas) return;
+    const maximum = Math.min(devicePixelRatio || 1, width < 700 ? 1 : 1.5, Math.sqrt(canvasPixelBudget / Math.max(1, width * height)));
+    dpr = maximum * renderScale;
+    const backingWidth = Math.max(1, Math.floor(width * dpr)), backingHeight = Math.max(1, Math.floor(height * dpr));
+    if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+      canvas.width = backingWidth; canvas.height = backingHeight; backgroundCanvas = null;
+    }
+  }
+  function resetRenderQuality(resetScale = false) {
+    const now = performance.now();
+    if (resetScale) renderScale = 1;
+    renderQuality = { windowAt: now, frames: 0, total: 0, slow: 0, warmUntil: now + 2000, lastChange: now, headroomSince: null };
+  }
+  function updateRenderQuality(at, interval) {
+    const q = renderQuality;
+    if (room?.status !== 'playing' || reconnecting || document.hidden || interval <= 0 || interval > 250 || at < q.warmUntil) {
+      q.windowAt = at; q.frames = q.total = q.slow = 0; q.headroomSince = null;
+      return;
+    }
+    q.frames++; q.total += interval; if (interval > 24) q.slow++;
+    if (at - q.windowAt < 1200 || q.frames < 8) return;
+    const average = q.total / q.frames, slowFraction = q.slow / q.frames;
+    if (average > 24 && slowFraction > .25 && at - q.lastChange >= 1500 && renderScale > .65) {
+      renderScale = Math.max(.65, Math.round((renderScale - .15) * 100) / 100);
+      applyCanvasResolution(); q.lastChange = at; q.warmUntil = at + 1200; q.headroomSince = null;
+    } else if (average < 18 && slowFraction < .05) {
+      q.headroomSince ??= q.windowAt;
+      if (renderScale < 1 && at - q.headroomSince >= 12000 && at - q.lastChange >= 12000) {
+        renderScale = Math.min(1, Math.round((renderScale + .05) * 100) / 100);
+        applyCanvasResolution(); q.lastChange = at; q.warmUntil = at + 1500; q.headroomSince = at;
+      }
+    } else q.headroomSince = null;
+    q.windowAt = at; q.frames = q.total = q.slow = 0;
   }
 
   function showPanel(html) { $('sgPanelBackdrop').hidden = false; $('sgPanel').innerHTML = html; }
@@ -205,6 +242,7 @@
     if (active) closeSession(false);
     currentOptions = { ...options, mode };
     active = true; joined = false; reconnecting = false; intentionalClose = false; retries = 0;
+    resetRenderQuality(true); applyCanvasResolution();
     resetHeldInputs(false);
     resetWaveFeedback(); resetWaveClashes(); resetMeteors();
     renderTimeline = null;
@@ -973,6 +1011,14 @@
   function advanceCellGroup(cells, player, input, dt, beforeMove) {
     for (const cell of cells) cell.mergeIn = Math.max(0, (cell.mergeIn || 0) - dt);
     cells = cells.filter(cell => cell.mass > 0);
+    if (cells.length === 1) {
+      const cell = cells[0];
+      if (siblingEnabled) cell._siblingAwake = Boolean(cell.fusionId);
+      beforeMove?.(cell);
+      advanceOwnCell(cell, cell, player, input, dt);
+      if (siblingEnabled && (cell.fusionRole === 'donor' || cell.fusionRole === 'receiver')) clearFusion(cell);
+      return;
+    }
     if (siblingEnabled) applySiblingGravity(cells, dt);
     const masses = new Map();
     for (const receiver of cells) if (receiver.mass > 0 && receiver.fusionRole === 'receiver') {
@@ -1487,7 +1533,8 @@
 
   function render(time) {
     if (!active || !ctx) return;
-    const dt = Math.min((time - (lastFrame || time)) / 1000, .25); lastFrame = time;
+    const interval = time - (lastFrame || time), dt = Math.min(interval / 1000, .25); lastFrame = time;
+    updateRenderQuality(time, interval);
     if (!fpsStarted) fpsStarted = time;
     frameCount++; if (time - fpsStarted >= 700) { fps = Math.round(frameCount * 1000 / (time - fpsStarted)); frameCount = 0; fpsStarted = time; }
     predictOwn(dt, time); updateCamera(dt);
@@ -1577,8 +1624,9 @@
 
   function drawBackground() {
     if (!backgroundCanvas) {
-      backgroundCanvas = document.createElement('canvas'); backgroundCanvas.width = Math.ceil(width); backgroundCanvas.height = Math.ceil(height);
+      backgroundCanvas = document.createElement('canvas'); backgroundCanvas.width = canvas.width; backgroundCanvas.height = canvas.height;
       const b = backgroundCanvas.getContext('2d');
+      b.scale(dpr, dpr);
       const glow = b.createRadialGradient(width * .62, height * .45, 0, width * .62, height * .45, width * .75);
       glow.addColorStop(0, '#142127'); glow.addColorStop(.5, '#0b151f'); glow.addColorStop(1, '#070b14'); b.fillStyle = glow; b.fillRect(0, 0, width, height);
       for (const star of stars) { b.globalAlpha = star.a * .7; b.fillStyle = '#adc3d4'; b.fillRect(star.x * width, star.y * height, star.r, star.r); }
@@ -1652,7 +1700,7 @@
   }
   function drawMeteor(meteor, pose) {
     const speed = Math.hypot(pose.vx, pose.vy), radius = clamp(meteor.radius || 4, 2, 6);
-    const tail = clamp(meteor.tailLength || speed * .14, 60, 120), color = safeColor(meteor.color || '#ffc987');
+    const tail = Number.isFinite(meteor.tailLength) && meteor.tailLength > 0 ? meteor.tailLength : clamp(speed * (room?.meteor?.tailScale ?? .22), room?.meteor?.minTail ?? 40, room?.meteor?.maxTail ?? 75), color = safeColor(meteor.color || '#ffc987');
     ctx.save(); ctx.translate(pose.x, pose.y); ctx.rotate(Math.atan2(pose.vy, pose.vx));
     ctx.fillStyle = color; ctx.globalAlpha = .1;
     ctx.beginPath(); ctx.moveTo(-tail, 0); ctx.quadraticCurveTo(-tail * .35, -radius * .7, 0, -radius * 1.3); ctx.lineTo(0, radius * 1.3); ctx.quadraticCurveTo(-tail * .35, radius * .7, -tail, 0); ctx.fill();
@@ -1768,5 +1816,5 @@
     ctx.restore(); ctx.globalAlpha = 1; ctx.fillStyle = '#78909d'; ctx.font = `${mobile ? 7 : 8}px ui-monospace,monospace`; ctx.textAlign = 'left'; ctx.fillText(`${WORLD.width} × ${WORLD.height} / 宇宙导航`, x, y - 7); ctx.restore();
   }
 
-  window.StarGame = { connect, disconnect, onLobby: null, get isConnected() { return active && joined && !reconnecting; }, getDiagnostics() { const view = getCamera(); return { fps, ping: rtt === null ? null : Math.round(rtt), world: { ...WORLD }, view: { x: view.x, y: view.y, width: view.width, height: view.height, scale: view.scale }, self: getOwnCenter(), inputSeq, lastInputAck, renderedDust, renderedCells, renderedMeteors, meteorTrackCount: meteorTracks.size, inputHistoryLength: inputHistory.length, predictedCellCount: predictedCells.size, cellTrackCount: cellTracks.size, materializedDustCount: materializedDust.size, spriteCount: planetSprites.size + dustSprites.size, trackedDust: dustTracks.size }; } };
+  window.StarGame = { connect, disconnect, onLobby: null, get isConnected() { return active && joined && !reconnecting; }, getDiagnostics() { const view = getCamera(); return { fps, ping: rtt === null ? null : Math.round(rtt), renderDpr: dpr, renderScale, canvasPixels: (canvas?.width || 0) * (canvas?.height || 0), canvasWidth: canvas?.width || 0, canvasHeight: canvas?.height || 0, world: { ...WORLD }, view: { x: view.x, y: view.y, width: view.width, height: view.height, scale: view.scale }, self: getOwnCenter(), inputSeq, lastInputAck, renderedDust, renderedCells, renderedMeteors, meteorTrackCount: meteorTracks.size, inputHistoryLength: inputHistory.length, predictedCellCount: predictedCells.size, cellTrackCount: cellTracks.size, materializedDustCount: materializedDust.size, spriteCount: planetSprites.size + dustSprites.size, trackedDust: dustTracks.size }; } };
 })();
