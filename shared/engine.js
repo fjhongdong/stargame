@@ -1,5 +1,5 @@
 // The same deterministic simulation can run on the server and in a browser.
-export const ARENA = Object.freeze({ width: 1400, height: 900 });
+export const ARENA = Object.freeze({ width: 12000, height: 8000 });
 export const ROUND_DURATION = 180;
 export const COLORS = ['#5eefa8', '#d4b5ff', '#ffbd68', '#83d9ff', '#ff8eaf', '#9da8ff', '#ffe787', '#70f0e4'];
 export const BLAST_COST = 30;
@@ -15,7 +15,9 @@ export const UPGRADE_POOL = [
   { id: 'cooldown', title: '脉冲加速', description: '星爆冷却时间缩短 15%', icon: '⟳' },
 ];
 const START_MASS = 36;
-const DUST_COUNT = 120;
+export const DUST_COUNT = 6000;
+const GRID_SIZE = 256;
+const GRID_COLUMNS = Math.ceil(ARENA.width / GRID_SIZE);
 const BLAST_DURATION = 0.8;
 const BLAST_RADIUS = 210;
 
@@ -100,13 +102,15 @@ export function skinColor(skin, fallback = 0) {
 
 export function createArena({ random = Math.random } = {}) {
   return { status: 'lobby', time: 0, remaining: ROUND_DURATION, round: 0, winnerId: null,
-    players: new Map(), dust: [], blasts: [], serial: 0, random };
+    players: new Map(), dust: [], blasts: [], serial: 0, random,
+    dustGrid: null, activeDust: new Set(), naturalDustCount: 0 };
 }
 
 function spawnPosition(arena) {
   let point;
   for (let attempt = 0; attempt < 20; attempt++) {
-    point = { x: 80 + arena.random() * (ARENA.width - 160), y: 80 + arena.random() * (ARENA.height - 160) };
+    point = { x: ARENA.width / 2 - 1000 + arena.random() * 2000,
+      y: ARENA.height / 2 - 700 + arena.random() * 1400 };
     if ([...arena.players.values()].every(p => p.respawnIn > 0 || Math.hypot(p.x - point.x, p.y - point.y) > 140)) break;
   }
   return point;
@@ -119,7 +123,8 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
   const player = { id, name: cleanName(name), color: skinColor(skin, arena.players.size), bot, ready,
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], hp: 100, energy: 60,
     score: 0, kills: 0, boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
-    input: normalizeInput(), fireQueued: false, splitQueued: false, ejectQueued: false, shatteredAt: -10, direction: { x: 1, y: 0 } };
+    input: normalizeInput(), fireQueued: false, splitQueued: false, ejectQueued: false, shatteredAt: -10,
+    pendingInputSeq: 0, lastInputSeq: 0, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
   resetProgress(player);
   arena.players.set(id, player);
@@ -129,16 +134,18 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
 export function setPlayerInput(arena, id, input) {
   const player = arena.players.get(id);
   if (!player) return;
+  if (Number.isSafeInteger(input?.seq) && input.seq <= player.pendingInputSeq) return;
   const next = normalizeInput(input);
   if (next.fire && !player.input.fire) player.fireQueued = true;
   if (next.split && !player.input.split) player.splitQueued = true;
   if (next.eject && !player.input.eject) player.ejectQueued = true;
   player.input = next;
+  if (Number.isSafeInteger(input?.seq) && input.seq >= 0) player.pendingInputSeq = Math.max(player.pendingInputSeq, input.seq);
 }
 
 function newCell(arena, x, y, mass, extra = {}) {
   return { id: `c${++arena.serial}`, x, y, mass, radius: 4 * Math.sqrt(mass),
-    mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, ...extra };
+    vx: 0, vy: 0, mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, ...extra };
 }
 
 function syncPlayer(player) {
@@ -151,8 +158,106 @@ function syncPlayer(player) {
 }
 
 function addDust(arena, x, y, value = 1, extra = {}) {
-  arena.dust.push({ id: `d${++arena.serial}`, x: x ?? (35 + arena.random() * (ARENA.width - 70)),
-    y: y ?? (35 + arena.random() * (ARENA.height - 70)), value, vx: 0, vy: 0, ...extra });
+  const dust = { id: `d${++arena.serial}`, x: x ?? (35 + arena.random() * (ARENA.width - 70)),
+    y: y ?? (35 + arena.random() * (ARENA.height - 70)), value, vx: 0, vy: 0, ...extra };
+  arena.dust.push(dust);
+  if (!dust.fragment && !dust.ejected) arena.naturalDustCount++;
+  if (arena.dustGrid) insertDust(arena, dust);
+  if (dust.vx || dust.vy) arena.activeDust.add(dust);
+  arena._indexedCount = arena.dust.length;
+  return dust;
+}
+
+function gridKey(x, y) {
+  return Math.floor(y / GRID_SIZE) * GRID_COLUMNS + Math.floor(x / GRID_SIZE);
+}
+
+function insertDust(arena, dust) {
+  const key = gridKey(dust.x, dust.y);
+  let bucket = arena.dustGrid.get(key);
+  if (!bucket) arena.dustGrid.set(key, bucket = []);
+  bucket.push(dust);
+  dust._gridKey = key;
+}
+
+function removeDustFromGrid(arena, dust) {
+  const bucket = arena.dustGrid.get(dust._gridKey);
+  if (!bucket) return;
+  const index = bucket.indexOf(dust);
+  if (index >= 0) { bucket[index] = bucket[bucket.length - 1]; bucket.pop(); }
+  if (!bucket.length) arena.dustGrid.delete(dust._gridKey);
+}
+
+function rebuildDustGrid(arena) {
+  arena.dustGrid = new Map();
+  arena.activeDust = new Set();
+  arena.naturalDustCount = 0;
+  for (const dust of arena.dust) {
+    insertDust(arena, dust);
+    if (Math.abs(finite(dust.vx)) + Math.abs(finite(dust.vy)) > 0.05) arena.activeDust.add(dust);
+    if (!dust.ejected && !dust.fragment) arena.naturalDustCount++;
+  }
+  arena._indexedDust = arena.dust;
+  arena._indexedCount = arena.dust.length;
+}
+
+function ensureDustGrid(arena) {
+  if (!arena.dustGrid || arena._indexedDust !== arena.dust || arena._indexedCount !== arena.dust.length) rebuildDustGrid(arena);
+}
+
+function visitDustRect(arena, left, top, right, bottom, visit) {
+  const minX = Math.max(0, Math.floor(left / GRID_SIZE));
+  const maxX = Math.min(GRID_COLUMNS - 1, Math.floor(right / GRID_SIZE));
+  const minY = Math.max(0, Math.floor(top / GRID_SIZE));
+  const maxY = Math.min(Math.ceil(ARENA.height / GRID_SIZE) - 1, Math.floor(bottom / GRID_SIZE));
+  for (let gy = minY; gy <= maxY; gy++) {
+    for (let gx = minX; gx <= maxX; gx++) {
+      const bucket = arena.dustGrid.get(gy * GRID_COLUMNS + gx);
+      if (bucket) for (const dust of bucket) {
+        if (!dust._consumed && dust.x >= left && dust.x <= right && dust.y >= top && dust.y <= bottom) visit(dust);
+      }
+    }
+  }
+}
+
+function viewportBounds(view) {
+  if (!view || !Number.isFinite(view.x) || !Number.isFinite(view.y) ||
+      !Number.isFinite(view.width) || !Number.isFinite(view.height) || view.width <= 0 || view.height <= 0) return null;
+  const margin = Number.isFinite(view.margin) ? Math.max(0, view.margin) : 180;
+  return { left: view.x - view.width / 2 - margin, right: view.x + view.width / 2 + margin,
+    top: view.y - view.height / 2 - margin, bottom: view.y + view.height / 2 + margin };
+}
+
+/** Query raw particles within a viewport centered on world x/y, using the grid. */
+export function queryDust(arena, view) {
+  const bounds = viewportBounds(view);
+  if (!bounds) return arena.dust;
+  ensureDustGrid(arena);
+  const found = [];
+  visitDustRect(arena, bounds.left, bounds.top, bounds.right, bounds.bottom, dust => found.push(dust));
+  return found;
+}
+
+function seedNearbyDust(arena, player, count) {
+  for (let i = 0; i < count; i++) {
+    const angle = arena.random() * Math.PI * 2;
+    const distance = 80 + arena.random() * 420;
+    addDust(arena, clamp(player.x + Math.cos(angle) * distance, 35, ARENA.width - 35),
+      clamp(player.y + Math.sin(angle) * distance, 35, ARENA.height - 35));
+  }
+}
+
+function refillDust(arena) {
+  const players = arena.round > 0 ? [...arena.players.values()].filter(p => p.respawnIn <= 0) : [];
+  while (arena.naturalDustCount < DUST_COUNT) {
+    if (players.length && arena.random() < 0.3) {
+      const player = players[Math.min(players.length - 1, Math.floor(arena.random() * players.length))];
+      const angle = arena.random() * Math.PI * 2;
+      const distance = 850 + arena.random() * 650;
+      addDust(arena, clamp(player.x + Math.cos(angle) * distance, 35, ARENA.width - 35),
+        clamp(player.y + Math.sin(angle) * distance, 35, ARENA.height - 35));
+    } else addDust(arena);
+  }
 }
 
 export function startRound(arena) {
@@ -162,24 +267,37 @@ export function startRound(arena) {
   arena.round++;
   arena.winnerId = null;
   arena.dust = [];
+  arena.dustGrid = null;
+  arena.naturalDustCount = 0;
+  arena.activeDust = new Set();
   arena.blasts = [];
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, hp: 100, energy: 60, score: 0, kills: 0,
       boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
-      ejectQueued: false, shatteredAt: -10, input: normalizeInput() });
+      ejectQueued: false, shatteredAt: -10, pendingInputSeq: 0, lastInputSeq: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
     syncPlayer(player);
     resetProgress(player);
   }
-  for (let i = 0; i < DUST_COUNT; i++) addDust(arena);
+  for (const player of arena.players.values()) seedNearbyDust(arena, player, 24);
+  for (let i = arena.naturalDustCount; i < Math.min(DUST_COUNT, 650); i++) {
+    addDust(arena, ARENA.width / 2 - 1300 + arena.random() * 2600,
+      ARENA.height / 2 - 950 + arena.random() * 1900);
+  }
+  refillDust(arena);
+  rebuildDustGrid(arena);
 }
 
 function botInput(arena, player) {
   let target = null;
   let distance = Infinity;
-  for (const dust of arena.dust) {
-    const d = Math.hypot(dust.x - player.x, dust.y - player.y);
-    if (d < distance) { distance = d; target = dust; }
+  for (const range of [300, 700, 1500]) {
+    visitDustRect(arena, player.x - range, player.y - range, player.x + range, player.y + range, dust => {
+      const dx = dust.x - player.x, dy = dust.y - player.y;
+      const d = dx * dx + dy * dy;
+      if (d < distance) { distance = d; target = dust; }
+    });
+    if (target) break;
   }
   const opponents = [...arena.players.values()].filter(p => p.id !== player.id && p.respawnIn <= 0);
   const enemy = opponents.sort((a, b) => Math.hypot(a.x - player.x, a.y - player.y) - Math.hypot(b.x - player.x, b.y - player.y))[0];
@@ -243,6 +361,8 @@ function moveCells(player, input, dt) {
   const targetY = player.y + input.y * 260;
   const moving = Math.hypot(input.x, input.y) > 0;
   for (const cell of player.cells) {
+    cell._stepX = cell.x;
+    cell._stepY = cell.y;
     cell.mergeIn = Math.max(0, cell.mergeIn - dt);
     cell.protectedFor = Math.max(0, cell.protectedFor - dt);
     cell.shatterCooldown = Math.max(0, cell.shatterCooldown - dt);
@@ -279,6 +399,8 @@ function moveCells(player, input, dt) {
   for (const cell of player.cells) {
     cell.x = clamp(cell.x, cell.radius, ARENA.width - cell.radius);
     cell.y = clamp(cell.y, cell.radius, ARENA.height - cell.radius);
+    cell.vx = dt ? (cell.x - cell._stepX) / dt : 0;
+    cell.vy = dt ? (cell.y - cell._stepY) / dt : 0;
   }
   syncPlayer(player);
 }
@@ -313,34 +435,76 @@ export function gravityRadius(cell, player) {
 }
 
 function attractDust(arena, dt) {
-  for (const dust of arena.dust) {
-    let strongest = 0;
-    let target = null;
-    let targetDistance = 0;
-    let targetRange = 0;
-    for (const player of arena.players.values()) {
-      if (player.respawnIn > 0 || arena.time < (dust.collectAfter ?? 0) ||
-        (dust.ownerId === player.id && arena.time < dust.availableAt)) continue;
-      for (const cell of player.cells) {
-        const distance = Math.hypot(cell.x - dust.x, cell.y - dust.y);
-        const range = gravityRadius(cell, player);
-        if (distance > range) continue;
-        const force = cell.mass / Math.max(1, distance * distance);
-        if (force > strongest) { strongest = force; target = cell; targetDistance = distance; targetRange = range; }
-      }
+  const targets = new Map();
+  for (const player of arena.players.values()) {
+    if (player.respawnIn > 0) continue;
+    for (const cell of player.cells) {
+      const range = gravityRadius(cell, player);
+      visitDustRect(arena, cell.x - range, cell.y - range, cell.x + range, cell.y + range, dust => {
+        if (arena.time < (dust.collectAfter ?? 0) || (dust.ownerId === player.id && arena.time < dust.availableAt)) return;
+        const dx = cell.x - dust.x, dy = cell.y - dust.y;
+        const distanceSquared = dx * dx + dy * dy;
+        if (distanceSquared > range * range) return;
+        const force = cell.mass / Math.max(1, distanceSquared);
+        const previous = targets.get(dust);
+        if (!previous || force > previous.force) targets.set(dust, { force, cell, distanceSquared, range });
+        arena.activeDust.add(dust);
+      });
     }
+  }
+  const damping = Math.exp(-2.3 * dt);
+  for (const dust of arena.activeDust) {
+    const target = targets.get(dust);
     let vx = finite(dust.vx), vy = finite(dust.vy);
-    if (target && targetDistance > 0.001) {
-      const acceleration = 280 + 600 * (1 - targetDistance / targetRange);
-      vx += (target.x - dust.x) / targetDistance * acceleration * dt;
-      vy += (target.y - dust.y) / targetDistance * acceleration * dt;
+    if (target && target.distanceSquared > 0.000001) {
+      const distance = Math.sqrt(target.distanceSquared);
+      const acceleration = 280 + 600 * (1 - distance / target.range);
+      vx += (target.cell.x - dust.x) / distance * acceleration * dt;
+      vy += (target.cell.y - dust.y) / distance * acceleration * dt;
     }
     const speed = Math.hypot(vx, vy);
     if (speed > 420) { vx *= 420 / speed; vy *= 420 / speed; }
     dust.x = clamp(dust.x + vx * dt, 8, ARENA.width - 8);
     dust.y = clamp(dust.y + vy * dt, 8, ARENA.height - 8);
-    dust.vx = vx * Math.exp(-2.3 * dt);
-    dust.vy = vy * Math.exp(-2.3 * dt);
+    dust.vx = vx * damping;
+    dust.vy = vy * damping;
+    if (gridKey(dust.x, dust.y) !== dust._gridKey) { removeDustFromGrid(arena, dust); insertDust(arena, dust); }
+    if (!target && Math.abs(dust.vx) + Math.abs(dust.vy) < 0.05) {
+      dust.vx = dust.vy = 0;
+      arena.activeDust.delete(dust);
+    }
+  }
+}
+
+function collectDust(arena) {
+  const consumed = [];
+  for (const player of arena.players.values()) {
+    if (player.respawnIn > 0) continue;
+    for (const cell of player.cells) {
+      const range = cell.radius + 5;
+      visitDustRect(arena, cell.x - range, cell.y - range, cell.x + range, cell.y + range, dust => {
+        if (dust._consumed || arena.time < (dust.collectAfter ?? 0) ||
+          (dust.ownerId === player.id && arena.time < dust.availableAt)) return;
+        const dx = dust.x - cell.x, dy = dust.y - cell.y;
+        if (dx * dx + dy * dy > (cell.radius + 5) ** 2) return;
+        cell.mass += dust.value * (dust.ejected || dust.fragment ? 1 : player.stats.growth);
+        cell.radius = 4 * Math.sqrt(cell.mass);
+        if (!dust.ejected && !dust.fragment) {
+          player.score += 2 * dust.value;
+          player.energy = Math.min(100, player.energy + 4 * dust.value);
+          arena.naturalDustCount--;
+        }
+        dust._consumed = true;
+        consumed.push(dust);
+      });
+    }
+    syncPlayer(player);
+  }
+  if (consumed.length) {
+    for (const dust of consumed) { removeDustFromGrid(arena, dust); arena.activeDust.delete(dust); }
+    arena.dust = arena.dust.filter(dust => !dust._consumed);
+    arena._indexedDust = arena.dust;
+    arena._indexedCount = arena.dust.length;
   }
 }
 
@@ -349,6 +513,9 @@ export function stepArena(arena, elapsed) {
   const dt = clamp(finite(elapsed), 0, 0.1);
   arena.time += dt;
   arena.remaining = Math.max(0, ROUND_DURATION - arena.time);
+  // One linear grid rebuild replaces repeated all-particle scans for bots,
+  // gravity and pickups. Moving particles update only their changed buckets.
+  rebuildDustGrid(arena);
   for (const player of arena.players.values()) {
     if (player.bot) setPlayerInput(arena, player.id, botInput(arena, player));
     if (player.bot && player.upgradeChoices.length) chooseUpgrade(arena, player.id, player.upgradeChoices[0].id);
@@ -374,6 +541,7 @@ export function stepArena(arena, elapsed) {
     player.splitQueued = player.ejectQueued = false;
     const previousX = player.x, previousY = player.y;
     moveCells(player, input, dt);
+    player.lastInputSeq = player.pendingInputSeq;
     player.vx = dt ? (player.x - previousX) / dt : 0;
     player.vy = dt ? (player.y - previousY) / dt : 0;
     if (player.fireQueued && player.energy >= player.stats.blastCost && player.cooldown <= 0) {
@@ -386,25 +554,7 @@ export function stepArena(arena, elapsed) {
   }
 
   attractDust(arena, dt);
-  // Consume each stardust particle exactly once, even when cells overlap.
-  arena.dust = arena.dust.filter(dust => {
-    for (const player of arena.players.values()) {
-      if (player.respawnIn > 0 || arena.time < (dust.collectAfter ?? 0) ||
-        (dust.ownerId === player.id && arena.time < dust.availableAt)) continue;
-      const cell = player.cells.find(c => Math.hypot(dust.x - c.x, dust.y - c.y) <= c.radius + 5);
-      if (cell) {
-        cell.mass += dust.value * (dust.ejected || dust.fragment ? 1 : player.stats.growth);
-        cell.radius = 4 * Math.sqrt(cell.mass);
-        if (!dust.ejected && !dust.fragment) {
-          player.score += 2 * dust.value;
-          player.energy = Math.min(100, player.energy + 4 * dust.value);
-        }
-        syncPlayer(player);
-        return false;
-      }
-    }
-    return true;
-  });
+  collectDust(arena);
 
   // Bigger cells absorb smaller ones; splitting makes each piece vulnerable.
   const players = [...arena.players.values()];
@@ -456,7 +606,7 @@ export function stepArena(arena, elapsed) {
     }
   }
   arena.blasts = arena.blasts.filter(blast => blast.age < BLAST_DURATION);
-  while (arena.dust.length < DUST_COUNT) addDust(arena);
+  refillDust(arena);
   for (const player of arena.players.values()) updateProgress(arena, player);
 
   if (arena.remaining <= 0) {
@@ -466,14 +616,20 @@ export function stepArena(arena, elapsed) {
   }
 }
 
-export function snapshotArena(arena) {
+export function snapshotArena(arena, view) {
+  const bounds = viewportBounds(view);
+  const visibleDust = bounds ? queryDust(arena, view) : arena.dust;
+  const visibleBlasts = bounds ? arena.blasts.filter(blast => blast.x + blast.radius >= bounds.left &&
+    blast.x - blast.radius <= bounds.right && blast.y + blast.radius >= bounds.top && blast.y - blast.radius <= bounds.bottom) : arena.blasts;
   return {
+    arena: ARENA, dustTotal: arena.dust.length,
     status: arena.status, time: round(arena.time), remaining: round(arena.remaining),
     round: arena.round, winnerId: arena.winnerId,
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
       x: round(p.x), y: round(p.y), vx: round(p.vx), vy: round(p.vy), radius: round(p.radius), mass: round(p.mass),
+      lastInputSeq: p.lastInputSeq,
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
-      cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), radius: round(c.radius), mass: round(c.mass),
+      cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy), radius: round(c.radius), mass: round(c.mass),
         mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: c.protectedFor > 0, protectedFor: round(c.protectedFor) })),
       hp: p.hp, energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
       bot: p.bot, connected: p.connected, boosting: p.boosting, respawnIn: round(p.respawnIn),
@@ -482,10 +638,10 @@ export function snapshotArena(arena) {
       shatteredAt: round(p.shatteredAt),
       upgrades: Object.entries(p.upgrades).map(([id, count]) => ({ id, count })), stats: { ...p.stats },
       invulnerable: round(p.invulnerable), cooldown: round(p.cooldown) })),
-    dust: arena.dust.map(d => ({ id: d.id, x: round(d.x), y: round(d.y), vx: round(d.vx), vy: round(d.vy), value: d.value,
+    dust: visibleDust.map(d => ({ id: d.id, x: round(d.x), y: round(d.y), vx: round(finite(d.vx)), vy: round(finite(d.vy)), value: d.value,
       ...(d.ejected ? { ejected: true, color: d.color } : {}),
       ...(d.fragment ? { fragment: true, color: d.color, ownerId: d.ownerId } : {}) })),
-    blasts: arena.blasts.map(b => ({ id: b.id, ownerId: b.ownerId, x: round(b.x), y: round(b.y),
+    blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, x: round(b.x), y: round(b.y),
       color: b.color, radius: round(b.radius), progress: round(b.age / BLAST_DURATION) })),
   };
 }

@@ -4,10 +4,47 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import { createArena, addPlayer, startRound, stepArena, snapshotArena, setPlayerInput, normalizeInput, chooseUpgrade } from './shared/engine.js';
+import { ARENA, createArena, addPlayer, startRound, stepArena, snapshotArena, setPlayerInput, normalizeInput, chooseUpgrade } from './shared/engine.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const RECONNECT_GRACE = 30_000;
+const MAX_STATE_BACKLOG = 128 * 1024;
+const VIEWPORT_LIMITS = Object.freeze({ width: 4000, height: 2600, margin: 180 });
+
+// Only the part of the world that a player can see needs to cross the network.
+// The server supplies defaults for old clients and bounds untrusted dimensions.
+function playerViewport(player, requested) {
+  const number = (value, fallback) => typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const width = clamp(number(requested?.width, 1600), 320, VIEWPORT_LIMITS.width);
+  const height = clamp(number(requested?.height, 1000), 240, VIEWPORT_LIMITS.height);
+  const x = number(player?.x, ARENA.width / 2);
+  const y = number(player?.y, ARENA.height / 2);
+  return {
+    x: clamp(number(requested?.x, x), Math.max(0, x - width / 2), Math.min(ARENA.width, x + width / 2)),
+    y: clamp(number(requested?.y, y), Math.max(0, y - height / 2), Math.min(ARENA.height, y + height / 2)),
+    width, height, margin: VIEWPORT_LIMITS.margin,
+  };
+}
+
+function sameDust(a, b) {
+  return a && a.x === b.x && a.y === b.y && a.vx === b.vx && a.vy === b.vy
+    && a.value === b.value && a.fragment === b.fragment && a.ejected === b.ejected
+    && a.color === b.color && a.ownerId === b.ownerId;
+}
+
+function prepareDustUpdate(session, snapshot) {
+  if (!session.dustDeltas) return { room: snapshot, dustState: null };
+  const key = `${snapshot.code}:${snapshot.round}`;
+  const previous = session.dustState?.key === key ? session.dustState.dust : null;
+  const current = new Map(snapshot.dust.map(dust => [dust.id, dust]));
+  const changed = previous ? snapshot.dust.filter(dust => !sameDust(previous.get(dust.id), dust)) : null;
+  const removed = previous ? [...previous.keys()].filter(id => !current.has(id)) : null;
+  // Each snapshot belongs to a single recipient. Other clients and the room's
+  // simulation keep their complete state; only the wire representation changes.
+  return { room: previous ? { ...snapshot, dust: changed, dustDelta: true, dustRemoved: removed } : snapshot,
+    dustState: { key, dust: current } };
+}
 
 /**
  * Wire API: create/join/quick/ready/start/input/leave/ping.
@@ -15,13 +52,20 @@ const RECONNECT_GRACE = 30_000;
  * authoritative. Clients receive welcome, joined, state, left, pong, or error.
  * Reconnect with /ws?token=<reconnectToken> within 30 seconds.
  */
-export function createRoomManager({ now = Date.now, broadcast = () => {}, random = Math.random } = {}) {
+export function createRoomManager({ now = Date.now, broadcast = () => {}, broadcastRoom, random = Math.random } = {}) {
   const rooms = new Map();
   const playerRooms = new Map();
+  const viewports = new Map();
+  let frame = 0;
   const characters = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const snapshot = room => ({ code: room.code, hostId: room.hostId, mode: room.mode,
-    maxPlayers: 8, arena: { width: 1400, height: 900 }, ...snapshotArena(room.arena) });
-  const publish = room => broadcast(snapshot(room));
+  const snapshot = (room, viewport) => ({ code: room.code, hostId: room.hostId, mode: room.mode,
+    maxPlayers: 8, arena: ARENA, serverTime: now(), tick: frame,
+    ...snapshotArena(room.arena, viewport), ...(viewport ? { viewport } : {}) });
+  const snapshotForPlayer = (room, id) => snapshot(room,
+    playerViewport(room.arena.players.get(id), viewports.get(id)));
+  // Production broadcasts consume the live room lazily: creating one full-world
+  // snapshot here would defeat interest management before a client is selected.
+  const publish = room => broadcastRoom ? broadcastRoom(room) : broadcast(snapshot(room));
   const find = id => rooms.get(playerRooms.get(id));
   const requireRoom = id => { const room = find(id); if (!room) throw new Error('请先加入一个房间'); return room; };
   const getCode = () => {
@@ -42,6 +86,7 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, random
     if (!room) return;
     room.arena.players.delete(id);
     playerRooms.delete(id);
+    viewports.delete(id);
     if (![...room.arena.players.values()].some(p => !p.bot)) { rooms.delete(room.code); return; }
     nextHost(room);
     publish(room);
@@ -119,7 +164,6 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, random
     publish(room);
     return room;
   }
-  let frame = 0;
   function tick(dt = 1 / 30) {
     frame++;
     for (const room of rooms.values()) {
@@ -135,8 +179,15 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, random
       } else if (frame % 2 === 0 && room.arena.status === 'playing') publish(room);
     }
   }
-  return { rooms, playerRooms, create, join, quick, ready, start, leave, disconnect, reconnect, tick, find, snapshot,
-    input(id, input) { const room = find(id); if (room?.arena.status === 'playing') setPlayerInput(room.arena, id, input); },
+  return { rooms, playerRooms, create, join, quick, ready, start, leave, disconnect, reconnect, tick, find, snapshot, snapshotForPlayer,
+    input(id, input) {
+      const room = find(id);
+      if (room?.arena.status !== 'playing') return;
+      if (input?.viewport && typeof input.viewport === 'object') {
+        viewports.set(id, playerViewport(room.arena.players.get(id), input.viewport));
+      }
+      setPlayerInput(room.arena, id, input);
+    },
     upgrade(id, upgradeId) { const room = requireRoom(id); chooseUpgrade(room.arena, id, upgradeId); publish(room); },
     stats() {
       const players = [...rooms.values()].flatMap(room => [...room.arena.players.values()]);
@@ -150,10 +201,23 @@ export function createGameServer({ port = Number(process.env.PORT) || 3001, host
   const sessions = new Map();
   const tokens = new Map();
   const send = (session, message) => {
-    if (session?.ws?.readyState === WebSocket.OPEN && session.ws.bufferedAmount < 1_000_000) session.ws.send(JSON.stringify(message));
+    if (session?.ws?.readyState !== WebSocket.OPEN) return false;
+    session.ws.send(JSON.stringify(message));
+    return true;
   };
-  const manager = createRoomManager({ broadcast(room) {
-    for (const player of room.players) if (!player.bot) send(sessions.get(player.id), { type: 'state', room });
+  const sendState = (session, room) => {
+    // Replaceable states may be skipped, so a slow link never accumulates seconds
+    // of stale movement. Control replies still use the reliable send path above.
+    if (session?.ws?.readyState !== WebSocket.OPEN) return;
+    if (session.ws.bufferedAmount >= MAX_STATE_BACKLOG) { session.pendingRoom = room; return; }
+    const update = prepareDustUpdate(session, manager.snapshotForPlayer(room, session.id));
+    if (send(session, { type: 'state', room: update.room })) {
+      session.dustState = update.dustState;
+      session.pendingRoom = null;
+    }
+  };
+  const manager = createRoomManager({ broadcastRoom(room) {
+    for (const player of room.arena.players.values()) if (!player.bot) sendState(sessions.get(player.id), room);
   } });
   const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
     '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
@@ -184,7 +248,10 @@ export function createGameServer({ port = Number(process.env.PORT) || 3001, host
       response.end('Not found');
     }
   });
-  const sockets = new WebSocketServer({ noServer: true, maxPayload: 4096 });
+  const sockets = new WebSocketServer({ noServer: true, maxPayload: 4096,
+    perMessageDeflate: { threshold: 1024, serverNoContextTakeover: true, clientNoContextTakeover: true,
+      concurrencyLimit: 4, zlibDeflateOptions: { level: 1 } },
+  });
   server.on('upgrade', (request, socket, head) => {
     try {
       const url = new URL(request.url, 'http://localhost');
@@ -206,12 +273,15 @@ export function createGameServer({ port = Number(process.env.PORT) || 3001, host
     session.ws = ws;
     session.lastSeen = Date.now();
     session.disconnectedAt = null;
+    session.dustDeltas = false;
+    session.dustState = null;
+    session.pendingRoom = null;
     if (previousSocket && previousSocket !== ws) previousSocket.close(4001, 'Reconnected elsewhere');
     send(session, { type: 'welcome', id: session.id, reconnectToken: session.reconnectToken });
     const restored = manager.reconnect(session.id);
     if (restored) {
       send(session, { type: 'joined', id: session.id, code: restored.code, reconnectToken: session.reconnectToken });
-      send(session, { type: 'state', room: manager.snapshot(restored) });
+      sendState(session, restored);
     }
     ws.on('pong', () => { session.lastSeen = Date.now(); });
     ws.on('message', data => {
@@ -225,16 +295,24 @@ export function createGameServer({ port = Number(process.env.PORT) || 3001, host
         if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('消息格式有误');
         switch (message.type) {
           case 'create': case 'join': case 'quick': {
+            session.dustState = null;
             const room = manager[message.type](session.id, message);
             send(session, { type: 'joined', id: session.id, code: room.code, reconnectToken: session.reconnectToken });
-            send(session, { type: 'state', room: manager.snapshot(room) });
+            sendState(session, room);
             break;
           }
-          case 'input': manager.input(session.id, message); break;
+          case 'input':
+            if (message.dustDeltas === true || message.supportsDustDelta === true) session.dustDeltas = true;
+            manager.input(session.id, message);
+            break;
           case 'upgrade': manager.upgrade(session.id, message.upgradeId); break;
           case 'ready': manager.ready(session.id, message.ready); break;
           case 'start': case 'restart': manager.start(session.id); break;
-          case 'leave': manager.leave(session.id); send(session, { type: 'left' }); break;
+          case 'leave':
+            manager.leave(session.id);
+            session.dustState = session.pendingRoom = null;
+            send(session, { type: 'left' });
+            break;
           case 'ping': send(session, { type: 'pong', time: message.time ?? now }); break;
           default: throw new Error('未知操作');
         }
@@ -252,6 +330,12 @@ export function createGameServer({ port = Number(process.env.PORT) || 3001, host
   const ticker = setInterval(() => {
     const now = performance.now();
     manager.tick(Math.min(0.1, (now - lastTick) / 1000));
+    // A lobby/final result has no continuous publication. Keep just one pending
+    // live room reference so it is eventually refreshed after congestion clears.
+    for (const session of sessions.values()) if (session.pendingRoom) {
+      if (manager.find(session.id) === session.pendingRoom) sendState(session, session.pendingRoom);
+      else session.pendingRoom = null;
+    }
     lastTick = now;
   }, 1000 / 30);
   const heartbeat = setInterval(() => {

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const WORLD = { width: 1400, height: 900 };
+  const WORLD = { width: 12000, height: 8000 };
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
@@ -12,16 +12,23 @@
     bolt: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="m14 2-10 12h7l-1 8 10-12h-7z"/></svg>',
     audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m11 4-6 5H2v6h3l6 5zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></svg>',
     exit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 5H5v14h4M12 12h9m-4-4 4 4-4 4"/></svg>',
+    fullscreen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></svg>',
   };
 
   let root, canvas, ctx, socket, room, myId, token, currentOptions;
   let active = false, intentionalClose = false, joined = false, reconnecting = false;
   let pendingResolve, pendingReject, connectionTimer, retryTimer, retries = 0;
-  let width = innerWidth, height = innerHeight, dpr = 1, raf, inputTimer;
+  let width = innerWidth, height = innerHeight, dpr = 1, raf, inputTimer, pingTimer, backgroundCanvas;
   let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false, ejectPulse = false, boostTouch = false, pointerMove = null;
   let touchVector = { x: 0, y: 0 }, joystickPointer = null, sound = false, audioContext;
   let previousStatus = '', previousRound = -1, lastScore = 0, lastUpgradeKey = '', lastShatteredAt = 0;
+  let inputSeq = 0, lastInputAck = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
+  let renderedDust = 0, renderedCells = 0, camera = { x: NaN, y: NaN, scale: .95 };
+  let bodyOverflowBefore = null;
   const keys = new Set(), drawnPlayers = new Map(), drawnDust = new Map(), particles = [], seenBlasts = new Set();
+  const cellTracks = new Map(), dustTracks = new Map(), predictedCells = new Map(), inputHistory = [], domCache = new Map();
+  const planetSprites = new Map(), dustSprites = new Map();
+  const materializedDust = new Map();
   const stars = Array.from({ length: 240 }, (_, i) => ({
     x: Math.abs(Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1,
     y: Math.abs(Math.sin(i * 269.5 + 183.3) * 29813.3719) % 1,
@@ -39,16 +46,18 @@
       @media(max-height:580px) and (min-width:701px){.sg-panel-backdrop{padding:65px 24px 20px}.sg-panel{max-height:calc(100vh - 85px);overflow:auto;padding:24px}.sg-panel h2{margin-top:12px}.sg-code-box{margin:13px 0}.sg-rank,.sg-stat{top:90px}.sg-bottom{bottom:18px}.sg-panel-buttons{margin-top:14px}.sg-roster-row{padding:7px 10px}}
       .sg-mass-label{font-size:9px;color:#b9f6ca;margin-top:10px;letter-spacing:1px}.sg-growth{margin-top:10px;height:3px;background:#283343;border-radius:5px;overflow:hidden}.sg-growth>i{display:block;background:#b9f6ca;height:100%;transition:width .2s}.sg-growth-caption{font-size:8px;color:#718295;margin-top:6px;line-height:1.6}.sg-upgrades{position:absolute;left:50%;bottom:113px;transform:translateX(-50%);width:min(670px,calc(100% - 60px));pointer-events:auto;padding:17px;border:1px solid #d4b5ff55;border-radius:15px;background:#101826f2;box-shadow:0 12px 60px #0008,0 0 70px #b79bff0b;backdrop-filter:blur(20px)}.sg-upgrades[hidden]{display:none}.sg-upgrade-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:13px}.sg-upgrade-title{font-size:13px;color:#e4d8ff;font-weight:650;letter-spacing:1px}.sg-upgrade-hint{font-size:9px;color:#8293a5}.sg-upgrade-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.sg-upgrade-card{position:relative;text-align:left;border:1px solid #a5b5cc26;background:linear-gradient(150deg,#27263d99,#131d2c80);color:#e6ddf8;border-radius:10px;padding:15px 13px;min-height:115px;transition:transform .15s,border-color .15s}.sg-upgrade-card:hover,.sg-upgrade-card:focus-visible{transform:translateY(-4px);border-color:#d4b5ff90;background:linear-gradient(150deg,#423257aa,#1b2835aa)}.sg-upgrade-card:nth-child(2){background:linear-gradient(150deg,#233c3890,#131d2c80)}.sg-upgrade-card:nth-child(3){background:linear-gradient(150deg,#34332b90,#131d2c80)}.sg-upgrade-icon{font-size:22px;line-height:1;display:block;margin-bottom:12px;color:#d4b5ff}.sg-upgrade-card:nth-child(2) .sg-upgrade-icon{color:#b9f6ca}.sg-upgrade-card:nth-child(3) .sg-upgrade-icon{color:#e4cd9c}.sg-upgrade-name{font-size:12px;font-weight:600;display:block;margin-bottom:7px}.sg-upgrade-desc{font-size:10px;color:#98a8b9;line-height:1.7;display:block}.sg-upgrade-key{position:absolute;right:10px;top:11px;color:#7c7a93;font:9px ui-monospace,monospace;border:1px solid #7c7a9344;padding:2px 5px;border-radius:3px}.sg-upgrade-active{position:absolute;right:34px;top:300px;width:159px;color:#8191a5;font-size:9px;line-height:1.9;pointer-events:none}.sg-upgrade-active b{color:#c8b6ef;font-weight:400}.sg-touch-utility{display:none;position:absolute;right:128px;bottom:40px;gap:10px;pointer-events:auto;flex-direction:column}.sg-touch-utility button{width:46px;height:46px;border:1px solid #b8d2ed44;background:#182435dc;color:#c1d2e5;border-radius:50%;font-size:10px}.sg-touch-utility button:first-child{border-color:#b9f6ca66;color:#b9f6ca}
       @media(max-width:700px){.sg-mass-label{font-size:8px;margin-top:7px}.sg-growth-caption{font-size:7px}.sg-upgrades{bottom:160px;width:calc(100% - 28px);padding:13px;border-radius:12px}.sg-upgrade-head{margin-bottom:10px;flex-wrap:wrap;gap:5px}.sg-upgrade-title{font-size:11px}.sg-upgrade-hint{font-size:8px}.sg-upgrade-cards{gap:7px}.sg-upgrade-card{padding:12px 9px;min-height:133px}.sg-upgrade-icon{font-size:21px;margin-bottom:12px}.sg-upgrade-name{font-size:10px}.sg-upgrade-desc{font-size:8px;line-height:1.6}.sg-upgrade-key{font-size:8px;padding:1px 4px;right:7px;top:8px}.sg-upgrade-active{top:305px;right:18px;width:112px;font-size:8px}.sg-touch-utility{display:flex}.sg-controls{display:none}}
+      .sg-diagnostics{position:absolute;right:35px;top:80px;color:#8eaba0;font:9px ui-monospace,monospace;letter-spacing:.5px;pointer-events:none}.sg-map-hint{font-size:8px;color:#7f91a4}.sg-rank,.sg-stat,.sg-panel,.sg-upgrades{backdrop-filter:none}
+      @media(max-width:700px){.sg-diagnostics{right:18px;top:59px;font-size:8px}.sg-upgrade-active{max-height:110px;overflow:hidden}}
       @media(prefers-reduced-motion:reduce){#gameOverlay *{transition:none!important}}
     `;
     document.head.appendChild(style);
     root.innerHTML = `
       <canvas id="gameCanvas" aria-label="星球大爆炸实时竞技场"></canvas>
-      <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
+      <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
       <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">吞噬星尘 · 大球吃小球</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
       <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">W A S D</span><span>移动</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>引力爆破</span><kbd>E</kbd></button></div></div>
-      <div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
+      <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
       <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><button class="sg-touch-boost" id="sgTouchBoost" aria-label="按住加速">加速</button><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button><button id="sgTouchEject">吐球</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
       <div class="sg-panel-backdrop" id="sgPanelBackdrop"><section class="sg-panel" id="sgPanel" aria-live="polite"></section></div>
@@ -56,6 +65,8 @@
     canvas = $('gameCanvas');
     ctx = canvas.getContext('2d', { alpha: false });
     $('sgExit').addEventListener('click', () => disconnect());
+    $('sgFullscreen').addEventListener('click', toggleFullscreen);
+    document.addEventListener('fullscreenchange', () => { syncFullscreen(); resize(); });
     $('sgSound').addEventListener('click', () => {
       sound = window.StarAudio ? !window.StarAudio.enabled : !sound;
       window.StarAudio?.setEnabled?.(sound);
@@ -93,6 +104,8 @@
     $('sgTouchBoost').addEventListener('pointerup', () => { boostTouch = false; });
     $('sgTouchBoost').addEventListener('pointercancel', () => { boostTouch = false; });
     addEventListener('resize', resize);
+    addEventListener('orientationchange', resize);
+    window.visualViewport?.addEventListener('resize', resize);
     addEventListener('keydown', (e) => {
       if (!active || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight'].includes(e.code)) e.preventDefault();
@@ -102,16 +115,33 @@
       if (/^Digit[123]$/.test(e.code) && !e.repeat) chooseUpgrade(Number(e.code.slice(-1)) - 1);
       if (e.code === 'Escape') { if (room?.status === 'playing') toast('点击右上角退出图标可返回大厅'); }
       keys.add(e.code);
+      if (!e.repeat) sendInput();
     });
-    addEventListener('keyup', (e) => keys.delete(e.code));
+    addEventListener('keyup', (e) => { keys.delete(e.code); if (active) sendInput(); });
     addEventListener('blur', () => { keys.clear(); boostTouch = false; pointerMove = null; resetJoystick(); });
     resize();
   }
 
+  function syncFullscreen() {
+    const full = document.fullscreenElement === root, button = $('sgFullscreen');
+    if (!button) return;
+    button.setAttribute('aria-pressed', String(full));
+    button.setAttribute('aria-label', full ? '退出全屏' : '进入全屏'); button.title = full ? '退出全屏' : '进入全屏';
+  }
+  function requestFullscreen() {
+    if (!root?.requestFullscreen || document.fullscreenElement) return;
+    try { root.requestFullscreen({ navigationUI: 'hide' })?.catch?.(() => {}); } catch (_) { /* The full viewport remains usable when native fullscreen is unavailable. */ }
+  }
+  function toggleFullscreen() {
+    if (document.fullscreenElement === root) { try { document.exitFullscreen?.()?.catch?.(() => {}); } catch (_) {} }
+    else requestFullscreen();
+  }
+
   function resize() {
     if (!canvas) return;
-    width = innerWidth; height = innerHeight; dpr = Math.min(devicePixelRatio || 1, 2);
+    width = innerWidth; height = innerHeight; dpr = Math.min(devicePixelRatio || 1, width < 700 ? 1 : 1.5);
     canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+    backgroundCanvas = null;
   }
 
   function showPanel(html) { $('sgPanelBackdrop').hidden = false; $('sgPanel').innerHTML = html; }
@@ -127,17 +157,23 @@
     active = true; joined = false; reconnecting = false; intentionalClose = false; retries = 0;
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastScore = 0; lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
+    cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
+    inputSeq = 0; lastInputAck = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
+    camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
     inputPulse = false; splitPulse = false; ejectPulse = false;
     $('sgUpgrades').hidden = true;
     root.hidden = false;
+    bodyOverflowBefore = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    requestFullscreen();
     sound = window.StarAudio ? window.StarAudio.enabled : sound;
     $('sgSound').setAttribute('aria-pressed', String(sound));
     $('sgSound').setAttribute('aria-label', sound ? '关闭游戏音效' : '开启游戏音效');
     document.body.dataset.starGameActive = 'true';
     loadingPanel();
-    updateHud();
+    updateHud(true);
     cancelAnimationFrame(raf); lastFrame = 0; raf = requestAnimationFrame(render);
     clearInterval(inputTimer); inputTimer = setInterval(sendInput, 50);
+    clearInterval(pingTimer); pingTimer = setInterval(() => { if (joined) send({ type: 'ping', time: Date.now() }); }, 2000);
     return new Promise((resolve, reject) => {
       pendingResolve = resolve; pendingReject = reject;
       connectionTimer = setTimeout(() => failConnection('连接超时，请检查网络后重试。'), 12000);
@@ -167,8 +203,10 @@
         myId = data.id; if (data.reconnectToken) token = data.reconnectToken;
         joined = true; reconnecting = false; retries = 0;
         clearTimeout(connectionTimer); $('sgStatus').hidden = true;
+        send({ type: 'ping', time: Date.now() });
         if (pendingResolve) { const resolve = pendingResolve; pendingResolve = null; pendingReject = null; resolve({ id: myId, code: data.code }); }
       } else if (data.type === 'state' && data.room) receiveRoom(data.room);
+      else if (data.type === 'pong' && Number.isFinite(data.time)) { const sample = Date.now() - data.time; if (sample >= 0 && sample < 15000) rtt = rtt === null ? sample : rtt * .7 + sample * .3; }
       else if (data.type === 'error') {
         if (!joined) failConnection(data.message || '进入房间失败，请重试。');
         else if (reconnecting) showConnectionError(data.message || '重连失败，房间可能已关闭。');
@@ -211,10 +249,12 @@
   function send(data) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); }
   function closeSession(notify = true) {
     intentionalClose = true; active = false;
-    clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); cancelAnimationFrame(raf);
+    clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
     send({ type: 'leave' }); socket?.close(); socket = null;
     keys.clear(); touchVector = { x: 0, y: 0 }; boostTouch = false; pointerMove = null;
     if (root) root.hidden = true;
+    if (bodyOverflowBefore !== null) { document.body.style.overflow = bodyOverflowBefore; bodyOverflowBefore = null; }
+    if (document.fullscreenElement === root) { try { document.exitFullscreen?.()?.catch?.(() => {}); } catch (_) {} }
     delete document.body.dataset.starGameActive;
     if (pendingReject) { pendingReject(new Error('已取消连接')); pendingReject = null; pendingResolve = null; }
     if (notify) dispatchLobby();
@@ -227,6 +267,12 @@
 
   function receiveRoom(next) {
     const old = room;
+    if (!Array.isArray(next.players)) next.players = [];
+    if (!next.dustDelta) materializedDust.clear();
+    for (const id of next.dustRemoved || []) materializedDust.delete(id);
+    for (const dust of next.dust || []) materializedDust.set(dust.id, dust);
+    next.dust = Array.from(materializedDust.values());
+    ingestSnapshot(next, performance.now());
     room = next;
     if (!Array.isArray(room.players)) room.players = [];
     room.dust ||= []; room.blasts ||= [];
@@ -251,9 +297,7 @@
       }
       previousStatus = room.status; previousRound = room.round;
     }
-    if (room.status === 'lobby' || room.status === 'finished') updateRoomPanel();
-    updateUpgrades();
-    updateHud();
+    updateHud(room.status !== old?.status || room.round !== old?.round);
   }
 
   function updateRoomPanel() {
@@ -271,8 +315,8 @@
     const roster = players.map((p) => `<div class="sg-roster-row"><span class="sg-mini-planet" style="--planet:${safeColor(p.color)}"></span><span class="sg-roster-name">${esc(p.name)}${p.id === myId ? '<span class="sg-small-tag">你</span>' : ''}${p.id === room.hostId ? '<span class="sg-small-tag">房主</span>' : ''}${p.bot ? '<span class="sg-small-tag">AI</span>' : ''}</span><span class="sg-ready-status${p.ready || p.bot ? ' ready' : ''}">${finished ? `${Math.floor(p.mass || 0)} 质量` : p.ready || p.bot ? '● 已准备' : '等待准备'}</span></div>`).join('');
     let html = `${finished ? `<div class="sg-panel-topline"><span class="sg-eyebrow">ROUND COMPLETE</span><span class="sg-badge">${room.mode === 'practice' ? '训练完成' : '本局结束'}</span></div><h2>${place === 1 ? '你就是宇宙的中心。' : '每一次引爆，都是新生。'}</h2><div class="sg-result-place">#${place}<span style="font-size:18px;color:#7d899b;letter-spacing:0"> / ${players.length}</span></div><p class="sg-panel-desc">${esc(winner?.name || '星际旅人')} 获得本局第一名</p><div class="sg-result-grid"><div><div class="sg-result-number">${me?.score || 0}</div><div class="sg-result-label">获得星尘</div></div><div><div class="sg-result-number">${players.length}</div><div class="sg-result-label">参赛星球</div></div><div><div class="sg-result-number">${room.round || 1}</div><div class="sg-result-label">探索轮次</div></div></div>` : `<div class="sg-panel-topline"><span class="sg-eyebrow">YOUR NEXT UNIVERSE</span><span class="sg-badge">在线房间 · ${players.length} / 8</span></div><h2>${host ? '宇宙已就位。<br>就差你的朋友。' : '你已进入这片宇宙。'}</h2><p class="sg-panel-desc">${host ? '把房间码发给朋友，一起开启星际混战。' : '准备好你的星球，等待房主开启对局。'}</p><div class="sg-code-box"><div><div class="sg-code-label">房间邀请码 / ROOM CODE</div><div class="sg-code">${esc(room.code)}</div></div><button class="sg-copy" id="sgCopyCode" title="复制房间码" aria-label="复制房间码">${icons.copy}</button></div>`}<div class="sg-roster-title"><span>${finished ? '本局星球' : '已抵达星球'}</span><span>${players.length} ${players.length === 1 ? 'PLAYER' : 'PLAYERS'}</span></div><div class="sg-roster">${roster}</div><div class="sg-panel-buttons"><button class="sg-secondary" id="sgRoomExit">返回大厅</button>${host ? `<button class="sg-primary" id="sgStartRound" ${allReady || (room.mode === 'practice' && finished) ? '' : 'disabled'}>${finished ? '再来一局' : '开始引爆'} ↗</button>` : `<button class="sg-primary" id="sgReady">${me?.ready ? '取消准备' : finished ? '准备下一局' : '我准备好了'}${me?.ready ? ' ✓' : ''}</button>`}</div><p class="sg-panel-note">${room.mode === 'practice' ? '训练模式中的其他星球由 AI 控制。' : host ? players.length < 2 ? '至少需要 2 名玩家。邀请朋友，或等待新星球加入。' : allReady ? '所有星球已准备就绪，可以出发了。' : '等待所有玩家准备后，房主即可开始。' : me?.ready ? '你已准备就绪，等待房主开始。' : '点击准备，告诉同伴你已就绪。'}</p>`;
     html = html.replace(/<\/p>$/, '<br>引力吸碎片 · 撞击会碎裂 · 守住核心再吸收</p>');
-    if (panel.innerHTML !== html) {
-      panel.innerHTML = html;
+    if (domCache.get('roomPanel') !== html) {
+      domCache.set('roomPanel', html); panel.innerHTML = html;
       if ($('sgCopyCode')) $('sgCopyCode').onclick = copyCode;
       $('sgRoomExit').onclick = () => disconnect();
       if ($('sgStartRound')) $('sgStartRound').onclick = () => send({ type: 'start' });
@@ -293,6 +337,7 @@
     } catch (_) { toast(`房间码：${room.code} · 长按或手动复制`); }
   }
 
+  function setMarkup(id, value) { if (domCache.get(id) !== value) { domCache.set(id, value); $(id).innerHTML = value; } }
   function safeColor(color) { return /^#[a-f\d]{6}$/i.test(color || '') ? color : palette[0]; }
   function comparePlayers(a, b) { return (b.mass ?? 0) - (a.mass ?? 0) || (b.score ?? 0) - (a.score ?? 0) || (b.kills ?? 0) - (a.kills ?? 0) || String(a.id).localeCompare(String(b.id)); }
   function updateUpgrades() {
@@ -311,7 +356,7 @@
       }
     } else lastUpgradeKey = '';
     const names = { speed: '光速引擎', growth: '星尘滋养', blast: '超新星回响', blastRange: '超新星回响', range: '超新星回响', energy: '能量核心', efficiency: '能量核心', magnet: '引力场', shield: '行星护盾', recovery: '恒星充能', regen: '恒星充能', cooldown: '脉冲加速' };
-    $('sgUpgradeActive').innerHTML = (me?.upgrades || []).length ? `<span class="sg-eyebrow">已获得强化</span><br>${me.upgrades.map((u) => `<b>✧ ${esc(u.title || names[u.id] || u.id)}</b>${u.count > 1 ? ` ×${u.count}` : ''}`).join('<br>')}` : '';
+    setMarkup('sgUpgradeActive', (me?.upgrades || []).length ? `<span class="sg-eyebrow">已获得强化</span><br>${me.upgrades.map((u) => `<b>✧ ${esc(u.title || names[u.id] || u.id)}</b>${u.count > 1 ? ` ×${u.count}` : ''}`).join('<br>')}` : '');
   }
   function chooseUpgrade(index) {
     const me = room?.players?.find((p) => p.id === myId), choice = me?.upgradeChoices?.[index];
@@ -321,15 +366,20 @@
     toast(`已选择强化 · ${choice.title}`);
   }
   function formatTime(seconds) { const n = Math.max(0, Math.ceil(Number(seconds) || 0)); return `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`; }
-  function updateHud() {
+  function updateHud(force = false) {
     if (!root) return;
+    const now = performance.now();
+    if (!force && now - lastHud < 200) return;
+    lastHud = now;
+    if (room?.status === 'lobby' || room?.status === 'finished') updateRoomPanel();
+    updateUpgrades();
     const me = room?.players?.find((p) => p.id === myId);
     const players = [...(room?.players || [])].filter((p) => p.connected !== false).sort(comparePlayers);
     $('sgRoundLabel').textContent = room?.status === 'playing' ? room.mode === 'practice' ? '训练模式' : 'LIVE MATCH' : room?.status === 'finished' ? 'ROUND COMPLETE' : '准备起航';
     $('sgTimer').textContent = formatTime(room?.remaining ?? 180);
     $('sgTimer').style.color = room?.status === 'playing' && room.remaining < 30 ? '#ffb4a6' : '';
     $('sgPlayerCount').textContent = `${String(players.length).padStart(2, '0')} PLAYERS`;
-    $('sgRanking').innerHTML = players.slice(0, 6).map((p, i) => `<div class="sg-rank-row${p.id === myId ? ' me' : ''}"><span class="sg-rank-num">${i + 1}</span><span class="sg-player-dot" style="--planet:${safeColor(p.color)}"></span><span class="sg-rank-name">${esc(p.name)}${p.id === myId ? ' · 你' : ''}</span><span class="sg-rank-score">${Math.floor(p.mass ?? p.score ?? 0)}</span></div>`).join('');
+    setMarkup('sgRanking', players.slice(0, 6).map((p, i) => `<div class="sg-rank-row${p.id === myId ? ' me' : ''}"><span class="sg-rank-num">${i + 1}</span><span class="sg-player-dot" style="--planet:${safeColor(p.color)}"></span><span class="sg-rank-name">${esc(p.name)}${p.id === myId ? ' · 你' : ''}</span><span class="sg-rank-score">${Math.floor(p.mass ?? p.score ?? 0)}</span></div>`).join(''));
     $('sgScore').textContent = String(Math.floor(me?.mass ?? 36)).padStart(3, '0');
     $('sgLevel').textContent = `LV. ${me?.level || 1} / ${me?.cells?.length || 1} 颗星球`;
     const peak = me?.peakMass ?? me?.mass ?? 36, next = me ? me.nextUpgradeMass : 60;
@@ -338,12 +388,13 @@
     $('sgGrowthText').textContent = `${next ? `巅峰 ${Math.floor(peak)} / ${next} · 三选一` : '所有强化已解锁'}${gravity ? ` · 引力 ${Math.round(gravity)}` : ''}`;
     const maxHp = me?.stats?.maxHp || 100, hp = clamp(me?.hp ?? maxHp, 0, maxHp), energy = clamp(me?.energy ?? 60, 0, 100);
     $('sgHp').textContent = `${Math.ceil(hp)} / ${maxHp}`;
-    $('sgHealth').innerHTML = Array.from({ length: 5 }, (_, i) => `<i${hp / maxHp <= i / 5 ? ' class="empty"' : ''}></i>`).join('');
+    setMarkup('sgHealth', Array.from({ length: 5 }, (_, i) => `<i${hp / maxHp <= i / 5 ? ' class="empty"' : ''}></i>`).join(''));
     $('sgEnergyText').textContent = `${Math.floor(energy)} / 100`;
     $('sgEnergyFill').style.width = `${energy}%`;
     $('sgBlast').disabled = !room || room.status !== 'playing' || energy < (me?.stats?.blastCost || 30) || (me?.respawnIn || 0) > 0 || reconnecting || (me?.cooldown || 0) > 0;
     $('sgBlast').title = `消耗 ${me?.stats?.blastCost || 30} 能量${me?.cooldown > 0 ? ` · 冷却 ${me.cooldown.toFixed(1)} 秒` : ''}`;
     $('sgRoomFooter').textContent = room ? `${room.mode === 'practice' ? 'PRACTICE / AI TRAINING' : `ROOM / ${room.code}`}  ·  STAY CURIOUS, KEEP EXPLODING` : 'CONNECTING TO YOUR UNIVERSE';
+    $('sgDiagnostics').textContent = `${fps > 0 ? fps : '—'} FPS / ${rtt === null ? '—' : Math.round(rtt)} ms`;
     const respawn = me?.respawnIn || 0;
     $('sgRespawn').hidden = respawn <= 0 || room?.status !== 'playing';
     if (respawn > 0) $('sgRespawn').innerHTML = `<strong>${Math.ceil(respawn)}</strong>星球重生中`;
@@ -377,14 +428,11 @@
   }
   function sendInput() {
     if (!active || !room || room.status !== 'playing' || reconnecting) return;
-    let x = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-    let y = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
-    if (Math.hypot(touchVector.x, touchVector.y) > .1) { x = touchVector.x; y = touchVector.y; }
-    else if (!x && !y && pointerMove) {
-      const me = room.players.find((p) => p.id === myId), camera = getCamera();
-      if (me) { const dx = (pointerMove.x - camera.offsetX) / camera.scale - me.x, dy = (pointerMove.y - camera.offsetY) / camera.scale - me.y; const dist = Math.hypot(dx, dy); if (dist > 25 / camera.scale) { x = dx / dist; y = dy / dist; } }
-    }
-    send({ type: 'input', x, y, boost: keys.has('ShiftLeft') || keys.has('ShiftRight') || boostTouch, fire: inputPulse, split: splitPulse, eject: ejectPulse });
+    const input = getIntent(), view = getCamera(), seq = ++inputSeq;
+    const at = performance.now();
+    inputHistory.push({ seq, t: at, ...input });
+    while (inputHistory.length > 60 || inputHistory[0]?.t < at - 2000) inputHistory.shift();
+    send({ type: 'input', ...input, seq, viewport: { x: view.x, y: view.y, width: Math.min(3200, view.width), height: Math.min(2300, view.height) }, dustDeltas: true, supportsDustDelta: true, fire: inputPulse, split: splitPulse, eject: ejectPulse });
     inputPulse = false; splitPulse = false; ejectPulse = false;
   }
 
@@ -400,224 +448,275 @@
     } catch (_) { /* Audio is optional. */ }
   }
 
-  function getCamera() {
-    const mobile = width < 700;
-    const scale = mobile ? Math.max(width / WORLD.width, .69) : Math.min((width - 100) / WORLD.width, (height - 152) / WORLD.height);
-    let cx = WORLD.width / 2, cy = WORLD.height / 2;
-    const me = room?.players?.find((p) => p.id === myId), draw = me && drawnPlayers.get(me.id);
-    if (mobile && room?.status === 'playing' && me) { cx = draw?.x ?? me.x; cy = draw?.y ?? me.y; }
-    if (WORLD.width * scale > width) cx = clamp(cx, width / 2 / scale - 20, WORLD.width - width / 2 / scale + 20);
-    if (WORLD.height * scale > height - 130) cy = clamp(cy, (height - 130) / 2 / scale, WORLD.height - (height - 130) / 2 / scale);
-    return { scale, offsetX: width / 2 - cx * scale, offsetY: height / 2 + (mobile ? 18 : 18) - cy * scale };
+  function getIntent() {
+    let x = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+    let y = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
+    if (Math.hypot(touchVector.x, touchVector.y) > .1) { x = touchVector.x; y = touchVector.y; }
+    else if (!x && !y && pointerMove) {
+      const me = getOwnCenter(), view = getCamera();
+      if (me) { const dx = (pointerMove.x - view.offsetX) / view.scale - me.x, dy = (pointerMove.y - view.offsetY) / view.scale - me.y, length = Math.hypot(dx, dy); if (length > 25 / view.scale) { x = dx / length; y = dy / length; } }
+    }
+    const length = Math.hypot(x, y); if (length > 1) { x /= length; y /= length; }
+    return { x, y, boost: keys.has('ShiftLeft') || keys.has('ShiftRight') || boostTouch };
   }
+
+  function getOwnCenter() {
+    const me = room?.players?.find((p) => p.id === myId);
+    if (!me) return null;
+    let x = 0, y = 0, mass = 0;
+    for (const cell of me.cells || []) { const p = predictedCells.get(cell.id); if (p) { const m = cell.mass || 1; x += p.x * m; y += p.y * m; mass += m; } }
+    return mass ? { x: x / mass, y: y / mass } : { x: me.x, y: me.y };
+  }
+
+  function addTrack(map, key, point, at) {
+    let track = map.get(key); if (!track) { track = []; map.set(key, track); }
+    const previous = track[track.length - 1];
+    if (previous && previous.x === point.x && previous.y === point.y && !point.vx && !point.vy && !previous.vx && !previous.vy) return;
+    const seconds = previous ? (at - previous.t) / 1000 : 0;
+    track.push({ t: at, x: point.x, y: point.y, vx: Number.isFinite(point.vx) ? point.vx : seconds > 0 ? (point.x - previous.x) / seconds : 0, vy: Number.isFinite(point.vy) ? point.vy : seconds > 0 ? (point.y - previous.y) / seconds : 0 });
+    if (track.length > 7) track.shift();
+  }
+
+  function sampleTrack(track, at, extrapolate = 90) {
+    if (!track?.length) return null;
+    const first = track[0], latest = track[track.length - 1];
+    if (at <= first.t) return first;
+    for (let i = 1; i < track.length; i++) if (track[i].t >= at) {
+      const a = track[i - 1], b = track[i], f = clamp((at - a.t) / Math.max(1, b.t - a.t), 0, 1);
+      if (Math.hypot(b.x - a.x, b.y - a.y) > 500) return b;
+      return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+    }
+    const dt = clamp(at - latest.t, 0, extrapolate) / 1000;
+    return { x: latest.x + latest.vx * dt, y: latest.y + latest.vy * dt };
+  }
+
+  function ingestSnapshot(next, at) {
+    if (next.arena?.width > 0) WORLD.width = next.arena.width;
+    if (next.arena?.height > 0) WORLD.height = next.arena.height;
+    const snapshotAt = Number.isFinite(next.serverTime) ? next.serverTime : (next.time || 0) * 1000;
+    next._renderTime = snapshotAt;
+    next._receivedAt = at;
+    const cellsPresent = new Set(), dustPresent = new Set();
+    for (const player of next.players) {
+      for (const cell of player.cells || []) {
+        const key = `${player.id}:${cell.id}`; cellsPresent.add(key); addTrack(cellTracks, key, cell, snapshotAt);
+        if (player.id !== myId) continue;
+        let predicted = predictedCells.get(cell.id);
+        if (!predicted || player.respawnIn > 0 || next.round !== room?.round) {
+          predicted = { x: cell.x, y: cell.y, correctionX: 0, correctionY: 0, impulseX: 0, impulseY: 0, history: [] };
+          predictedCells.set(cell.id, predicted);
+        } else {
+          // Compare the packet with our past simulation, preserving immediate current input.
+          const historyAt = at - clamp((rtt ?? 80) + 15, 12, 450);
+          const historical = sampleTrack(predicted.history, historyAt, 0) || predicted;
+          const dx = cell.x - historical.x, dy = cell.y - historical.y;
+          if (Math.hypot(dx, dy) > 350) { predicted.x = cell.x; predicted.y = cell.y; predicted.correctionX = predicted.correctionY = 0; predicted.history.length = 0; }
+          else if (Math.hypot(dx, dy) > 1.5) { predicted.correctionX = dx; predicted.correctionY = dy; }
+        }
+        const speed = (player.boosting ? 360 : 210) * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
+        const velocity = Math.hypot(cell.vx || 0, cell.vy || 0);
+        if (velocity > speed * 1.3) { const f = Math.max(0, 1 - speed / velocity); predicted.impulseX = (cell.vx || 0) * f; predicted.impulseY = (cell.vy || 0) * f; }
+      }
+    }
+    for (const key of cellTracks.keys()) if (!cellsPresent.has(key)) cellTracks.delete(key);
+    const own = next.players.find((p) => p.id === myId);
+    const ownIds = new Set((own?.cells || []).map((c) => c.id));
+    for (const id of predictedCells.keys()) if (!ownIds.has(id)) predictedCells.delete(id);
+    if (Number.isFinite(own?.lastInputSeq)) { lastInputAck = own.lastInputSeq; while (inputHistory.length && inputHistory[0].seq <= lastInputAck) inputHistory.shift(); }
+    for (const dust of next.dust) { dustPresent.add(dust.id); addTrack(dustTracks, dust.id, dust, snapshotAt); }
+    for (const id of dustTracks.keys()) if (!dustPresent.has(id)) dustTracks.delete(id);
+    lastSnapshotAt = at;
+  }
+
+  function predictOwn(dt, at) {
+    const me = room?.players?.find((p) => p.id === myId);
+    if (!me || room.status !== 'playing' || me.respawnIn > 0 || reconnecting || at - lastSnapshotAt > 650) return;
+    const input = getIntent(), center = getOwnCenter(), moving = Math.hypot(input.x, input.y) > .01;
+    if (!center) return;
+    const targetX = center.x + input.x * 260, targetY = center.y + input.y * 260;
+    for (const cell of me.cells || []) {
+      const p = predictedCells.get(cell.id); if (!p) continue;
+      const dx = targetX - p.x, dy = targetY - p.y, length = Math.hypot(dx, dy) || 1;
+      const speed = (input.boost && me.energy > 1 && moving ? 360 : 210) * (me.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
+      const approach = Math.min(1, length / (moving ? 50 : 100));
+      const correction = 1 - Math.exp(-dt * 9);
+      p.x = clamp(p.x + (dx / length * speed * approach + p.impulseX) * dt + p.correctionX * correction, cell.radius, WORLD.width - cell.radius);
+      p.y = clamp(p.y + (dy / length * speed * approach + p.impulseY) * dt + p.correctionY * correction, cell.radius, WORLD.height - cell.radius);
+      p.correctionX *= 1 - correction; p.correctionY *= 1 - correction;
+      p.impulseX *= Math.exp(-5 * dt); p.impulseY *= Math.exp(-5 * dt);
+      p.history.push({ t: at, x: p.x, y: p.y, vx: 0, vy: 0 });
+      while (p.history.length > 2 && p.history[0].t < at - 800) p.history.shift();
+    }
+  }
+
+  function updateCamera(dt) {
+    const me = room?.players?.find((p) => p.id === myId), center = getOwnCenter();
+    const mobile = width < 700;
+    let targetX = center?.x ?? WORLD.width / 2, targetY = center?.y ?? WORLD.height / 2;
+    let targetScale = (mobile ? .8 : .95) / Math.pow(Math.max(36, me?.mass || 36) / 36, .1);
+    if (me?.cells?.length > 1) {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const c of me.cells) { const p = predictedCells.get(c.id) || c; minX = Math.min(minX, p.x - c.radius); maxX = Math.max(maxX, p.x + c.radius); minY = Math.min(minY, p.y - c.radius); maxY = Math.max(maxY, p.y + c.radius); }
+      targetScale = Math.min(targetScale, width * .7 / Math.max(250, maxX - minX + 180), height * .65 / Math.max(200, maxY - minY + 180));
+    }
+    const minScale = Math.max(width / 3200, height / 2300, mobile ? .3 : .35);
+    targetScale = clamp(targetScale, minScale, mobile ? 1 : 1.15);
+    if (!Number.isFinite(camera.x) || Math.hypot(camera.x - targetX, camera.y - targetY) > 1600) { camera.x = targetX; camera.y = targetY; camera.scale = targetScale; }
+    else { const follow = 1 - Math.exp(-dt * 9); camera.x += (targetX - camera.x) * follow; camera.y += (targetY - camera.y) * follow; camera.scale += (targetScale - camera.scale) * (1 - Math.exp(-dt * 3)); }
+    camera.scale = Math.max(camera.scale, minScale);
+    const halfW = width / 2 / camera.scale, halfH = height / 2 / camera.scale;
+    camera.x = clamp(camera.x, Math.min(halfW - 35, WORLD.width / 2), Math.max(WORLD.width - halfW + 35, WORLD.width / 2));
+    camera.y = clamp(camera.y, Math.min(halfH - 35, WORLD.height / 2), Math.max(WORLD.height - halfH + 35, WORLD.height / 2));
+  }
+
+  function getCamera() {
+    const x = Number.isFinite(camera.x) ? camera.x : getOwnCenter()?.x ?? WORLD.width / 2;
+    const y = Number.isFinite(camera.y) ? camera.y : getOwnCenter()?.y ?? WORLD.height / 2;
+    return { x, y, scale: camera.scale, offsetX: width / 2 - x * camera.scale, offsetY: height / 2 - y * camera.scale, width: width / camera.scale, height: height / camera.scale };
+  }
+  function visible(x, y, radius, view) { return x + radius >= view.x - view.width / 2 && x - radius <= view.x + view.width / 2 && y + radius >= view.y - view.height / 2 && y - radius <= view.y + view.height / 2; }
 
   function render(time) {
     if (!active || !ctx) return;
     const dt = Math.min((time - (lastFrame || time)) / 1000, .05); lastFrame = time;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawBackground(time);
-    const camera = getCamera();
-    ctx.save(); ctx.translate(camera.offsetX, camera.offsetY); ctx.scale(camera.scale, camera.scale);
-    drawArena(time);
+    if (!fpsStarted) fpsStarted = time;
+    frameCount++; if (time - fpsStarted >= 700) { fps = Math.round(frameCount * 1000 / (time - fpsStarted)); frameCount = 0; fpsStarted = time; }
+    predictOwn(dt, time); updateCamera(dt);
+    const view = getCamera();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); drawBackground();
+    ctx.save(); ctx.translate(view.offsetX, view.offsetY); ctx.scale(view.scale, view.scale); drawArena(view);
+    renderedDust = 0; renderedCells = 0;
     if (room) {
-      const liveDust = new Set();
+      const sampleAt = room._renderTime + Math.max(0, time - room._receivedAt) - 100;
       for (const dust of room.dust) {
-        liveDust.add(dust.id);
-        let draw = drawnDust.get(dust.id);
-        if (!draw) { draw = { x: dust.x, y: dust.y }; drawnDust.set(dust.id, draw); }
-        const blend = 1 - Math.exp(-dt * 23);
-        draw.x += (dust.x - draw.x) * blend; draw.y += (dust.y - draw.y) * blend;
-        drawDust({ ...dust, x: draw.x, y: draw.y }, time);
+        const position = sampleTrack(dustTracks.get(dust.id), sampleAt, 75) || dust;
+        const radius = dust.fragment ? Math.sqrt(dust.value || 1) * 3 + 15 : 15;
+        if (!visible(position.x, position.y, radius, view)) continue;
+        drawDust(dust, position, time); renderedDust++;
       }
-      for (const id of drawnDust.keys()) if (!liveDust.has(id)) drawnDust.delete(id);
-      for (const blast of room.blasts) drawBlast(blast, time);
+      for (const blast of room.blasts) if (visible(blast.x, blast.y, (blast.radius || 210) + 30, view)) drawBlast(blast, time);
       for (const player of room.players) {
-        let draw = drawnPlayers.get(player.id);
-        if (!draw) { draw = { x: player.x, y: player.y }; drawnPlayers.set(player.id, draw); }
-        const blend = 1 - Math.exp(-dt * 20);
-        if (Math.hypot(player.x - draw.x, player.y - draw.y) > 150) { draw.x = player.x; draw.y = player.y; }
-        else { draw.x += (player.x - draw.x) * blend; draw.y += (player.y - draw.y) * blend; }
-        const cells = player.cells?.length ? player.cells : [{ id: 'single', x: player.x, y: player.y, radius: player.radius, mass: player.mass }];
-        const largestId = [...cells].sort((a, b) => b.mass - a.mass)[0]?.id;
+        if (player.respawnIn > 0) continue;
+        const cells = player.cells || [];
+        let primary = cells[0]; for (const c of cells) if (!primary || c.mass > primary.mass) primary = c;
         for (const cell of cells) {
-          const key = `${player.id}:${cell.id}`;
-          let cellDraw = drawnPlayers.get(key);
-          if (!cellDraw) { cellDraw = { x: cell.x, y: cell.y }; drawnPlayers.set(key, cellDraw); }
-          if (Math.hypot(cell.x - cellDraw.x, cell.y - cellDraw.y) > 180) { cellDraw.x = cell.x; cellDraw.y = cell.y; }
-          else { cellDraw.x += (cell.x - cellDraw.x) * blend; cellDraw.y += (cell.y - cellDraw.y) * blend; }
-          const isPrimaryCell = cell.id === largestId;
-          if (player.id === myId && (isPrimaryCell || cells.length <= 3) && cell.gravityRadius) drawGravity(cellDraw.x, cellDraw.y, cell.gravityRadius, player.color, time, isPrimaryCell);
-          drawPlanet({ ...player, cellId: cell.id, radius: cell.radius, cellMass: cell.mass, isPrimaryCell, protected: cell.protected || cell.protectedFor > 0 || cell.protectedUntil > room.time, mergeIn: cell.mergeIn }, cellDraw, time);
+          const own = player.id === myId;
+          const position = own ? predictedCells.get(cell.id) || cell : sampleTrack(cellTracks.get(`${player.id}:${cell.id}`), sampleAt) || cell;
+          if (!visible(position.x, position.y, cell.radius * 2.3 + 35, view)) continue;
+          if (own && primary === cell && cell.gravityRadius) drawGravity(position.x, position.y, cell.gravityRadius, player.color, time);
+          drawPlanet(player, cell, position, time, primary === cell); renderedCells++;
         }
       }
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i]; p.life -= dt; p.y -= dt * 23;
         if (p.life <= 0) { particles.splice(i, 1); continue; }
+        if (!visible(p.x, p.y, 30, view)) continue;
         ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.font = '600 13px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.fillText(p.text, p.x, p.y); ctx.globalAlpha = 1;
       }
-    } else drawDecorativePlanets(time);
+    } else {
+      drawPlanet({ id: 'dec1', color: palette[0], hp: 100 }, { radius: 43, mass: 80 }, { x: view.x - 330, y: view.y - 90 }, time, false, true);
+      drawPlanet({ id: 'dec2', color: palette[3], hp: 100 }, { radius: 28, mass: 40 }, { x: view.x + 360, y: view.y + 170 }, time, false, true);
+    }
     ctx.restore();
-    if (time - lastHud > 160) { lastHud = time; updateHud(); }
+    if (room?.status === 'playing') drawMinimap(view);
+    updateHud();
     raf = requestAnimationFrame(render);
   }
 
-  function drawBackground(time) {
-    ctx.fillStyle = '#070c16'; ctx.fillRect(0, 0, width, height);
-    let glow = ctx.createRadialGradient(width * .65, height * .45, 0, width * .65, height * .45, width * .65);
-    glow.addColorStop(0, '#142127'); glow.addColorStop(.45, '#0c1820'); glow.addColorStop(1, '#070b14'); ctx.fillStyle = glow; ctx.fillRect(0, 0, width, height);
-    glow = ctx.createRadialGradient(width * .2, height * .8, 0, width * .2, height * .8, width * .44);
-    glow.addColorStop(0, '#34223d22'); glow.addColorStop(1, '#261b3500'); ctx.fillStyle = glow; ctx.fillRect(0, 0, width, height);
-    for (let i = 0; i < stars.length; i++) {
-      const s = stars[i]; ctx.globalAlpha = s.a * (.76 + Math.sin(time * .0004 + i) * .24); ctx.fillStyle = i % 9 ? '#aec4d4' : '#d4b5ff';
-      ctx.beginPath(); ctx.arc(s.x * width, s.y * height, s.r, 0, Math.PI * 2); ctx.fill();
-      if (i % 53 === 0) { const x = s.x * width, y = s.y * height; ctx.globalAlpha *= .4; ctx.fillRect(x - 4, y - .35, 8, .7); ctx.fillRect(x - .35, y - 4, .7, 8); }
+  function drawBackground() {
+    if (!backgroundCanvas) {
+      backgroundCanvas = document.createElement('canvas'); backgroundCanvas.width = Math.ceil(width); backgroundCanvas.height = Math.ceil(height);
+      const b = backgroundCanvas.getContext('2d');
+      const glow = b.createRadialGradient(width * .62, height * .45, 0, width * .62, height * .45, width * .75);
+      glow.addColorStop(0, '#142127'); glow.addColorStop(.5, '#0b151f'); glow.addColorStop(1, '#070b14'); b.fillStyle = glow; b.fillRect(0, 0, width, height);
+      for (const star of stars) { b.globalAlpha = star.a * .7; b.fillStyle = '#adc3d4'; b.fillRect(star.x * width, star.y * height, star.r, star.r); }
+      b.globalAlpha = 1;
     }
-    ctx.globalAlpha = 1;
+    ctx.drawImage(backgroundCanvas, 0, 0, width, height);
   }
 
   function roundRect(x, y, w, h, r) {
     ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
-  function drawArena(time) {
+  function drawArena(view) {
+    const left = Math.max(0, view.x - view.width / 2), right = Math.min(WORLD.width, view.x + view.width / 2);
+    const top = Math.max(0, view.y - view.height / 2), bottom = Math.min(WORLD.height, view.y + view.height / 2);
+    ctx.lineWidth = .65 / view.scale; ctx.strokeStyle = '#7896aa0d'; ctx.beginPath();
+    for (let x = Math.floor(left / 100) * 100; x <= right; x += 100) { ctx.moveTo(x, top); ctx.lineTo(x, bottom); }
+    for (let y = Math.floor(top / 100) * 100; y <= bottom; y += 100) { ctx.moveTo(left, y); ctx.lineTo(right, y); }
+    ctx.stroke();
+    ctx.fillStyle = '#9dbdce26';
+    for (let x = Math.ceil(left / 500) * 500; x < right; x += 500) for (let y = Math.ceil(top / 500) * 500; y < bottom; y += 500) { ctx.fillRect(x - 3, y - .5, 6, 1); ctx.fillRect(x - .5, y - 3, 1, 6); }
+    if (left < 5 || top < 5 || right > WORLD.width - 5 || bottom > WORLD.height - 5) { ctx.strokeStyle = '#b9edcf66'; ctx.lineWidth = 2 / view.scale; ctx.strokeRect(0, 0, WORLD.width, WORLD.height); }
+  }
+
+  function makeSprite(size) { const c = document.createElement('canvas'); c.width = c.height = Math.ceil(size); return { canvas: c, c: c.getContext('2d'), center: c.width / 2 }; }
+  function cachedPlanet(color, radius) {
+    const r = clamp(Math.round(radius / 6) * 6, 12, 54), key = `${color}:${r}`;
+    if (planetSprites.has(key)) return planetSprites.get(key);
+    const sprite = makeSprite(r * 4.3 + 8), c = sprite.c, p = sprite.center;
+    c.translate(p, p);
+    const halo = c.createRadialGradient(0, 0, r * .7, 0, 0, r * 2.1); halo.addColorStop(0, `${color}24`); halo.addColorStop(1, `${color}00`); c.fillStyle = halo; c.beginPath(); c.arc(0, 0, r * 2.1, 0, Math.PI * 2); c.fill();
+    c.save(); c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.clip();
+    const surface = c.createRadialGradient(-r * .4, -r * .45, 1, r * .23, r * .25, r * 1.6);
+    surface.addColorStop(0, '#f4f6ff'); surface.addColorStop(.14, color); surface.addColorStop(.56, color); surface.addColorStop(.84, '#30394a'); surface.addColorStop(1, '#0b1320'); c.fillStyle = surface; c.fillRect(-r, -r, r * 2, r * 2);
+    c.rotate(-.4); c.strokeStyle = '#ffffff38'; c.lineWidth = Math.max(.6, r * .025);
+    for (let i = 0; i < 4; i++) { const y = -r * .7 + i * r * .43; c.beginPath(); c.ellipse(-r * .1, y, r * 1.05, r * .18, .08, 0, Math.PI * 2); c.stroke(); }
+    for (const [x, y, rr] of [[-.42, -.16, .23], [.24, .34, .19], [.35, -.52, .12]]) { c.fillStyle = '#18203938'; c.beginPath(); c.ellipse(x * r, y * r, rr * r, rr * r * .7, .4, 0, Math.PI * 2); c.fill(); c.strokeStyle = '#f4edff40'; c.lineWidth = .7; c.stroke(); }
+    c.restore(); c.strokeStyle = `${color}b0`; c.lineWidth = .8; c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.stroke();
+    c.save(); c.rotate(-.45); c.strokeStyle = `${color}55`; c.lineWidth = 1; c.beginPath(); c.ellipse(0, 0, r * 1.6, r * .4, 0, 0, Math.PI); c.stroke(); c.restore();
+    sprite.radius = r; planetSprites.set(key, sprite); if (planetSprites.size > 64) planetSprites.delete(planetSprites.keys().next().value); return sprite;
+  }
+
+  function cachedDust(dust) {
+    const color = dust.fragment || dust.ejected ? safeColor(dust.color) : '#c2e6cc';
+    const radius = dust.fragment ? clamp(Math.round(Math.sqrt(dust.value || 1) * 2.15 / 2) * 2, 5, 34) : dust.ejected ? 4 : 1.5;
+    const key = `${color}:${dust.fragment ? 'f' : 'd'}:${radius}`;
+    if (dustSprites.has(key)) return dustSprites.get(key);
+    const sprite = makeSprite(Math.max(18, radius * 5)), c = sprite.c;
+    c.translate(sprite.center, sprite.center);
+    const halo = c.createRadialGradient(0, 0, radius * .3, 0, 0, radius * 2.4); halo.addColorStop(0, `${color}77`); halo.addColorStop(1, `${color}00`); c.fillStyle = halo; c.beginPath(); c.arc(0, 0, radius * 2.4, 0, Math.PI * 2); c.fill();
+    c.fillStyle = color;
+    if (dust.fragment) { c.beginPath(); for (let i = 0; i < 7; i++) { const a = Math.PI * 2 / 7 * i, r = radius * (i % 2 ? .7 : 1); if (!i) c.moveTo(Math.cos(a) * r, Math.sin(a) * r); else c.lineTo(Math.cos(a) * r, Math.sin(a) * r); } c.closePath(); c.fill(); c.strokeStyle = '#ffffff66'; c.lineWidth = .7; c.stroke(); c.strokeStyle = '#20304199'; c.beginPath(); c.moveTo(-radius * .6, -radius * .2); c.lineTo(0, 0); c.lineTo(radius * .3, radius * .6); c.stroke(); }
+    else if (dust.ejected) { c.beginPath(); c.arc(0, 0, radius, 0, Math.PI * 2); c.fill(); }
+    else { c.rotate(Math.PI / 4); c.fillRect(-radius, -radius, radius * 2, radius * 2); }
+    dustSprites.set(key, sprite); if (dustSprites.size > 48) dustSprites.delete(dustSprites.keys().next().value); return sprite;
+  }
+
+  function drawDust(dust, position, time) {
+    const sprite = cachedDust(dust), speed = Math.hypot(dust.vx || 0, dust.vy || 0);
+    if (speed > 25) { const length = clamp(speed * .07, 3, 27); ctx.strokeStyle = dust.fragment ? `${safeColor(dust.color)}55` : '#c2e6cc35'; ctx.lineWidth = dust.fragment ? 1.5 : .7; ctx.beginPath(); ctx.moveTo(position.x, position.y); ctx.lineTo(position.x - dust.vx / speed * length, position.y - dust.vy / speed * length); ctx.stroke(); }
+    ctx.drawImage(sprite.canvas, position.x - sprite.center, position.y - sprite.center);
+  }
+  function drawGravity(x, y, radius, color, time) {
+    color = safeColor(color); ctx.save(); ctx.translate(x, y); ctx.strokeStyle = `${color}25`; ctx.lineWidth = .7; ctx.setLineDash([2, 10]); ctx.beginPath(); ctx.arc(0, 0, radius, time * .00012, Math.PI * 2 + time * .00012); ctx.stroke(); ctx.setLineDash([]);
+    const pulse = 1 - ((time * .00017) % 1); ctx.globalAlpha = (1 - pulse) * .12; ctx.strokeStyle = color; ctx.beginPath(); ctx.arc(0, 0, radius * (.55 + pulse * .45), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
+  function drawBlast(blast) {
+    const color = safeColor(room.players.find((p) => p.id === blast.ownerId)?.color), r = Math.max(1, blast.radius || 1), progress = clamp(blast.progress || 0, 0, 1);
+    ctx.save(); ctx.globalAlpha = 1 - progress * .6; ctx.strokeStyle = `${color}24`; ctx.lineWidth = 13; ctx.beginPath(); ctx.arc(blast.x, blast.y, r, 0, Math.PI * 2); ctx.stroke(); ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke(); ctx.strokeStyle = `${color}44`; ctx.lineWidth = .7; ctx.beginPath(); ctx.arc(blast.x, blast.y, Math.max(1, r - 8), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
+  function drawPlanet(player, cell, position, time, primary, decoration = false) {
+    const color = safeColor(player.color), radius = Math.max(5, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;
     ctx.save();
-    roundRect(0, 0, WORLD.width, WORLD.height, 36); ctx.clip();
-    const gradient = ctx.createRadialGradient(900, 300, 30, 700, 450, 850);
-    gradient.addColorStop(0, '#26353617'); gradient.addColorStop(.7, '#111e2820'); gradient.addColorStop(1, '#17222a00'); ctx.fillStyle = gradient; ctx.fillRect(0, 0, WORLD.width, WORLD.height);
-    ctx.strokeStyle = '#7999ab0b'; ctx.lineWidth = 1;
-    for (let x = 0; x <= WORLD.width; x += 70) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, WORLD.height); ctx.stroke(); }
-    for (let y = 0; y <= WORLD.height; y += 70) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(WORLD.width, y); ctx.stroke(); }
-    for (let x = 70; x < WORLD.width; x += 140) for (let y = 70; y < WORLD.height; y += 140) { ctx.fillStyle = '#9cbacc25'; ctx.fillRect(x - 2, y - .5, 4, 1); ctx.fillRect(x - .5, y - 2, 1, 4); }
-    // Quiet orbit traces make the playable space feel like an astronomical chart.
-    ctx.save(); ctx.translate(700, 450); ctx.rotate(-.3); ctx.strokeStyle = '#91aecc07'; ctx.lineWidth = 1;
-    for (let r = 180; r < 900; r += 170) { ctx.beginPath(); ctx.ellipse(0, 0, r, r * .65, 0, 0, Math.PI * 2); ctx.stroke(); }
-    ctx.restore(); ctx.restore();
-    roundRect(0, 0, WORLD.width, WORLD.height, 36); ctx.lineWidth = 1.3; ctx.strokeStyle = '#9bbecb30'; ctx.stroke();
-    roundRect(7, 7, WORLD.width - 14, WORLD.height - 14, 30); ctx.lineWidth = .7; ctx.strokeStyle = '#9bbecb0b'; ctx.stroke();
-    ctx.strokeStyle = '#b6e6d977'; ctx.lineWidth = 2;
-    [[0, 0, 1, 1], [WORLD.width, 0, -1, 1], [0, WORLD.height, 1, -1], [WORLD.width, WORLD.height, -1, -1]].forEach(([x, y, sx, sy]) => {
-      ctx.beginPath(); ctx.moveTo(x + sx * 7, y + sy * 65); ctx.lineTo(x + sx * 7, y + sy * 32); ctx.quadraticCurveTo(x + sx * 7, y + sy * 7, x + sx * 32, y + sy * 7); ctx.lineTo(x + sx * 65, y + sy * 7); ctx.stroke();
-    });
-    ctx.font = '10px ui-monospace,monospace'; ctx.fillStyle = '#8aa3b03a'; ctx.textAlign = 'left'; ctx.fillText('SECTOR 07  /  THE EVER-EXPANDING UNIVERSE', 29, WORLD.height - 21);
-    ctx.textAlign = 'right'; ctx.fillText('X 1400   /   Y 0900', WORLD.width - 29, WORLD.height - 21);
-  }
-
-  function drawDust(dust, time) {
-    const seed = typeof dust.id === 'number' ? dust.id : String(dust.id).split('').reduce((n, c) => n + c.charCodeAt(0), 0);
-    const value = dust.value || 1, size = dust.fragment ? Math.max(5, Math.sqrt(value) * 2.15) : dust.ejected ? 4.2 : value > 1 ? 3.8 : 2.3;
-    const pulse = .75 + Math.sin(time * .002 + seed) * .25;
-    ctx.save(); ctx.translate(dust.x, dust.y);
-    const speed = Math.hypot(dust.vx || 0, dust.vy || 0);
-    if (speed > 8) {
-      const trail = clamp(speed * .1, 3, 30), dx = -(dust.vx || 0) / speed * trail, dy = -(dust.vy || 0) / speed * trail;
-      const gradient = ctx.createLinearGradient(0, 0, dx, dy); gradient.addColorStop(0, '#c2e6cc88'); gradient.addColorStop(1, '#c2e6cc00');
-      ctx.strokeStyle = gradient; ctx.lineWidth = dust.ejected ? 2 : 1; ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(dx * .5 - dy * .11, dy * .5 + dx * .11, dx, dy); ctx.stroke();
-    }
-    ctx.rotate(Math.PI / 4 + Math.sin(seed) * .4);
-    ctx.globalAlpha = pulse;
-    ctx.shadowColor = dust.fragment ? safeColor(dust.color) : value > 1 ? '#d4b5ff' : '#c5e9ce'; ctx.shadowBlur = dust.fragment ? 16 : 11;
-    ctx.fillStyle = dust.fragment || dust.ejected ? safeColor(dust.color) : value > 1 ? '#d4b5ff' : seed % 4 === 0 ? '#b9d9f6' : '#c2e6cc';
-    if (dust.fragment) {
-      const surface = ctx.createRadialGradient(-size * .4, -size * .4, 0, size * .3, size * .4, size * 1.8);
-      surface.addColorStop(0, `${safeColor(dust.color)}ee`); surface.addColorStop(1, '#1b2435'); ctx.fillStyle = surface;
-      ctx.beginPath();
-      for (let i = 0; i < 7; i++) { const a = Math.PI * 2 / 7 * i, r = size * (.72 + Math.abs(Math.sin(seed + i * 8.1)) * .28); if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r); else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
-      ctx.closePath(); ctx.fill(); ctx.shadowBlur = 0; ctx.strokeStyle = `${safeColor(dust.color)}aa`; ctx.lineWidth = .7; ctx.stroke();
-      ctx.strokeStyle = '#ffffff33'; ctx.beginPath(); ctx.moveTo(-size * .6, -size * .2); ctx.lineTo(0, 0); ctx.lineTo(size * .2, size * .5); ctx.moveTo(0, 0); ctx.lineTo(size * .5, -size * .4); ctx.stroke();
-    } else if (dust.ejected) { ctx.beginPath(); ctx.arc(0, 0, size, 0, Math.PI * 2); ctx.fill(); } else ctx.fillRect(-size / 2, -size / 2, size, size);
-    ctx.shadowBlur = 0; ctx.globalAlpha = pulse * .17; ctx.strokeStyle = '#c5e9ce'; ctx.lineWidth = .5; ctx.strokeRect(-size - 1, -size - 1, size * 2 + 2, size * 2 + 2); ctx.restore();
-  }
-
-  function drawGravity(x, y, radius, color, time, primary) {
-    color = safeColor(color);
-    ctx.save(); ctx.translate(x, y); ctx.strokeStyle = `${color}${primary ? '25' : '13'}`; ctx.lineWidth = .7; ctx.setLineDash([2, 9]);
-    ctx.beginPath(); ctx.arc(0, 0, radius, time * .00012, Math.PI * 2 + time * .00012); ctx.stroke(); ctx.setLineDash([]);
-    const pulse = 1 - ((time * .00017) % 1);
-    ctx.globalAlpha = (1 - pulse) * .12; ctx.strokeStyle = color; ctx.beginPath(); ctx.arc(0, 0, radius * (.55 + pulse * .45), 0, Math.PI * 2); ctx.stroke();
-    ctx.globalAlpha = 1;
-    if (primary && radius > 55) { ctx.fillStyle = `${color}48`; ctx.font = '7px ui-monospace,monospace'; ctx.textAlign = 'center'; ctx.fillText('G R A V I T Y', 0, -radius - 7); }
-    ctx.restore();
-  }
-
-  function drawBlast(blast, time) {
-    const owner = room.players.find((p) => p.id === blast.ownerId), color = safeColor(owner?.color);
-    const r = Math.max(1, blast.radius || 1), progress = clamp(blast.progress || 0, 0, 1);
-    ctx.save(); ctx.translate(blast.x, blast.y);
-    const glow = ctx.createRadialGradient(0, 0, Math.max(0, r - 35), 0, 0, r + 9);
-    glow.addColorStop(0, `${color}00`); glow.addColorStop(.65, `${color}0c`); glow.addColorStop(.9, `${color}2c`); glow.addColorStop(1, `${color}00`);
-    ctx.globalAlpha = 1 - progress * .55; ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(0, 0, r + 9, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowColor = color; ctx.shadowBlur = 18; ctx.strokeStyle = color; ctx.lineWidth = 1.7 * (1 - progress * .5);
-    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
-    ctx.shadowBlur = 0; ctx.globalAlpha *= .45; ctx.lineWidth = .6;
-    ctx.beginPath(); ctx.arc(0, 0, Math.max(1, r - 8), 0, Math.PI * 2); ctx.stroke();
-    ctx.globalAlpha *= .5; ctx.setLineDash([2, 12]); ctx.beginPath(); ctx.arc(0, 0, r * .7, time * .001, Math.PI * 2 + time * .001); ctx.stroke();
-    ctx.restore();
-  }
-
-  function drawPlanet(player, position, time, decoration = false) {
-    const x = position.x, y = position.y, color = safeColor(player.color), radius = decoration ? player.radius : Math.max(5, player.radius || 20);
-    const me = player.id === myId;
-    if (!decoration && player.respawnIn > 0) return;
-    const seed = String(player.id).split('').reduce((n, c) => n + c.charCodeAt(0), 0);
-    ctx.save(); ctx.translate(x, y);
     if (player.connected === false) ctx.globalAlpha = .5;
-    if (!decoration && player.invulnerable > 0) ctx.globalAlpha = .7 + Math.sin(time * .016) * .25;
-    if (player.boosting) {
-      const angle = Math.atan2(player.vy || 0, player.vx || 1);
-      ctx.save(); ctx.rotate(angle);
-      const trail = ctx.createLinearGradient(-radius, 0, -radius * 5, 0); trail.addColorStop(0, `${color}77`); trail.addColorStop(1, `${color}00`);
-      ctx.fillStyle = trail; ctx.beginPath(); ctx.moveTo(-radius * .5, -radius * .6); ctx.quadraticCurveTo(-radius * 3, -radius * .3, -radius * 5, 0); ctx.quadraticCurveTo(-radius * 3, radius * .3, -radius * .5, radius * .6); ctx.fill();
-      ctx.restore();
-    }
-    const halo = ctx.createRadialGradient(0, 0, radius * .6, 0, 0, radius * 2.6);
-    halo.addColorStop(0, `${color}16`); halo.addColorStop(.65, `${color}07`); halo.addColorStop(1, `${color}00`); ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(0, 0, radius * 2.6, 0, Math.PI * 2); ctx.fill();
-    if (me && !decoration) {
-      ctx.strokeStyle = `${color}30`; ctx.lineWidth = .8; ctx.setLineDash([3, 6]); ctx.beginPath(); ctx.arc(0, 0, radius + 10, -time * .0003, Math.PI * 2 - time * .0003); ctx.stroke(); ctx.setLineDash([]);
-      ctx.strokeStyle = `${color}b0`; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, 0, radius + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(player.hp / (player.stats?.maxHp || 100), 0, 1)); ctx.stroke();
-    }
-    if (player.protected && !decoration) {
-      ctx.fillStyle = `${color}0c`; ctx.strokeStyle = `${color}bb`; ctx.lineWidth = 1.2; ctx.setLineDash([5, 4]);
-      ctx.beginPath(); ctx.arc(0, 0, radius + 11 + Math.sin(time * .008) * 2, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
-    }
-    ctx.save(); ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.clip();
-    const surface = ctx.createRadialGradient(-radius * .42, -radius * .48, 1, radius * .2, radius * .2, radius * 1.6);
-    surface.addColorStop(0, '#f3f6ff'); surface.addColorStop(.12, color); surface.addColorStop(.52, color); surface.addColorStop(.83, '#2b3444'); surface.addColorStop(1, '#0a1220');
-    ctx.fillStyle = surface; ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
-    ctx.rotate(-.4 + Math.sin(seed) * .5);
-    // Elliptical ridges and craters retain the little worlds' texture at game scale.
-    ctx.strokeStyle = '#fff4'; ctx.lineWidth = radius * .035;
-    for (let i = 0; i < 4; i++) {
-      const cy = -radius * .7 + i * radius * .43;
-      ctx.beginPath(); ctx.ellipse(-radius * .1, cy, radius * (1.1 - Math.abs(cy / radius) * .25), radius * .19, .08, 0, Math.PI * 2); ctx.stroke();
-    }
-    const craters = [[-.42, -.16, .23], [.24, .34, .19], [.35, -.52, .12], [-.32, .57, .11]];
-    for (const [cx, cy, rr] of craters) {
-      ctx.fillStyle = '#18203928'; ctx.beginPath(); ctx.ellipse(cx * radius, cy * radius, rr * radius, rr * radius * .7, .4, 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#f4edff37'; ctx.lineWidth = .6; ctx.beginPath(); ctx.ellipse(cx * radius, cy * radius + .8, rr * radius, rr * radius * .7, .4, .2, Math.PI * 1.1); ctx.stroke();
-    }
-    const shadow = ctx.createLinearGradient(-radius, -radius, radius, radius); shadow.addColorStop(0, '#05101b00'); shadow.addColorStop(.4, '#05101b00'); shadow.addColorStop(1, '#05101b99'); ctx.fillStyle = shadow; ctx.fillRect(-radius * 2, -radius * 2, radius * 4, radius * 4);
-    ctx.restore();
-    ctx.strokeStyle = `${color}aa`; ctx.lineWidth = .8; ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.stroke();
-    // Thin tilted orbit around selected planetary skins.
-    if (seed % 3 === 0 || me) {
-      ctx.save(); ctx.rotate(-.45); ctx.strokeStyle = `${color}70`; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(0, 0, radius * 1.65, radius * .42, 0, 0, Math.PI); ctx.stroke();
-      ctx.strokeStyle = `${color}25`; ctx.beginPath(); ctx.ellipse(0, 0, radius * 1.65, radius * .42, 0, Math.PI, Math.PI * 2); ctx.stroke(); ctx.restore();
-    }
-    if (!decoration) {
-      if (radius > 15 && player.cellMass) { ctx.font = `600 ${clamp(radius * .45, 10, 20)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.fillStyle = '#eff4ffb0'; ctx.shadowColor = '#0a1220'; ctx.shadowBlur = 4; ctx.fillText(Math.floor(player.cellMass), 0, radius * .15); ctx.shadowBlur = 0; }
-    }
-    if (!decoration && player.isPrimaryCell !== false) {
-      ctx.globalAlpha = 1; ctx.font = `${me ? '600' : '400'} 11px sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = me ? '#e6f1f5' : '#acbac9'; ctx.shadowColor = '#070c16'; ctx.shadowBlur = 5;
-      ctx.fillText(`${player.name}${me ? ' · 你' : player.connected === false ? ' · 重连中' : ''}`, 0, radius + 27); ctx.shadowBlur = 0;
-      if (me) { ctx.fillStyle = '#b9f6ca'; ctx.beginPath(); ctx.moveTo(-3, -radius - 18); ctx.lineTo(3, -radius - 18); ctx.lineTo(0, -radius - 13); ctx.closePath(); ctx.fill(); }
-    }
+    else if (player.invulnerable > 0) ctx.globalAlpha = .75 + Math.sin(time * .015) * .2;
+    if (player.boosting) { const velocity = Math.hypot(player.vx || 0, player.vy || 0); if (velocity > 0) { ctx.strokeStyle = `${color}33`; ctx.lineWidth = radius * .8; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(position.x, position.y); ctx.lineTo(position.x - player.vx / velocity * radius * 2.2, position.y - player.vy / velocity * radius * 2.2); ctx.stroke(); } }
+    ctx.drawImage(sprite.canvas, position.x - sprite.center * scale, position.y - sprite.center * scale, sprite.canvas.width * scale, sprite.canvas.height * scale);
+    if (me && !decoration) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(position.x, position.y, radius + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(player.hp / (player.stats?.maxHp || 100), 0, 1)); ctx.stroke(); }
+    if (cell.protected || cell.protectedFor > 0) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.arc(position.x, position.y, radius + 11 + Math.sin(time * .008) * 2, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
+    if (!decoration && radius > 15) { ctx.font = `600 ${clamp(radius * .43, 10, 20)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.fillStyle = '#eff4ffb0'; ctx.fillText(Math.floor(cell.mass || player.mass || 0), position.x, position.y + radius * .15); }
+    if (!decoration && primary) { ctx.font = `${me ? '600' : '400'} 11px sans-serif`; ctx.textAlign = 'center'; ctx.fillStyle = me ? '#edf8f3' : '#a5b5c7'; ctx.fillText(`${player.name}${me ? ' · 你' : player.connected === false ? ' · 重连中' : ''}`, position.x, position.y + radius + 26); if (me) { ctx.fillStyle = '#b9f6ca'; ctx.beginPath(); ctx.moveTo(position.x - 3, position.y - radius - 18); ctx.lineTo(position.x + 3, position.y - radius - 18); ctx.lineTo(position.x, position.y - radius - 13); ctx.fill(); } }
     ctx.restore();
   }
-
-  function drawDecorativePlanets(time) {
-    drawPlanet({ id: 'decor1', color: '#d4b5ff', radius: 45 }, { x: 370, y: 350 + Math.sin(time * .0005) * 12 }, time, true);
-    drawPlanet({ id: 'decor2', color: '#5eefa8', radius: 30 }, { x: 1100, y: 610 + Math.sin(time * .0007) * 10 }, time, true);
-    drawPlanet({ id: 'decor3', color: '#83d9ff', radius: 19 }, { x: 1050, y: 190 + Math.sin(time * .0004) * 8 }, time, true);
+  function drawMinimap(view) {
+    const mobile = width < 700, w = mobile ? 105 : 160, h = w * WORLD.height / WORLD.width, x = mobile ? 18 : 34, y = height - (mobile ? 174 : 103) - h;
+    ctx.save(); roundRect(x, y, w, h, 7); ctx.fillStyle = '#0c1622d9'; ctx.fill(); ctx.strokeStyle = '#a6c0d32b'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.save(); roundRect(x + 2, y + 2, w - 4, h - 4, 5); ctx.clip();
+    ctx.strokeStyle = '#b9f6ca3a'; ctx.fillStyle = '#b9f6ca08'; const vx = x + (view.x - view.width / 2) / WORLD.width * w, vy = y + (view.y - view.height / 2) / WORLD.height * h, vw = view.width / WORLD.width * w, vh = view.height / WORLD.height * h; ctx.fillRect(vx, vy, vw, vh); ctx.strokeRect(vx, vy, vw, vh);
+    for (const p of room.players) { if (p.respawnIn > 0) continue; const own = p.id === myId, center = own ? getOwnCenter() || p : p; ctx.fillStyle = own ? '#d2ffe0' : safeColor(p.color); ctx.globalAlpha = own ? 1 : .65; ctx.beginPath(); ctx.arc(x + center.x / WORLD.width * w, y + center.y / WORLD.height * h, own ? 2.5 : 1.5, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore(); ctx.globalAlpha = 1; ctx.fillStyle = '#78909d'; ctx.font = `${mobile ? 7 : 8}px ui-monospace,monospace`; ctx.textAlign = 'left'; ctx.fillText(`${WORLD.width} × ${WORLD.height} / 宇宙导航`, x, y - 7); ctx.restore();
   }
 
-  window.StarGame = { connect, disconnect, onLobby: null, get isConnected() { return active && joined && !reconnecting; } };
+  window.StarGame = { connect, disconnect, onLobby: null, get isConnected() { return active && joined && !reconnecting; }, getDiagnostics() { const view = getCamera(); return { fps, ping: rtt === null ? null : Math.round(rtt), world: { ...WORLD }, view: { x: view.x, y: view.y, width: view.width, height: view.height, scale: view.scale }, self: getOwnCenter(), inputSeq, lastInputAck, renderedDust, renderedCells, inputHistoryLength: inputHistory.length, predictedCellCount: predictedCells.size, cellTrackCount: cellTracks.size, materializedDustCount: materializedDust.size, spriteCount: planetSprites.size + dustSprites.size, trackedDust: dustTracks.size }; } };
 })();
