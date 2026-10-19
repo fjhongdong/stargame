@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { createArena, addPlayer, stepArena, setPlayerInput, snapshotArena } from '../shared/engine.js';
+import { createArena, addPlayer, stepArena, setPlayerInput, snapshotArena, movementSpeed } from '../shared/engine.js';
 
 // Exercise the shipped client's prediction with a deterministic clock and the
 // real simulation. No DOM or Canvas is needed for this movement regression.
@@ -14,8 +14,8 @@ function client() {
     window: {}, performance: { now: () => clock }, WebSocket: { OPEN: 1 } });
   const hooks = `
     window.predictionTest = {
-      start(state) {
-        active = true; myId = 'pilot';
+      start(state, ping = null) {
+        active = true; myId = 'pilot'; rtt = ping;
         socket = { readyState: 1, send: data => window.onSend(JSON.parse(data)) };
         ingestSnapshot(state, performance.now()); room = state;
       },
@@ -34,7 +34,12 @@ function client() {
       remote(key) { return remotePhysics.get(key); },
       trackTime(key) { return cellTracks.get(key)?.at(-1)?.t; },
       velocity() { const model = predictedCells.values().next().value?.model; return { x: model?.vx, y: model?.vy }; },
-      models() { return physicsBodies().map(body => ({ id: body.player.id, ...body.position })); },
+      ownCell(id) { return predictedCells.get(id); },
+      effective(playerId, cellId) {
+        const player = room.players.find(player => player.id === playerId);
+        return effectiveCell(player, player.cells.find(cell => cell.id === cellId), performance.now());
+      },
+      models() { return physicsBodies().map(body => ({ ...body.position, id: body.player.id })); },
       intent: getIntent,
       split,
       wave(blast) { return wavePose(blast, performance.now()); },
@@ -101,22 +106,28 @@ test('delayed acknowledgements preserve inertial braking, coasting and eventual 
   assert.ok(Math.abs(stopped.at(-1).x - player.x) < 0.01, 'stopped prediction must match the authoritative position');
 });
 
-test('merging and genuine authoritative relocations align before directional prediction continues', () => {
+test('finishing a gradual merge preserves the surviving prediction while a genuine relocation still aligns', () => {
   const arena = createArena(); arena.status = 'playing';
   const player = addPlayer(arena, { id: 'pilot' });
-  Object.assign(player.cells[0], { x: 1000, y: 1000 });
-  player.cells.push({ ...player.cells[0], id: 'other', x: 1400 });
+  const core = player.cells[0];
+  Object.assign(core, { x: 1000, y: 1000, mass: 71.9, radius: 4 * Math.sqrt(71.9) });
+  player.cells.push({ ...core, id: 'other', x: 1050, mass: .1, radius: 4 * Math.sqrt(.1) });
+  Object.assign(player, { x: (1000 * 71.9 + 1050 * .1) / 72, y: 1000, mass: 72, radius: core.radius });
   const c = client(); c.api.start(snapshotArena(arena)); c.api.press('ArrowRight');
-  // A merge changes the surviving cell's position to the combined centre.
-  player.cells.splice(1); Object.assign(player.cells[0], { x: 1200, mass: 72 });
+  const prediction = c.api.ownCell(core.id), model = prediction.model, previousX = prediction.x;
+  // The donor's final small remainder is absorbed at its centre of mass.
+  player.cells.splice(1); Object.assign(core, { x: (1000 * 71.9 + 1050 * .1) / 72, mass: 72, radius: 4 * Math.sqrt(72) });
   c.time(50); c.api.packet(snapshotArena(arena));
-  assert.equal(c.api.position().x, 1200, 'merged cells must align even if movement is held');
+  assert.equal(c.api.ownCell(core.id), prediction, 'removing the donor must retain the surviving prediction');
+  assert.equal(prediction.model, model, 'the surviving physical model is not rebuilt at merge completion');
+  assert.equal(prediction.x, previousX, 'merge completion must not teleport the displayed surviving core');
+  assert.equal(c.api.ownCell('other'), undefined);
   // A respawn/restore can relocate an existing identifier far off the held axis.
   player.cells[0].y = 1600;
   c.time(100); c.api.packet(snapshotArena(arena));
   assert.equal(c.api.position().y, 1600, 'a genuine relocation must not leave a persistent lateral offset');
   c.time(100 + 1000 / 60); c.api.frame(1 / 60);
-  assert.ok(c.api.position().x > 1200);
+  assert.ok(c.api.position().x > previousX);
   assert.equal(c.api.position().y, 1600);
 });
 
@@ -189,6 +200,27 @@ test('remote contact proxies retain their simulation across snapshots and use si
   assert.equal(c.api.trackTime(key), 100, 'interpolation uses precise simulation time, independent of wall-clock stalls');
 });
 
+test('a far merging donor stays visible on its delayed render clock after the contact model has consumed it', () => {
+  const arena = createArena({ random: () => .99 }); arena.status = 'playing';
+  const pilot = addPlayer(arena, { id: 'pilot' }), victim = addPlayer(arena, { id: 'victim' });
+  Object.assign(pilot.cells[0], { x: 9000, y: 4000 });
+  Object.assign(victim.cells[0], { x: 2000, y: 4000 });
+  victim.cells.push({ ...victim.cells[0], id: 'merging-donor', x: 2048 });
+  arena.dust = Array.from({ length: 6000 }, (_, id) => ({ id: `far-${id}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
+  stepArena(arena, 0);
+  for (let step = 0; step < 11; step++) stepArena(arena, .1);
+  const donor = victim.cells.find(cell => cell.fusionRole === 'donor');
+  assert.ok(donor); assert.ok(Math.abs(donor.mass - 3) < 1e-7);
+  const c = client(); c.api.start(snapshotArena(arena), 360);
+  const proxy = c.api.remote(`victim:${donor.id}`);
+  assert.ok(proxy.model._consumed, 'the 180ms current-time lead finishes the donor before the delayed presentation');
+  const visible = c.api.effective(victim.id, donor.id);
+  assert.ok(visible, 'a far donor must still render on the interpolated timeline');
+  assert.ok(Math.abs(visible.mass - 3) < 1e-7); assert.ok(Math.abs(visible.radius - 4 * Math.sqrt(3)) < 1e-7);
+  proxy.island = true;
+  assert.equal(c.api.effective(victim.id, donor.id), null, 'the same donor is consumed on the near current-time contact timeline');
+});
+
 test('a wall-pinned contact does not retain phantom momentum after constraints', () => {
   const arena = createArena(); arena.status = 'playing';
   const pilot = addPlayer(arena, { id: 'pilot' }), other = addPlayer(arena, { id: 'other' });
@@ -234,6 +266,28 @@ test('ordinary movement has no keyboard boost or boost field in the network inpu
   c.api.press('ArrowRight');
   assert.equal(c.sent.at(-1).x, 1);
   assert.equal(Object.hasOwn(c.sent.at(-1), 'boost'), false);
+});
+
+test('own and remote prediction use the server advertised mass-speed relationship', () => {
+  for (const mass of [9, 36, 144]) {
+    const arena = createArena({ random: () => .99 }); arena.status = 'playing';
+    const pilot = addPlayer(arena, { id: 'pilot' }), other = addPlayer(arena, { id: 'other' });
+    for (const [player, x] of [[pilot, 4000], [other, 5000]]) {
+      const speed = movementSpeed(mass, player.stats.speed);
+      Object.assign(player.cells[0], { x, y: 4000, mass, radius: 4 * Math.sqrt(mass), vx: speed, vy: 0 });
+      setPlayerInput(arena, player.id, { x: 1 });
+    }
+    const c = client(); c.api.start(snapshotArena(arena)); c.api.press('ArrowRight');
+    setPlayerInput(arena, pilot.id, c.sent.at(-1));
+    for (let tick = 0; tick < 5; tick++) stepArena(arena, .1);
+    c.time(500); c.api.frame(.5);
+    const models = c.api.models(); assert.equal(models.length, 2);
+    for (const model of models) {
+      const cell = arena.players.get(model.id).cells[0];
+      assert.ok(Math.abs(model.x - cell.x) < .02, `mass ${mass}: ${model.id} must share authoritative travel`);
+      assert.ok(Math.abs(model.vx - cell.vx) < .02, `mass ${mass}: ${model.id} must share authoritative speed`);
+    }
+  }
 });
 
 test('retired Q actions emit no ejection protocol while active splitting remains available', () => {

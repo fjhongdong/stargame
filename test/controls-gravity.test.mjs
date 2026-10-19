@@ -40,20 +40,21 @@ test('releasing movement coasts with damping while gravity never accelerates its
   assert.equal(f.cell.x, stoppedX);
 });
 
-test('separated cells do not automatically steer toward their centroid without input', () => {
+test('separated siblings attract each other without accelerating their common centre', () => {
   const f = fixture();
   const other = { ...f.cell, id: 'second-cell', x: 1400 };
   f.player.cells.push(other);
   f.player.x = 1200;
   f.player.mass = 72;
-  for (let tick = 0; tick < 90; tick++) stepArena(f.arena, 1 / 30);
-  assert.equal(f.cell.x, 1000);
-  assert.equal(other.x, 1400);
-  assert.equal(f.player.x, 1200);
-  assert.ok(f.player.cells.every(cell => cell.vx === 0 && cell.vy === 0));
+  for (let tick = 0; tick < 15; tick++) stepArena(f.arena, 1 / 30);
+  assert.ok(f.cell.x > 1000 && other.x < 1400, 'both siblings must move into the gap');
+  assert.ok(f.cell.vx > 0 && other.vx < 0);
+  assert.ok(Math.abs(f.player.x - 1200) < 1e-8, 'an internal force must not move the centre of mass');
+  assert.ok(Math.abs(f.player.vx) < 1e-8); assert.equal(f.player.y, 1000);
+  assert.equal(f.player.mass, 72);
 });
 
-test('split launch becomes persistent velocity that coasts and eventually settles', () => {
+test('split launch coasts after release, then reunites and settles through sibling gravity', () => {
   const f = fixture(100);
   setPlayerInput(f.arena, f.player.id, { x: 1, split: true });
   stepArena(f.arena, 0.01);
@@ -63,7 +64,9 @@ test('split launch becomes persistent velocity that coasts and eventually settle
   const initialX = launched.x;
   stepArena(f.arena, 0.1);
   assert.ok(launched.x > initialX, 'the split launch retains deliberate inertia after release');
-  for (let tick = 0; tick < 150; tick++) stepArena(f.arena, 1 / 30);
+  for (let tick = 0; tick < 600 && f.player.cells.length > 1; tick++) stepArena(f.arena, 1 / 30);
+  assert.equal(f.player.cells.length, 1); assert.ok(Math.abs(f.player.mass - 100) < 1e-8);
+  for (let tick = 0; tick < 180; tick++) stepArena(f.arena, 1 / 30);
   assert.ok(f.player.cells.every(cell => cell.vx === 0 && cell.vy === 0));
   const settled = f.player.cells.map(cell => ({ x: cell.x, y: cell.y }));
   for (let tick = 0; tick < 15; tick++) stepArena(f.arena, 1 / 30);

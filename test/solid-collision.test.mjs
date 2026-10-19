@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ARENA, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena } from '../shared/engine.js';
+import { ARENA, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, movementSpeed } from '../shared/engine.js';
 
 function fixture(definitions = [
   { id: 'big', mass: 100, x: 1000, y: 1000 },
@@ -142,8 +142,8 @@ test('swept circle contact stops legal high-speed split launches tunneling acros
     const { arena, players: [a, b] } = fixture([
       { id: 'a', mass: masses[0], x: 1000, y: 1000 }, { id: 'b', mass: masses[1], x: 1080, y: 1000 },
     ]);
-    a.cells[0].vx = 650 + 360 * Math.pow(36 / a.mass, .18);
-    b.cells[0].vx = -(650 + 360 * Math.pow(36 / b.mass, .18));
+    a.cells[0].vx = 650 + movementSpeed(a.mass, a.stats.speed);
+    b.cells[0].vx = -(650 + movementSpeed(b.mass, b.stats.speed));
     setPlayerInput(arena, a.id, { x: 1, boost: true }); setPlayerInput(arena, b.id, { x: -1, boost: true });
     stepArena(arena, .1);
     assert.ok(a.cells[0].x < b.cells[0].x, 'the two bodies keep their spatial order through the collision');

@@ -36,7 +36,9 @@
   let combatMarkerTimer;
   const remoteContactPositions = new Map();
   const remotePhysics = new Map(), contactEpisodes = new Map();
-  const defaultMotion = { response: 6, drag: 2, stopSpeed: .5, restitution: .2, restingThreshold: 60, contactSlop: .01, physicsStep: 1 / 120 };
+  const defaultMotion = { response: 6, drag: 2, stopSpeed: .5, restitution: .2, restingThreshold: 60, contactSlop: .01, physicsStep: 1 / 120, baseSpeed: 210, referenceMass: 36, speedExponent: .22 };
+  const defaultSibling = { launchGrace: .9, rangeBase: 600, rangeScale: 2, attraction: 900, radialDamping: 12, maxAcceleration: 4000, fusionDuration: 1.2 };
+  let siblingSettings = { ...defaultSibling }, siblingEnabled = false;
   let motionSettings = { ...defaultMotion }, simulationLead = 0;
   let renderTimeline = null;
   let remoteContactFrame = -1;
@@ -552,10 +554,11 @@
     $('sgPlayerCount').textContent = `${String(players.length).padStart(2, '0')} PLAYERS`;
     setMarkup('sgRanking', players.slice(0, 6).map((p, i) => `<div class="sg-rank-row${p.id === myId ? ' me' : ''}"><span class="sg-rank-num">${i + 1}</span><span class="sg-player-dot" style="--planet:${safeColor(p.color)}"></span><span class="sg-rank-name">${esc(p.name)}${p.id === myId ? ' · 你' : ''}</span><span class="sg-rank-score">${Math.floor(p.mass ?? p.score ?? 0)}</span></div>`).join(''));
     $('sgScore').textContent = String(Math.floor(me?.mass ?? 36)).padStart(3, '0');
-    $('sgLevel').textContent = `LV. ${me?.level || 1} / ${me?.cells?.length || 1} 颗星球`;
+    const ownCells = (me?.cells || []).filter(cell => (predictedCells.get(cell.id)?.model.mass ?? cell.mass) > 0);
+    $('sgLevel').textContent = `LV. ${me?.level || 1} / ${ownCells.length || 1} 颗星球`;
     const peak = me?.peakMass ?? me?.mass ?? 36, next = me ? me.nextUpgradeMass : 60;
     $('sgGrowthFill').style.width = `${next ? clamp(peak / next * 100, 0, 100) : 100}%`;
-    const gravity = Math.max(0, ...(me?.cells || []).map((cell) => cell.gravityRadius || 0));
+    const gravity = Math.max(0, ...ownCells.map((cell) => effectiveCell(me, cell)?.gravityRadius || 0));
     $('sgGrowthText').textContent = `${next ? `巅峰 ${Math.floor(peak)} / ${next} · 三选一` : '所有强化已解锁'}${gravity ? ` · 引力 ${Math.round(gravity)}` : ''}`;
     const energy = clamp(me?.energy ?? 60, 0, 100);
     $('sgEnergyText').textContent = `${Math.floor(energy)} / 100`;
@@ -628,16 +631,16 @@
     const me = room?.players?.find((p) => p.id === myId);
     if (!me) return null;
     let x = 0, y = 0, mass = 0;
-    for (const cell of me.cells || []) { const p = predictedCells.get(cell.id); if (p) { const m = cell.mass || 1; x += p.x * m; y += p.y * m; mass += m; } }
+    for (const cell of me.cells || []) { const p = predictedCells.get(cell.id); if (p) { const m = p.model?.mass ?? cell.mass; if (m <= 0) continue; x += p.x * m; y += p.y * m; mass += m; } }
     return mass ? { x: x / mass, y: y / mass } : { x: me.x, y: me.y };
   }
 
   function addTrack(map, key, point, at) {
     let track = map.get(key); if (!track) { track = []; map.set(key, track); }
     const previous = track[track.length - 1];
-    if (previous && previous.x === point.x && previous.y === point.y && !point.vx && !point.vy && !previous.vx && !previous.vy) return;
+    if (previous && previous.x === point.x && previous.y === point.y && previous.mass === point.mass && !point.vx && !point.vy && !previous.vx && !previous.vy) return;
     const seconds = previous ? (at - previous.t) / 1000 : 0;
-    track.push({ t: at, x: point.x, y: point.y, vx: Number.isFinite(point.vx) ? point.vx : seconds > 0 ? (point.x - previous.x) / seconds : 0, vy: Number.isFinite(point.vy) ? point.vy : seconds > 0 ? (point.y - previous.y) / seconds : 0 });
+    track.push({ t: at, x: point.x, y: point.y, mass: point.mass, radius: point.radius, vx: Number.isFinite(point.vx) ? point.vx : seconds > 0 ? (point.x - previous.x) / seconds : 0, vy: Number.isFinite(point.vy) ? point.vy : seconds > 0 ? (point.y - previous.y) / seconds : 0 });
     if (track.length > 7) track.shift();
   }
 
@@ -648,10 +651,11 @@
     for (let i = 1; i < track.length; i++) if (track[i].t >= at) {
       const a = track[i - 1], b = track[i], f = clamp((at - a.t) / Math.max(1, b.t - a.t), 0, 1);
       if (Math.hypot(b.x - a.x, b.y - a.y) > 500) return b;
-      return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+      const mass = Number.isFinite(a.mass) && Number.isFinite(b.mass) ? a.mass + (b.mass - a.mass) * f : undefined;
+      return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, mass, radius: mass === undefined ? undefined : 4 * Math.sqrt(Math.max(0, mass)) };
     }
     const dt = clamp(at - latest.t, 0, extrapolate) / 1000;
-    return { x: latest.x + latest.vx * dt, y: latest.y + latest.vy * dt };
+    return { x: latest.x + latest.vx * dt, y: latest.y + latest.vy * dt, mass: latest.mass, radius: latest.radius };
   }
 
   function renderSimulationTime(at) {
@@ -668,9 +672,13 @@
     return clock.time;
   }
 
-  function advanceOwnCell(state, cell, player, input, elapsed) {
+  function movementSpeed(cell, player) {
+    return motionSettings.baseSpeed * (player.stats?.speed || 1) * Math.pow(motionSettings.referenceMass / Math.max(.000001, cell.mass), motionSettings.speedExponent);
+  }
+  function cellState(cell) { return { ...cell, vx: cell.vx || 0, vy: cell.vy || 0, mergeIn: cell.mergeIn || 0, mass: cell.mass, radius: 4 * Math.sqrt(Math.max(0, cell.mass)) }; }
+  function advanceOwnCell(state, cell, player, input, elapsed, groupMass) {
     const moving = Math.hypot(input.x, input.y) > 0;
-    const speed = 210 * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
+    const speed = movementSpeed(groupMass ? { mass: groupMass } : cell, player);
     const rate = moving ? motionSettings.response : motionSettings.drag, dt = Math.max(0, elapsed), decay = Math.exp(-rate * dt);
     const targetX = input.x * speed, targetY = input.y * speed;
     const initialX = state.vx || 0, initialY = state.vy || 0;
@@ -680,7 +688,7 @@
     state.y += targetY * dt + (initialY - targetY) * (1 - decay) / rate;
     state.vx = targetX + (initialX - targetX) * decay;
     state.vy = targetY + (initialY - targetY) * decay;
-    if (!moving && Math.hypot(state.vx, state.vy) < motionSettings.stopSpeed) state.vx = state.vy = 0;
+    if (!moving && !state._siblingAwake && Math.hypot(state.vx, state.vy) < motionSettings.stopSpeed) state.vx = state.vy = 0;
     if (state.x < cell.radius) { state.x = cell.radius; if (state.vx < 0) state.vx *= Math.abs(state.vx) > motionSettings.restingThreshold ? -motionSettings.restitution : 0; }
     if (state.x > WORLD.width - cell.radius) { state.x = WORLD.width - cell.radius; if (state.vx > 0) state.vx *= Math.abs(state.vx) > motionSettings.restingThreshold ? -motionSettings.restitution : 0; }
     if (state.y < cell.radius) { state.y = cell.radius; if (state.vy < 0) state.vy *= Math.abs(state.vy) > motionSettings.restingThreshold ? -motionSettings.restitution : 0; }
@@ -705,10 +713,164 @@
     return state;
   }
 
+  function clearFusion(cell) { cell.fusionId = cell.fusionRole = cell.fusionPartnerId = cell.fusionTargetId = cell.fusionDonorId = null; cell.fusionProgress = cell.fusionTime = 0; }
+  function siblingGravityRange(a, b) { return siblingSettings.rangeBase + siblingSettings.rangeScale * (a.radius + b.radius); }
+  function fusionPairs(cells) {
+    const lookup = new Map(cells.map(cell => [cell.id, cell]));
+    const pairs = [];
+    for (const donor of cells) if (donor.fusionRole === 'donor') {
+      const receiver = lookup.get(donor.fusionTargetId);
+      if (receiver && receiver.fusionDonorId === donor.id && receiver.fusionId === donor.fusionId) pairs.push({ donor, receiver });
+      else clearFusion(donor);
+    }
+    for (const cell of cells) if (cell.fusionRole === 'receiver' && !lookup.has(cell.fusionDonorId)) clearFusion(cell);
+    return pairs;
+  }
+
+  /** Internal sibling forces are equal and opposite; opponents never enter here. */
+  function applySiblingGravity(cells, dt) {
+    const ordered = [...cells].sort((a, b) => a.id.localeCompare(b.id));
+    for (const cell of cells) cell._siblingAwake = Boolean(cell.fusionId);
+    for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
+      const a = ordered[i], b = ordered[j];
+      if (a.mergeIn > 0 || b.mergeIn > 0 || (a.fusionId && a.fusionId === b.fusionId)) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const distance = Math.hypot(dx, dy), range = siblingGravityRange(a, b);
+      if (distance > range || distance < 1e-9) continue;
+      const nx = dx / distance, ny = dy / distance;
+      const mass = a.mass + b.mass, reducedMass = a.mass * b.mass / mass;
+      const separating = Math.max(0, (b.vx - a.vx) * nx + (b.vy - a.vy) * ny);
+      const acceleration = Math.min(siblingSettings.maxAcceleration,
+        siblingSettings.attraction * Math.pow(mass / 72, 0.15) * (1 - 0.5 * distance / range) + siblingSettings.radialDamping * separating);
+      const impulse = reducedMass * acceleration * dt;
+      a.vx += nx * impulse / a.mass; a.vy += ny * impulse / a.mass;
+      b.vx -= nx * impulse / b.mass; b.vy -= ny * impulse / b.mass;
+      a._siblingAwake = b._siblingAwake = true;
+    }
+  }
+
+  /** Contact starts a stable one-to-one absorption; every intermediate step conserves mass, COM and momentum. */
+  function advanceSiblingFusion(cells, dt) {
+    const existing = fusionPairs(cells);
+    const ordered = [...cells].sort((a, b) => a.id.localeCompare(b.id));
+    const contacts = [];
+    for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
+      const a = ordered[i], b = ordered[j];
+      if (a.fusionId || b.fusionId || a.mergeIn > 0 || b.mergeIn > 0) continue;
+      const distance = Math.hypot(b.x - a.x, b.y - a.y);
+      if (distance <= a.radius + b.radius + 0.5) contacts.push({ a, b, distance });
+    }
+    contacts.sort((a, b) => a.distance - b.distance || a.a.id.localeCompare(b.a.id) || a.b.id.localeCompare(b.b.id));
+    for (const { a, b } of contacts) {
+      if (a.fusionId || b.fusionId) continue;
+      const receiver = a.mass >= b.mass ? a : b, donor = receiver === a ? b : a;
+      const id = `${receiver.id}:${donor.id}`;
+      const mass = receiver.mass + donor.mass;
+      const vx = (receiver.mass * receiver.vx + donor.mass * donor.vx) / mass;
+      const vy = (receiver.mass * receiver.vy + donor.mass * donor.vy) / mass;
+      for (const [cell, partner, role] of [[receiver, donor, 'receiver'], [donor, receiver, 'donor']]) {
+        cell.fusionId = id; cell.fusionRole = role; cell.fusionPartnerId = partner.id;
+        cell.fusionProgress = 0; cell.fusionTime = siblingSettings.fusionDuration;
+        cell.vx = vx; cell.vy = vy;
+      }
+      donor.fusionTargetId = receiver.id; receiver.fusionDonorId = donor.id;
+      existing.push({ donor, receiver });
+    }
+    const removed = new Set();
+    for (const { donor, receiver } of existing) {
+      const time = donor.fusionTime;
+      if (!(time > 0)) continue;
+      const step = Math.min(time, Math.max(0, dt)), fraction = step / time;
+      const mass = donor.mass + receiver.mass;
+      const cx = (donor.mass * donor.x + receiver.mass * receiver.x) / mass;
+      const cy = (donor.mass * donor.y + receiver.mass * receiver.y) / mass;
+      const vx = (donor.mass * donor.vx + receiver.mass * receiver.vx) / mass;
+      const vy = (donor.mass * donor.vy + receiver.mass * receiver.vy) / mass;
+      const dx = (donor.x - receiver.x) * (1 - fraction), dy = (donor.y - receiver.y) * (1 - fraction);
+      const transfer = donor.mass * fraction;
+      donor.mass -= transfer; receiver.mass += transfer;
+      donor.x = cx + dx * receiver.mass / mass; donor.y = cy + dy * receiver.mass / mass;
+      receiver.x = cx - dx * donor.mass / mass; receiver.y = cy - dy * donor.mass / mass;
+      donor.vx = receiver.vx = vx; donor.vy = receiver.vy = vy;
+      donor.radius = 4 * Math.sqrt(donor.mass); receiver.radius = 4 * Math.sqrt(receiver.mass);
+      donor.fusionTime = receiver.fusionTime = Math.max(0, time - step);
+      donor.fusionProgress = receiver.fusionProgress = 1 - donor.fusionTime / siblingSettings.fusionDuration;
+      if (donor.fusionTime <= 1e-9) {
+        removed.add(donor); receiver._completedFusionId = donor._completedFusionId = donor.fusionId; receiver._fusionCompletedAt = performance.now();
+        donor.mass = donor.radius = 0; donor._consumed = true; clearFusion(receiver);
+      }
+    }
+
+    return removed.size;
+  }
+
+  function advanceCellGroup(cells, player, input, dt, beforeMove) {
+    for (const cell of cells) cell.mergeIn = Math.max(0, (cell.mergeIn || 0) - dt);
+    cells = cells.filter(cell => cell.mass > 0);
+    if (siblingEnabled) applySiblingGravity(cells, dt);
+    const masses = new Map();
+    for (const receiver of cells) if (receiver.mass > 0 && receiver.fusionRole === 'receiver') {
+      const donor = cells.find(c => c.id === receiver.fusionDonorId && c.mass > 0 && c.fusionId === receiver.fusionId);
+      if (!donor) continue;
+      const mass = receiver.mass + donor.mass, vx = (receiver.vx * receiver.mass + donor.vx * donor.mass) / mass, vy = (receiver.vy * receiver.mass + donor.vy * donor.mass) / mass;
+      receiver.vx = donor.vx = vx; receiver.vy = donor.vy = vy; masses.set(receiver.id, mass); masses.set(donor.id, mass);
+    }
+    for (const cell of cells) if (cell.mass > 0) {
+      beforeMove?.(cell, masses.get(cell.id));
+      advanceOwnCell(cell, cell, player, input, dt, masses.get(cell.id));
+    }
+    if (siblingEnabled) advanceSiblingFusion(cells, dt);
+    for (const cell of cells) if (cell.mass > 0) advanceOwnCell(cell, cell, player, input, 0);
+  }
+  function replayPlayerCells(player, acknowledged, at, own) {
+    const cells = (player.cells || []).map(cellState), snapshotAt = at - simulationLead * 1000;
+    let command = player.steering || { x: 0, y: 0 };
+    if (own) for (const input of inputHistory) if (input.t <= snapshotAt) command = input;
+    const pending = own ? inputHistory.filter(input => input.t > snapshotAt && input.t <= at) : [];
+    let cursor = snapshotAt;
+    for (const input of [...pending, { t: at }]) {
+      const duration = Math.max(0, (input.t - cursor) / 1000), steps = Math.max(1, Math.ceil(duration / motionSettings.physicsStep));
+      for (let i = 0; i < steps; i++) advanceCellGroup(cells, player, command, duration / steps);
+      command = input; cursor = input.t;
+    }
+    return new Map(cells.map(cell => [cell.id, cell]));
+  }
+  function syncModelGeometry(ref, cell, target, previous, externalChange) {
+    const model = ref.model, fields = ['fusionId', 'fusionRole', 'fusionPartnerId', 'fusionTargetId', 'fusionDonorId', 'fusionProgress', 'fusionTime'];
+    model.id = cell.id;
+    const launch = cell.mergeIn > (previous?.mergeIn || 0) + .05;
+    const fusionConfirmed = target.fusionId && model.fusionId !== target.fusionId && model._completedFusionId !== target.fusionId;
+    const fusionFinished = !cell.fusionId && previous?.fusionId && model.fusionId;
+    if (!Number.isFinite(model.mass) || externalChange || launch || fusionConfirmed || fusionFinished) {
+      model.mass = target.mass; model.radius = 4 * Math.sqrt(Math.max(0, target.mass));
+      model.mergeIn = target.mergeIn;
+      for (const field of fields) model[field] = target[field];
+      if (externalChange || launch) { delete model._consumed; delete model._completedFusionId; }
+    } else if (!model._consumed && !model.fusionId && !cell.fusionId && !model._completedFusionId) {
+      model.mass = cell.mass; model.radius = 4 * Math.sqrt(Math.max(0, cell.mass));
+    }
+    model.mergeIn ??= target.mergeIn;
+    model.radius = 4 * Math.sqrt(Math.max(0, model.mass));
+  }
+  function effectiveCell(player, cell, at = lastFrame) {
+    const own = player.id === myId, proxy = own ? predictedCells.get(cell.id) : remotePhysics.get(`${player.id}:${cell.id}`), model = proxy?.model;
+    const currentTime = own || proxy?.island;
+    let mass = model?.mass ?? cell.mass;
+    if (!currentTime) mass = sampleTrack(cellTracks.get(`${player.id}:${cell.id}`), renderSimulationTime(at) - 100)?.mass ?? mass;
+    if ((currentTime && model?._consumed) || mass <= 0) return null;
+    const radius = 4 * Math.sqrt(Math.max(0, mass));
+    const gravityExtra = (cell.gravityRadius || 0) - cell.radius - 3 * Math.sqrt(cell.mass);
+    const geometry = currentTime ? model || cell : cell;
+    return { ...cell, mass, radius, mergeIn: geometry.mergeIn ?? cell.mergeIn, fusionId: geometry.fusionId, fusionRole: geometry.fusionRole, fusionPartnerId: geometry.fusionPartnerId, fusionProgress: geometry.fusionProgress || 0,
+      _fusionCompletedAt: currentTime ? model?._fusionCompletedAt : null,
+      gravityRadius: cell.gravityRadius ? radius + 3 * Math.sqrt(mass) + gravityExtra : 0 };
+  }
+
   function ingestSnapshot(next, at) {
     if (next.arena?.width > 0) WORLD.width = next.arena.width;
     if (next.arena?.height > 0) WORLD.height = next.arena.height;
     motionSettings = { ...defaultMotion, ...next.motion };
+    siblingEnabled = Boolean(next.sibling); siblingSettings = { ...defaultSibling, ...next.sibling };
     const snapshotAt = Number.isFinite(next.simulationTime) ? next.simulationTime : Number.isFinite(next.serverTime) ? next.serverTime : (next.time || 0) * 1000;
     if (!renderTimeline || !room || next.round !== room.round || next.code !== room.code || snapshotAt < room._renderTime) {
       renderTimeline = { time: snapshotAt, at, target: snapshotAt, targetAt: at, rate: 1 };
@@ -718,7 +880,6 @@
     }
     next._renderTime = snapshotAt; next._receivedAt = at;
     const own = next.players.find((p) => p.id === myId), previousOwn = room?.players?.find((p) => p.id === myId);
-    const merged = own && previousOwn && own.cells.length < previousOwn.cells.length;
     const acknowledged = inputHistory.find((input) => input.seq === own?.lastInputSeq);
     const inputRoundTrip = acknowledged ? Math.max(0, at - acknowledged.t - (own.inputAge || 0) * 1000) : 0;
     simulationLead = clamp((rtt ?? inputRoundTrip) / 2000, 0, .25);
@@ -726,18 +887,19 @@
     if (room && (next.round !== room.round || next.code !== room.code)) { remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); }
     for (const player of next.players) {
       const previousPlayer = room?.players?.find((p) => p.id === player.id);
+      const authorityCells = replayPlayerCells(player, acknowledged, at, player.id === myId);
       for (const cell of player.cells || []) {
         const key = `${player.id}:${cell.id}`; cellsPresent.add(key); addTrack(cellTracks, key, cell, snapshotAt);
         const previousCell = previousPlayer?.cells?.find((c) => c.id === cell.id);
         const relocated = previousCell && Math.hypot(cell.x - previousCell.x, cell.y - previousCell.y) > 350;
-        const fractured = previousCell && cell.mass < previousCell.mass * .8;
+        const fractured = previousCell && !cell.fusionId && !previousCell.fusionId && cell.mass < previousCell.mass * .8;
         const waveHit = player.lastWaveHit;
         const cellWaveImpulse = cell.lastWaveHitId && cell.lastWaveHitId !== previousCell?.lastWaveHitId;
         const newWaveImpulse = cellWaveImpulse || (waveHit?.id && waveHit.id !== previousPlayer?.lastWaveHit?.id && next.time - waveHit.at <= .8 && (waveHit.hitCellIds || [waveHit.cellId]).includes(cell.id));
         if (player.id === myId) {
-          const model = replayOwnCell(cell, player, acknowledged, at);
+          const model = authorityCells.get(cell.id);
           let p = predictedCells.get(cell.id);
-          const structural = !p || player.respawnIn > 0 || next.round !== room?.round || merged || relocated;
+          const structural = !p || player.respawnIn > 0 || next.round !== room?.round || relocated;
           if (structural) {
             p = { x: model.x, y: model.y, vx: model.vx, vy: model.vy, offsetX: 0, offsetY: 0, model, normals: [], contactUntil: 0 };
             predictedCells.set(cell.id, p);
@@ -752,29 +914,33 @@
               // A server-only impact is real momentum, unlike ordinary ACK
               // phase noise. Apply it once without moving the visible body.
               p.model.vx = model.vx; p.model.vy = model.vy;
+              p.modelAt = at;
               p.correctionX = p.correctionY = 0; p.contactUntil = at + 180; p.normals = [];
             }
           }
           if (structural) p.modelAt = at;
+          syncModelGeometry(p, cell, model, previousCell, fractured || newWaveImpulse);
           p.authority = { ...model }; p.authorityAt = at; p.cell = cell; p.player = player;
           p.stopConfirmed = Boolean(acknowledged && !acknowledged.x && !acknowledged.y);
         } else {
           const steering = player.steering || { x: 0, y: 0 };
-          const target = { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 };
-          if (player.steering) advanceOwnCell(target, cell, player, steering, simulationLead);
-          else { target.x += target.vx * Math.min(.15, simulationLead); target.y += target.vy * Math.min(.15, simulationLead); }
+          const target = authorityCells.get(cell.id);
           let proxy = remotePhysics.get(key);
           if (!proxy || relocated || next.round !== room?.round) {
             proxy = { model: { ...target }, authority: { ...target }, visual: { x: target.x, y: target.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [] };
             remotePhysics.set(key, proxy);
           } else {
             proxy.authority = target;
-            if (fractured || newWaveImpulse) { proxy.model.vx = target.vx; proxy.model.vy = target.vy; }
+            if (fractured || newWaveImpulse) { proxy.model.vx = target.vx; proxy.model.vy = target.vy; proxy.modelAt = at; }
           }
+          syncModelGeometry(proxy, cell, target, previousCell, fractured || newWaveImpulse);
           proxy.cell = cell; proxy.player = player; proxy.steering = steering;
           proxy.modelAt ??= at; proxy.authorityAt = at;
         }
       }
+      const refs = (player.cells || []).map(cell => player.id === myId ? predictedCells.get(cell.id) : remotePhysics.get(`${player.id}:${cell.id}`)).filter(Boolean);
+      const total = refs.reduce((sum, ref) => sum + Math.max(0, ref.model.mass || 0), 0), expected = player.cells.reduce((sum, cell) => sum + cell.mass, 0);
+      if (total > 0 && Math.abs(total - expected) > .005) for (const ref of refs) { ref.model.mass *= expected / total; ref.model.radius = 4 * Math.sqrt(ref.model.mass); }
     }
     for (const key of cellTracks.keys()) if (!cellsPresent.has(key)) cellTracks.delete(key);
     for (const key of remotePhysics.keys()) if (!cellsPresent.has(key)) remotePhysics.delete(key);
@@ -847,12 +1013,13 @@
         let ref = own ? predictedCells.get(cell.id) : remotePhysics.get(key);
         if (!ref) {
           if (own) continue;
-          ref = { model: { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 }, visual: { x: cell.x, y: cell.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [], cell, player, steering: player.steering || { x: 0, y: 0 } };
+          ref = { model: cellState(cell), visual: { x: cell.x, y: cell.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [], cell, player, steering: player.steering || { x: 0, y: 0 } };
           remotePhysics.set(key, ref);
         }
         const position = ref.model || ref;
+        if (position._consumed || position.mass <= 0) continue;
         position.vx ||= 0; position.vy ||= 0;
-        bodies.push({ key, cell, player, own, ref, position, previousX: position._frameX ?? position.x, previousY: position._frameY ?? position.y });
+        bodies.push({ key, cell: position, player, own, ref, position, previousX: position._frameX ?? position.x, previousY: position._frameY ?? position.y });
       }
     }
     return bodies;
@@ -862,27 +1029,41 @@
     const me = room?.players?.find((p) => p.id === myId);
     if (!me || room.status !== 'playing' || me.respawnIn > 0 || reconnecting || at - lastSnapshotAt > 650) return;
     const input = getIntent(), bodies = physicsBodies(), steps = Math.max(1, Math.ceil(dt / motionSettings.physicsStep)), step = dt / steps;
+    const groups = new Map();
+    for (const body of bodies) { const group = groups.get(body.player.id) || []; group.push(body); groups.set(body.player.id, group); }
     for (let i = 0; i < steps; i++) {
-      for (const body of bodies) {
-        const p = body.position, ref = body.ref, steering = body.own ? input : ref.steering;
-        body.steering = steering;
-        body.previousX = p.x; body.previousY = p.y;
-        const endAt = at - (steps - i - 1) * step * 1000;
-        const elapsed = clamp((endAt - (ref.modelAt ?? endAt - step * 1000)) / 1000, 0, step);
-        const speed = 210 * (body.player.stats?.speed || 1) * Math.pow(36 / Math.max(1, body.cell.mass), .18);
-        body.motion = { x: p.x, y: p.y, vx: p.vx, vy: p.vy, targetX: steering.x * speed, targetY: steering.y * speed, rate: Math.hypot(steering.x, steering.y) > 0 ? motionSettings.response : motionSettings.drag, dt: elapsed };
-        advanceOwnCell(p, body.cell, body.player, steering, elapsed);
-        ref.modelAt = Math.max(ref.modelAt || 0, endAt);
-        if (ref.authority && endAt > ref.authorityAt) {
-          advanceOwnCell(ref.authority, body.cell, body.player, steering, (endAt - ref.authorityAt) / 1000);
-          ref.authorityAt = endAt;
+      const endAt = at - (steps - i - 1) * step * 1000, startAt = endAt - step * 1000;
+      for (const group of groups.values()) {
+        const steering = group[0].own ? input : group[0].ref.steering;
+        const commonAt = Math.max(startAt, Math.min(endAt, Math.max(...group.map(body => body.ref.modelAt ?? startAt))));
+        for (const body of group) {
+          const ref = body.ref; body.steering = steering;
+          if (ref.modelAt < commonAt) advanceOwnCell(body.position, body.cell, body.player, steering, (commonAt - ref.modelAt) / 1000);
         }
-        followAuthority(body, elapsed, at);
-        Object.assign(body.motion, { freeX: p.x, freeY: p.y, freeVx: p.vx, freeVy: p.vy });
+        const elapsed = Math.max(0, (endAt - commonAt) / 1000);
+        advanceCellGroup(group.map(body => body.position), group[0].player, steering, elapsed, (cell, combinedMass) => {
+          const body = group.find(item => item.position === cell), speed = movementSpeed(combinedMass ? { mass: combinedMass } : cell, body.player);
+          body.previousX = cell.x; body.previousY = cell.y;
+          body.motion = { x: cell.x, y: cell.y, vx: cell.vx, vy: cell.vy, targetX: steering.x * speed, targetY: steering.y * speed, rate: Math.hypot(steering.x, steering.y) > 0 ? motionSettings.response : motionSettings.drag, dt: elapsed };
+        });
+        const authorityGroup = group.filter(body => body.ref.authority);
+        if (authorityGroup.length) {
+          const authorityAt = Math.max(...authorityGroup.map(body => body.ref.authorityAt));
+          if (endAt > authorityAt) {
+            advanceCellGroup(authorityGroup.map(body => body.ref.authority), group[0].player, steering, (endAt - authorityAt) / 1000);
+            for (const body of authorityGroup) body.ref.authorityAt = endAt;
+          }
+        }
+        for (const body of group) {
+          body.ref.modelAt = Math.max(body.ref.modelAt || 0, endAt);
+          if (body.cell.mass <= 0) continue;
+          followAuthority(body, elapsed, at);
+          if (body.motion) Object.assign(body.motion, { freeX: body.position.x, freeY: body.position.y, freeVx: body.position.vx, freeVy: body.position.vy });
+        }
       }
       collidePredictedBodies(at, step, bodies);
     }
-    publishVisibleBodies(at, dt, bodies);
+    publishVisibleBodies(at, dt, bodies.filter(body => body.cell.mass > 0));
   }
 
   function separateCircles(a, b, nx, ny, depth) {
@@ -952,8 +1133,8 @@
   }
 
   function collidePredictedBodies(at, dt, suppliedBodies) {
-    const contacted = new Set(), bodies = suppliedBodies || physicsBodies(), slop = motionSettings.contactSlop;
-    function eligible(a, b) { return a.player !== b.player || (a.cell.mergeIn > 0 || b.cell.mergeIn > 0); }
+    const contacted = new Set(), bodies = (suppliedBodies || physicsBodies()).filter(body => body.cell.mass > 0), slop = motionSettings.contactSlop;
+    function eligible(a, b) { return a.player !== b.player || !(a.cell.fusionId && a.cell.fusionId === b.cell.fusionId); }
     for (let iteration = 0; iteration < 5; iteration++) {
       let corrected = false;
       for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
@@ -1019,7 +1200,7 @@
     const slop = motionSettings.contactSlop, touching = [];
     for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
       const a = bodies[i], b = bodies[j];
-      if (a.player === b.player && a.cell.mergeIn <= 0 && b.cell.mergeIn <= 0) continue;
+      if (a.player === b.player && a.cell.fusionId && a.cell.fusionId === b.cell.fusionId) continue;
       if (!a.own && !b.own && !a.ref.island && !b.ref.island) continue;
       const dx = a.position.x - b.position.x, dy = a.position.y - b.position.y, distance = Math.hypot(dx, dy), gap = distance - a.cell.radius - b.cell.radius;
       if (gap <= slop) touching.push({ a, b, gap, nx: distance > 1e-9 ? dx / distance : 1, ny: distance > 1e-9 ? dy / distance : 0 });
@@ -1080,7 +1261,7 @@
     // Enforce only geometry here, so smoothing can never show bodies crossing.
     for (let iteration = 0; iteration < 4; iteration++) for (let i = 0; i < visualBodies.length; i++) for (let j = i + 1; j < visualBodies.length; j++) {
       const a = visualBodies[i], b = visualBodies[j];
-      if ((!a.own && !b.own) || (a.player === b.player && a.cell.mergeIn <= 0 && b.cell.mergeIn <= 0)) continue;
+      if ((!a.own && !b.own) || (a.player === b.player && a.cell.fusionId && a.cell.fusionId === b.cell.fusionId)) continue;
       const pa = a.position, pb = b.position, radius = a.cell.radius + b.cell.radius;
       const mx = a.ref.model?.x ?? pa.x, my = a.ref.model?.y ?? pa.y, ox = b.ref.model?.x ?? pb.x, oy = b.ref.model?.y ?? pb.y;
       const physicalDistance = Math.hypot(mx - ox, my - oy);
@@ -1104,7 +1285,7 @@
     let targetScale = (mobile ? .8 : .95) / Math.pow(Math.max(36, me?.mass || 36) / 36, .1);
     if (me?.cells?.length > 1) {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const c of me.cells) { const p = predictedCells.get(c.id) || c; minX = Math.min(minX, p.x - c.radius); maxX = Math.max(maxX, p.x + c.radius); minY = Math.min(minY, p.y - c.radius); maxY = Math.max(maxY, p.y + c.radius); }
+      for (const c of me.cells) { const p = predictedCells.get(c.id) || c, model = p.model || c; if (model.mass <= 0) continue; const r = model.radius ?? c.radius; minX = Math.min(minX, p.x - r); maxX = Math.max(maxX, p.x + r); minY = Math.min(minY, p.y - r); maxY = Math.max(maxY, p.y + r); }
       targetScale = Math.min(targetScale, width * .7 / Math.max(250, maxX - minX + 180), height * .65 / Math.max(200, maxY - minY + 180));
     }
     const minScale = Math.max(width / 3200, height / 2300, mobile ? .3 : .35);
@@ -1163,7 +1344,7 @@
       drawnPlayers.clear();
       for (const player of room.players) {
         if (player.respawnIn > 0) continue;
-        const cells = player.cells || [];
+        const cells = (player.cells || []).map(cell => effectiveCell(player, cell, time)).filter(Boolean);
         let primary = cells[0]; for (const c of cells) if (!primary || c.mass > primary.mass) primary = c;
         for (const cell of cells) {
           const own = player.id === myId;
@@ -1334,10 +1515,11 @@
     ctx.globalAlpha = opacity; ctx.strokeStyle = '#eff9ff'; ctx.lineWidth = 1.6; ctx.stroke(); ctx.restore();
   }
   function drawPlanet(player, cell, position, time, primary, decoration = false) {
-    const color = safeColor(player.color), radius = Math.max(4, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;
+    const color = safeColor(player.color), radius = cell.fusionRole === 'donor' ? Math.max(.01, cell.radius) : Math.max(4, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;
     ctx.save();
     if (player.connected === false) ctx.globalAlpha = .5;
     else if (player.invulnerable > 0) ctx.globalAlpha = .75 + Math.sin(time * .015) * .2;
+    if (cell.fusionRole === 'donor') ctx.globalAlpha *= Math.min(1, cell.mass);
     ctx.drawImage(sprite.canvas, position.x - sprite.center * scale, position.y - sprite.center * scale, sprite.canvas.width * scale, sprite.canvas.height * scale);
     const feedback = combatFeedback.get(player.id), hitAge = feedback ? (time - feedback.startedAt) / 1000 : Infinity;
     if (!decoration && feedback?.cellIds.includes(cell.id) && hitAge >= 0 && hitAge < .16) {
@@ -1346,6 +1528,14 @@
     }
     ctx.strokeStyle = `${color}dd`; ctx.lineWidth = .95 / Math.max(.3, camera.scale); ctx.beginPath(); ctx.arc(position.x, position.y, radius, 0, Math.PI * 2); ctx.stroke();
     if (cell.protected || cell.protectedFor > 0) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.1; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.arc(position.x, position.y, radius + 11 + Math.sin(time * .008) * 2, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
+    if (cell.fusionRole === 'receiver') {
+      ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.4 / camera.scale;
+      ctx.beginPath(); ctx.arc(position.x, position.y, radius + 3, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * cell.fusionProgress); ctx.stroke();
+    } else if (cell._fusionCompletedAt && time - cell._fusionCompletedAt < 350) {
+      const progress = (time - cell._fusionCompletedAt) / 350;
+      ctx.globalAlpha *= 1 - progress; ctx.strokeStyle = color; ctx.lineWidth = 1.3 / camera.scale;
+      ctx.beginPath(); ctx.arc(position.x, position.y, radius + 3 + progress * 10, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+    }
     if (!decoration && radius > 15) { ctx.font = `600 ${clamp(radius * .43, 10, 20)}px ui-monospace,monospace`; ctx.textAlign = 'center'; ctx.fillStyle = '#eff4ffb0'; ctx.fillText(Math.floor(cell.mass || player.mass || 0), position.x, position.y + radius * .15); }
     if (me && primary && !decoration) {
       const velocity = Math.hypot(player.vx || 0, player.vy || 0);

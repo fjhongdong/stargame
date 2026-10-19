@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ARENA, WAVE, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, startRound } from '../shared/engine.js';
+import { ARENA, WAVE, SIBLING, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, startRound } from '../shared/engine.js';
 
 const near = (actual, expected, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} should equal ${expected}`);
 const fragments = (arena, ownerId) => arena.dust.filter(d => d.fragment && d.ownerId === ownerId);
@@ -59,7 +59,7 @@ test('one hit produces real coasting displacement and cannot repeatedly add impu
 
 test('a multi-cell victim receives impulse only on the cells actually intersected by the arc', () => {
   const { arena, player, fire } = fixture(), target = player('target', 1078, 3970);
-  target.cells[0].mergeIn = 12;
+  target.cells[0].mergeIn = SIBLING.launchGrace;
   target.cells.push({ ...target.cells[0], id: 'second-hit', y: 4030, mass: 16, radius: 16 });
   target.cells.push({ ...target.cells[0], id: 'outside-wave', y: 4240 });
   target.mass = 88;

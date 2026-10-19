@@ -4,7 +4,10 @@ export const ROUND_DURATION = 180;
 export const COLORS = ['#5eefa8', '#d4b5ff', '#ffbd68', '#83d9ff', '#ff8eaf', '#9da8ff', '#ffe787', '#70f0e4'];
 export const BLAST_COST = 30;
 export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, restitution: 0.2,
-  restingThreshold: 60, contactSlop: 0.01, physicsStep: 1 / 120 });
+  restingThreshold: 60, contactSlop: 0.01, physicsStep: 1 / 120,
+  baseSpeed: 210, referenceMass: 36, speedExponent: 0.22 });
+export const SIBLING = Object.freeze({ launchGrace: 0.9, rangeBase: 600, rangeScale: 2,
+  attraction: 900, radialDamping: 12, maxAcceleration: 4000, fusionDuration: 1.2 });
 export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55 });
 export const UPGRADE_THRESHOLDS = [60, 100, 160, 240, 360, 520];
 export const UPGRADE_POOL = [
@@ -145,7 +148,108 @@ export function setPlayerInput(arena, id, input) {
 
 function newCell(arena, x, y, mass, extra = {}) {
   return { id: `c${++arena.serial}`, x, y, mass, radius: 4 * Math.sqrt(mass),
-    vx: 0, vy: 0, mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, lastWaveHitId: null, ...extra };
+    vx: 0, vy: 0, mergeIn: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0, lastWaveHitId: null,
+    fusionId: null, fusionRole: null, fusionPartnerId: null, fusionTargetId: null, fusionDonorId: null,
+    fusionProgress: 0, fusionTime: 0, ...extra };
+}
+
+export function movementSpeed(mass, multiplier = 1) {
+  return MOTION.baseSpeed * multiplier * Math.pow(MOTION.referenceMass / Math.max(0.000001, mass), MOTION.speedExponent);
+}
+
+export function siblingGravityRange(a, b) {
+  return SIBLING.rangeBase + SIBLING.rangeScale * (a.radius + b.radius);
+}
+
+function clearFusion(cell) {
+  cell.fusionId = cell.fusionRole = cell.fusionPartnerId = cell.fusionTargetId = cell.fusionDonorId = null;
+  cell.fusionProgress = cell.fusionTime = 0;
+}
+
+function fusionPairs(cells) {
+  const lookup = new Map(cells.map(cell => [cell.id, cell]));
+  const pairs = [];
+  for (const donor of cells) if (donor.fusionRole === 'donor') {
+    const receiver = lookup.get(donor.fusionTargetId);
+    if (receiver && receiver.fusionDonorId === donor.id && receiver.fusionId === donor.fusionId) pairs.push({ donor, receiver });
+    else clearFusion(donor);
+  }
+  for (const cell of cells) if (cell.fusionRole === 'receiver' && !lookup.has(cell.fusionDonorId)) clearFusion(cell);
+  return pairs;
+}
+
+/** Internal sibling forces are equal and opposite; opponents never enter here. */
+export function applySiblingGravity(cells, dt) {
+  const ordered = [...cells].sort((a, b) => a.id.localeCompare(b.id));
+  for (const cell of cells) cell._siblingAwake = Boolean(cell.fusionId);
+  for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
+    const a = ordered[i], b = ordered[j];
+    if (a.mergeIn > 0 || b.mergeIn > 0 || (a.fusionId && a.fusionId === b.fusionId)) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const distance = Math.hypot(dx, dy), range = siblingGravityRange(a, b);
+    if (distance > range || distance < 1e-9) continue;
+    const nx = dx / distance, ny = dy / distance;
+    const mass = a.mass + b.mass, reducedMass = a.mass * b.mass / mass;
+    const separating = Math.max(0, (b.vx - a.vx) * nx + (b.vy - a.vy) * ny);
+    const acceleration = Math.min(SIBLING.maxAcceleration,
+      SIBLING.attraction * Math.pow(mass / 72, 0.15) * (1 - 0.5 * distance / range) + SIBLING.radialDamping * separating);
+    const impulse = reducedMass * acceleration * dt;
+    a.vx += nx * impulse / a.mass; a.vy += ny * impulse / a.mass;
+    b.vx -= nx * impulse / b.mass; b.vy -= ny * impulse / b.mass;
+    a._siblingAwake = b._siblingAwake = true;
+  }
+}
+
+/** Contact starts a stable one-to-one absorption; every intermediate step conserves mass, COM and momentum. */
+export function advanceSiblingFusion(cells, dt) {
+  const existing = fusionPairs(cells);
+  const ordered = [...cells].sort((a, b) => a.id.localeCompare(b.id));
+  const contacts = [];
+  for (let i = 0; i < ordered.length; i++) for (let j = i + 1; j < ordered.length; j++) {
+    const a = ordered[i], b = ordered[j];
+    if (a.fusionId || b.fusionId || a.mergeIn > 0 || b.mergeIn > 0) continue;
+    const distance = Math.hypot(b.x - a.x, b.y - a.y);
+    if (distance <= a.radius + b.radius + 0.5) contacts.push({ a, b, distance });
+  }
+  contacts.sort((a, b) => a.distance - b.distance || a.a.id.localeCompare(b.a.id) || a.b.id.localeCompare(b.b.id));
+  for (const { a, b } of contacts) {
+    if (a.fusionId || b.fusionId) continue;
+    const receiver = a.mass >= b.mass ? a : b, donor = receiver === a ? b : a;
+    const id = `${receiver.id}:${donor.id}`;
+    const mass = receiver.mass + donor.mass;
+    const vx = (receiver.mass * receiver.vx + donor.mass * donor.vx) / mass;
+    const vy = (receiver.mass * receiver.vy + donor.mass * donor.vy) / mass;
+    for (const [cell, partner, role] of [[receiver, donor, 'receiver'], [donor, receiver, 'donor']]) {
+      cell.fusionId = id; cell.fusionRole = role; cell.fusionPartnerId = partner.id;
+      cell.fusionProgress = 0; cell.fusionTime = SIBLING.fusionDuration;
+      cell.vx = vx; cell.vy = vy;
+    }
+    donor.fusionTargetId = receiver.id; receiver.fusionDonorId = donor.id;
+    existing.push({ donor, receiver });
+  }
+  const removed = new Set();
+  for (const { donor, receiver } of existing) {
+    const time = donor.fusionTime;
+    if (!(time > 0)) continue;
+    const step = Math.min(time, Math.max(0, dt)), fraction = step / time;
+    const mass = donor.mass + receiver.mass;
+    const cx = (donor.mass * donor.x + receiver.mass * receiver.x) / mass;
+    const cy = (donor.mass * donor.y + receiver.mass * receiver.y) / mass;
+    const vx = (donor.mass * donor.vx + receiver.mass * receiver.vx) / mass;
+    const vy = (donor.mass * donor.vy + receiver.mass * receiver.vy) / mass;
+    const dx = (donor.x - receiver.x) * (1 - fraction), dy = (donor.y - receiver.y) * (1 - fraction);
+    const transfer = donor.mass * fraction;
+    donor.mass -= transfer; receiver.mass += transfer;
+    donor.x = cx + dx * receiver.mass / mass; donor.y = cy + dy * receiver.mass / mass;
+    receiver.x = cx - dx * donor.mass / mass; receiver.y = cy - dy * donor.mass / mass;
+    donor.vx = receiver.vx = vx; donor.vy = receiver.vy = vy;
+    donor.radius = 4 * Math.sqrt(donor.mass); receiver.radius = 4 * Math.sqrt(receiver.mass);
+    donor.fusionTime = receiver.fusionTime = Math.max(0, time - step);
+    donor.fusionProgress = receiver.fusionProgress = 1 - donor.fusionTime / SIBLING.fusionDuration;
+    if (donor.fusionTime <= 1e-9) { removed.add(donor); clearFusion(receiver); }
+  }
+  if (removed.size) for (let i = cells.length - 1; i >= 0; i--) if (removed.has(cells[i])) cells.splice(i, 1);
+  return removed.size;
 }
 
 function syncPlayer(player) {
@@ -386,15 +490,20 @@ function splitPlayer(arena, player, direction = player.direction) {
   for (const cell of [...player.cells]) {
     if (player.cells.length >= 8) break;
     if (cell.mass < 48) continue;
+    if (cell.fusionId) {
+      const partner = player.cells.find(other => other.id === cell.fusionPartnerId);
+      if (partner) { clearFusion(partner); partner.mergeIn = Math.max(partner.mergeIn, SIBLING.launchGrace); }
+      clearFusion(cell);
+    }
     cell.mass /= 2;
     cell.radius = 4 * Math.sqrt(cell.mass);
-    cell.mergeIn = 12;
+    cell.mergeIn = SIBLING.launchGrace;
     const { x, y } = direction;
     // Start the launched half beyond the parent's edge. Spawning overlapping
     // halves makes collision separation push the parent against its input.
     const separation = cell.radius * 2 + 2;
     const child = newCell(arena, cell.x + x * separation, cell.y + y * separation, cell.mass,
-      { mergeIn: 12, vx: cell.vx + x * 650, vy: cell.vy + y * 650 });
+      { mergeIn: SIBLING.launchGrace, vx: cell.vx + x * 650, vy: cell.vy + y * 650 });
     player.cells.push(child);
   }
 }
@@ -410,7 +519,7 @@ export function integrateMotion(cell, input, speed, dt) {
   cell.y += targetY * dt + (initialY - targetY) * (1 - decay) / rate;
   cell.vx = targetX + (initialX - targetX) * decay;
   cell.vy = targetY + (initialY - targetY) * decay;
-  if (!moving && Math.hypot(cell.vx, cell.vy) < MOTION.stopSpeed) cell.vx = cell.vy = 0;
+  if (!moving && !cell._siblingAwake && Math.hypot(cell.vx, cell.vy) < MOTION.stopSpeed) cell.vx = cell.vy = 0;
 }
 
 function confineCell(cell) {
@@ -428,10 +537,21 @@ function moveCells(player, input, dt) {
     cell.mergeIn = Math.max(0, cell.mergeIn - dt);
     cell.protectedFor = Math.max(0, cell.protectedFor - dt);
     cell.shatterCooldown = Math.max(0, cell.shatterCooldown - dt);
-    const speed = 210 * player.stats.speed * Math.pow(START_MASS / cell.mass, 0.18);
     cell.vx = finite(cell.vx) + finite(cell.impulseX);
     cell.vy = finite(cell.vy) + finite(cell.impulseY);
     cell.impulseX = cell.impulseY = 0;
+  }
+  applySiblingGravity(player.cells, dt);
+  const pairMasses = new Map();
+  for (const { donor, receiver } of fusionPairs(player.cells)) {
+    const mass = donor.mass + receiver.mass;
+    const vx = (donor.vx * donor.mass + receiver.vx * receiver.mass) / mass;
+    const vy = (donor.vy * donor.mass + receiver.vy * receiver.mass) / mass;
+    donor.vx = receiver.vx = vx; donor.vy = receiver.vy = vy;
+    pairMasses.set(donor.id, mass); pairMasses.set(receiver.id, mass);
+  }
+  for (const cell of player.cells) {
+    const speed = movementSpeed(pairMasses.get(cell.id) ?? cell.mass, player.stats.speed);
     cell._stepVx = cell.vx; cell._stepVy = cell.vy;
     cell._targetVx = input.x * speed; cell._targetVy = input.y * speed;
     cell._motionRate = Math.hypot(input.x, input.y) > 0 ? MOTION.response : MOTION.drag;
@@ -443,21 +563,14 @@ function moveCells(player, input, dt) {
     cell._freeVx = cell.vx; cell._freeVy = cell.vy;
     confineCell(cell);
   }
+  advanceSiblingFusion(player.cells, dt);
   for (let i = 0; i < player.cells.length; i++) {
     for (let j = i + 1; j < player.cells.length; j++) {
       const a = player.cells[i], b = player.cells[j];
       const dx = b.x - a.x, dy = b.y - a.y;
       const distance = Math.hypot(dx, dy);
-      if (a.mergeIn <= 0 && b.mergeIn <= 0 && distance < (a.radius + b.radius) * 0.9) {
-        const mass = a.mass + b.mass;
-        a.x = (a.x * a.mass + b.x * b.mass) / mass;
-        a.y = (a.y * a.mass + b.y * b.mass) / mass;
-        a.vx = (a.vx * a.mass + b.vx * b.mass) / mass;
-        a.vy = (a.vy * a.mass + b.vy * b.mass) / mass;
-        a.mass = mass;
-        a.radius = 4 * Math.sqrt(mass);
-        player.cells.splice(j--, 1);
-      } else if ((a.mergeIn > 0 || b.mergeIn > 0) && distance < a.radius + b.radius) {
+      if (a.fusionId && a.fusionId === b.fusionId) continue;
+      if (distance < a.radius + b.radius) {
         const ux = distance > 0 ? dx / distance : 1, uy = distance > 0 ? dy / distance : 0;
         resolveBodyPair({ player, cell: a }, { player, cell: b }, ux, uy);
       }
@@ -1154,7 +1267,7 @@ export function snapshotArena(arena, view) {
   const visibleBlasts = bounds ? arena.blasts.filter(blast => blast.x + blast.radius >= bounds.left &&
     blast.x - blast.radius <= bounds.right && blast.y + blast.radius >= bounds.top && blast.y - blast.radius <= bounds.bottom) : arena.blasts;
   return {
-    arena: ARENA, motion: MOTION, simulationTime: arena.time * 1000, dustTotal: arena.dust.length,
+    arena: ARENA, motion: MOTION, sibling: SIBLING, simulationTime: arena.time * 1000, dustTotal: arena.dust.length,
     status: arena.status, endless: arena.endless, time: round(arena.time), remaining: arena.endless ? null : round(arena.remaining),
     round: arena.round, winnerId: arena.winnerId,
     players: [...arena.players.values()].map(p => ({ id: p.id, name: p.name, color: p.color,
@@ -1168,6 +1281,9 @@ export function snapshotArena(arena, view) {
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),
         lastWaveHitId: c.lastWaveHitId ?? null, mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable) > 0,
+        fusionId: c.fusionId ?? null, fusionRole: c.fusionRole ?? null, fusionPartnerId: c.fusionPartnerId ?? null,
+        fusionTargetId: c.fusionTargetId ?? null, fusionDonorId: c.fusionDonorId ?? null,
+        fusionProgress: c.fusionProgress ?? 0, fusionTime: c.fusionTime ?? 0,
         protectedFor: round(Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable)) })),
       energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
       bot: p.bot, connected: p.connected, respawnIn: round(p.respawnIn),

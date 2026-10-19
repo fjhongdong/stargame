@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BLAST_COST, createArena, addPlayer, normalizeInput, setPlayerInput, stepArena, snapshotArena } from '../shared/engine.js';
+import { BLAST_COST, createArena, addPlayer, normalizeInput, setPlayerInput, stepArena, snapshotArena, movementSpeed } from '../shared/engine.js';
 
 const near = (actual, expected, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} should equal ${expected}`);
 function fixture() {
@@ -96,7 +96,7 @@ function chase(rearAt, dt) {
   const pursuer = player('pursuer', 5800, 4000, 120), target = player('target', 6000);
   const originalCore = target.cells[0].id;
   for (const p of [pursuer, target]) {
-    const vx = 210 * Math.pow(36 / p.mass, .18);
+    const vx = movementSpeed(p.mass, p.stats.speed);
     Object.assign(p.cells[0], { vx }); Object.assign(p, { vx, vy: 0 });
     setPlayerInput(arena, p.id, { x: 1 });
   }

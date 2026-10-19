@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ARENA, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, startRound, integrateMotion } from '../shared/engine.js';
+import { ARENA, MOTION, SIBLING, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, startRound, integrateMotion } from '../shared/engine.js';
 
 function fixture(positions = [[1000, 1000]], mass = 36) {
   const arena = createArena({ random: () => 0.99 });
@@ -14,19 +14,18 @@ function fixture(positions = [[1000, 1000]], mass = 36) {
   return { arena, player };
 }
 
-test('single and separated multiple cells accelerate in all four directions without centroid drift', () => {
+test('single and separated multiple cells accelerate their centre in all four directions', () => {
   for (const positions of [[[1000, 1000]], [[1000, 1000], [1800, 1400]]]) {
     for (const direction of [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]) {
       const { arena, player } = fixture(positions);
+      const initial = { x: player.x, y: player.y };
       setPlayerInput(arena, player.id, direction);
       for (let tick = 0; tick < 6; tick++) stepArena(arena, 1 / 30);
-      player.cells.forEach((cell, index) => {
-        const dx = cell.x - positions[index][0], dy = cell.y - positions[index][1];
-        if (direction.x) assert.ok(dx * direction.x > 0 && Math.abs(dx) < 42);
-        else assert.equal(dx, 0);
-        if (direction.y) assert.ok(dy * direction.y > 0 && Math.abs(dy) < 42);
-        else assert.equal(dy, 0);
-      });
+      const dx = player.x - initial.x, dy = player.y - initial.y;
+      if (direction.x) assert.ok(dx * direction.x > 0 && Math.abs(dx) < 42);
+      else assert.ok(Math.abs(dx) < 1e-8);
+      if (direction.y) assert.ok(dy * direction.y > 0 && Math.abs(dy) < 42);
+      else assert.ok(Math.abs(dy) < 1e-8);
     }
   }
 });
@@ -37,8 +36,7 @@ test('opposite input first brakes persistent velocity, then reverses direction',
   setPlayerInput(arena, player.id, { x: -1, y: 0 });
   stepArena(arena, 0.05);
   assert.ok(player.cells.every(cell => cell.vx > 0 && cell.vx < 210));
-  assert.equal(player.cells[0].y, 1000);
-  assert.equal(player.cells[1].y, 1400);
+  assert.ok(Math.abs(player.y - 1200) < 1e-8, 'internal sibling attraction must not add sideways centre-of-mass drift');
   for (let tick = 0; tick < 10; tick++) stepArena(arena, 0.05);
   assert.ok(player.cells.every(cell => cell.vx < 0));
   assert.ok(player.cells[0].x < 1000 && player.cells[1].x < 1800);
@@ -68,11 +66,9 @@ test('diagonal movement has equal directional components and normalized total sp
   const { arena, player } = fixture([[1000, 1000], [1800, 1400]]);
   setPlayerInput(arena, player.id, { x: 1, y: -1 });
   stepArena(arena, 0.1);
-  player.cells.forEach((cell, index) => {
-    const dx = cell.x - [1000, 1800][index], dy = cell.y - [1000, 1400][index];
-    assert.ok(Math.abs(dx + dy) < 1e-9);
-    assert.ok(Math.hypot(dx, dy) > 0 && Math.hypot(dx, dy) < 21);
-  });
+  const dx = player.x - 1400, dy = player.y - 1200;
+  assert.ok(Math.abs(dx + dy) < 1e-8);
+  assert.ok(Math.hypot(dx, dy) > 0 && Math.hypot(dx, dy) < 21);
 });
 
 test('free fragments drift while initially stationary controlled cells stay at rest', () => {
@@ -169,7 +165,7 @@ test('physics substeps do not repeat a single split or wave action, energy recha
   assert.equal(arena.blasts[0].travel, 60);
 });
 
-test('snapshots retain precise simulation time, accepted steering and shared contact parameters', () => {
+test('snapshots retain precise simulation time, accepted steering and shared motion and sibling parameters', () => {
   const { arena, player } = fixture();
   arena.time = 1 / 7;
   setPlayerInput(arena, player.id, { x: 1, y: -1, boost: true, seq: 1 });
@@ -181,6 +177,8 @@ test('snapshots retain precise simulation time, accepted steering and shared con
   assert.equal(state.motion.physicsStep, 1 / 120);
   assert.equal(state.motion.restingThreshold, 60);
   assert.equal(state.motion.contactSlop, 0.01);
+  assert.deepEqual(state.motion, MOTION);
+  assert.deepEqual(state.sibling, SIBLING);
 });
 
 test('resting contact slop never erases a high-speed impact before bodies or walls actually touch', () => {

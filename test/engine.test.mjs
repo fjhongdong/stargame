@@ -47,15 +47,16 @@ test('split and recombine conserve mass; holding split does not split repeatedly
   stepArena(arena, 0.01);
   assert.equal(p.cells.length, 2);
   assert.equal(p.mass, 100);
-  assert.ok(p.cells.every(c => c.mass === 50 && c.mergeIn > 11));
+  assert.ok(p.cells.every(c => c.mass === 50 && c.mergeIn > 0));
   setPlayerInput(arena, p.id, { x: 1, split: true });
   stepArena(arena, 0.01);
   assert.equal(p.cells.length, 2);
   setPlayerInput(arena, p.id, {});
-  for (const cell of p.cells) Object.assign(cell, { x: 300, y: 300, mergeIn: 0, impulseX: 0, impulseY: 0 });
-  stepArena(arena, 0.01);
+  // The halves return under their own mutual gravity and fuse through normal
+  // simulation, without teleporting them into an overlap or skipping grace.
+  for (let tick = 0; tick < 600 && p.cells.length > 1; tick++) stepArena(arena, 1 / 30);
   assert.equal(p.cells.length, 1);
-  assert.equal(p.mass, 100);
+  assert.ok(Math.abs(p.mass - 100) < 1e-8);
 });
 
 test('live cores separate instead of being swallowed, including preexisting deep overlaps', () => {

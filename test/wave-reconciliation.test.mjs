@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { createArena, addPlayer, setPlayerInput, stepArena, snapshotArena } from '../shared/engine.js';
+import { SIBLING, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena } from '../shared/engine.js';
 
 // Run the shipped reconciliation code with a deterministic clock. Each
 // fixture has separated cores, so collision solving cannot hide a lost wave.
@@ -17,7 +17,7 @@ function fixture(remote = false, ping = 0, simultaneousAttackers = false) {
   if (remote) Object.assign(pilot.cells[0], { x: 9000, y: 4000 });
   const victim = remote ? addPlayer(arena, { id: 'victim' }) : pilot;
   const first = victim.cells[0];
-  Object.assign(first, { x: 2000, y: 4000, vx: 0, vy: 0, mergeIn: 12 });
+  Object.assign(first, { x: 2000, y: 4000, vx: 0, vy: 0, mergeIn: SIBLING.launchGrace });
   victim.cells.push({ ...first, id: 'second-core', x: 3000 });
   victim.cells.push({ ...first, id: 'untouched-core', x: 4000 });
   Object.assign(victim, { x: 3000, y: 4000, mass: 108, invulnerable: 0 });
@@ -92,7 +92,7 @@ for (const remote of [false, true]) {
     c.time(100); c.api.packet(firstHit);
     c.time(100 + 1000 / 60); c.api.frame(1 / 60);
     const coastVelocity = c.ref(first).model.vx;
-    assert.ok(coastVelocity > 200 && coastVelocity < 240);
+    assert.ok(coastVelocity > 200 && coastVelocity < 240, `a spent wave impulse must coast, received ${coastVelocity}`);
     c.time(120); c.api.packet(structuredClone(firstHit));
     near(c.ref(first).model.vx, coastVelocity, 'repeated event id cannot restore or add the already spent impulse');
     const secondHit = hitState(firstHit, c.victimId, [first], { id: 'wave-two', at: .13, vx: -100, mode: 'rear' });

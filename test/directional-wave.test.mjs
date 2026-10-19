@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WAVE, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, waveArcPoint } from '../shared/engine.js';
+import { WAVE, SIBLING, createArena, addPlayer, setPlayerInput, stepArena, snapshotArena, waveArcPoint } from '../shared/engine.js';
 
 const near = (actual, expected, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} should equal ${expected} within ${tolerance}`);
 function fixture() {
@@ -40,7 +40,7 @@ test('directional waves hit the front while side, rear and out-of-range planets 
 
 test('one wave sheds each intersected cell once and keeps one hit record per victim', () => {
   const { arena, player } = fixture(), owner = player('owner'), target = player('target', 1260, 970);
-  target.cells[0].mergeIn = 12;
+  target.cells[0].mergeIn = SIBLING.launchGrace;
   target.cells.push({ ...target.cells[0], id: 'other-target-cell', y: 1030 }); target.mass = 72;
   const wave = fire(arena, owner); advance(arena, .6);
   near(target.mass, 72 * .88); assert.equal(wave.hit.size, 1); assert.ok(wave.hit.has(target.id));
