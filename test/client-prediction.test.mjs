@@ -34,6 +34,8 @@ function client() {
       remote(key) { return remotePhysics.get(key); },
       trackTime(key) { return cellTracks.get(key)?.at(-1)?.t; },
       velocity() { const model = predictedCells.values().next().value?.model; return { x: model?.vx, y: model?.vy }; },
+      models() { return physicsBodies().map(body => ({ id: body.player.id, ...body.position })); },
+      intent: getIntent,
       wave(blast) { return wavePose(blast, performance.now()); },
       lead() { return simulationLead; },
       cacheWaves(state) { cacheWaveVisuals(state, room); },
@@ -219,4 +221,65 @@ test('a real near-field wave uses its contact proxy clock and keeps that clock f
     'near-field wave and proxy authority advance on the same simulation horizon');
   proxy.island = false; proxy.islandUntil = 0;
   assert.equal(c.api.wave(blast).x, pose.x, 'leaving an island must not jump a wave back by 100 ms');
+});
+
+test('ordinary movement has no keyboard boost or boost field in the network input', () => {
+  const arena = createArena(); arena.status = 'playing';
+  addPlayer(arena, { id: 'pilot' });
+  const c = client(); c.api.start(snapshotArena(arena));
+  c.api.press('ShiftLeft');
+  assert.equal(c.api.intent().x, 0); assert.equal(c.api.intent().y, 0);
+  assert.equal(Object.hasOwn(c.sent.at(-1), 'boost'), false, 'retired boost must not be sent even as false');
+  c.api.press('ArrowRight');
+  assert.equal(c.sent.at(-1).x, 1);
+  assert.equal(Object.hasOwn(c.sent.at(-1), 'boost'), false);
+});
+
+test('a swept predicted impact preserves its damped post-impact remainder like the authoritative physics', () => {
+  const arena = createArena(); arena.status = 'playing';
+  const a = addPlayer(arena, { id: 'pilot' }), b = addPlayer(arena, { id: 'other' });
+  Object.assign(a.cells[0], { x: 4000, y: 4000, vx: 180 });
+  Object.assign(b.cells[0], { x: 4050, y: 4000, vx: -180 });
+  arena.dust = Array.from({ length: 6000 }, (_, id) => ({ id: `far-${id}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
+  const c = client(); c.api.start(snapshotArena(arena));
+  const duration = 1 / 120;
+  stepArena(arena, duration); c.time(duration * 1000); c.api.frame(duration);
+  for (const model of c.api.models()) {
+    const cell = arena.players.get(model.id).cells[0];
+    assert.ok(Math.hypot(model.x - cell.x, model.y - cell.y) < .002, 'the impact must retain the same remaining displacement as the server');
+    assert.ok(Math.hypot(model.vx - cell.vx, model.vy - cell.vy) < .002);
+  }
+  const [first, second] = c.api.models();
+  assert.ok(second.x - first.x > 48.05, 'a high-speed bounce already separates during the remaining fraction of the same substep');
+});
+
+test('a changed predicted trajectory ignores a ghost contact and can hit a third body on its real rebound', () => {
+  for (const rebound of [false, true]) {
+    const arena = createArena(); arena.status = 'playing';
+    const fixture = rebound ? [
+      { id: 'pilot', x: 1000, vx: 2000, mass: 36 },
+      { id: 'b', x: 1000 + 24 + 4 * Math.sqrt(1000) + 1, mass: 1000 },
+      { id: 'c', x: 1000 - 24 - 4 * Math.sqrt(12) - .2, mass: 12 },
+    ] : [{ id: 'pilot', x: 1000, vx: 2000 }, { id: 'b', x: 1050 }, { id: 'c', x: 1032, y: 2045 }];
+    for (const spec of fixture) {
+      const player = addPlayer(arena, { id: spec.id }); player.invulnerable = 100;
+      const mass = spec.mass || 36;
+      Object.assign(player.cells[0], { x: spec.x, y: spec.y || 2000, mass, radius: 4 * Math.sqrt(mass), vx: spec.vx || 0, vy: 0 });
+    }
+    arena.dust = Array.from({ length: 6000 }, (_, id) => ({ id: `far-${id}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
+    const c = client(); c.api.start(snapshotArena(arena));
+    const duration = 1 / 120;
+    c.time(duration * 1000); c.api.frame(duration);
+    const models = c.api.models(), third = models.find(model => model.id === 'c');
+    if (!rebound) {
+      assert.equal(third.vx, 0); assert.equal(third.vy, 0);
+      assert.equal(third.x, 1032); assert.equal(third.y, 2045);
+    } else {
+      assert.ok(third.vx < 0, 'the real outgoing path must reach the third body');
+      for (let i = 0; i < models.length; i++) for (let j = i + 1; j < models.length; j++) {
+        const a = models[i], b = models[j], ar = arena.players.get(a.id).cells[0].radius, br = arena.players.get(b.id).cells[0].radius;
+        assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= ar + br - 1e-5);
+      }
+    }
+  }
 });

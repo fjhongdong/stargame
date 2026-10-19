@@ -20,7 +20,7 @@ function fixture() {
 test('inputs reject non-finite data and normalize diagonal movement', () => {
   const input = normalizeInput({ x: 900, y: -900, boost: true, fire: 'yes', split: true });
   assert.ok(Math.abs(Math.hypot(input.x, input.y) - 1) < 1e-10);
-  assert.equal(input.boost, true);
+  assert.ok(!('boost' in input));
   assert.equal(input.fire, false);
   assert.equal(input.split, true);
   assert.deepEqual(normalizeInput({ x: NaN, y: Infinity }), normalizeInput(null));

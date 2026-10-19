@@ -15,7 +15,7 @@ export const UPGRADE_POOL = [
   { id: 'magnet', title: '引力透镜', description: '引力吸引范围增加 25', icon: '🧲' },
   { id: 'shield', title: '行星护盾', description: '生命上限增加 25，并恢复 25 生命', icon: '◇' },
   { id: 'recovery', title: '恒星充能', description: '能量自然恢复速度提升 30%', icon: '☀' },
-  { id: 'cooldown', title: '脉冲加速', description: '星爆冷却时间缩短 15%', icon: '⟳' },
+  { id: 'cooldown', title: '星波调谐', description: '星爆冷却时间缩短 15%', icon: '⟳' },
 ];
 const START_MASS = 36;
 export const DUST_COUNT = 6000;
@@ -85,7 +85,7 @@ export function normalizeInput(input = {}) {
   let y = clamp(finite(input.y), -1, 1);
   const length = Math.hypot(x, y);
   if (length > 1) { x /= length; y /= length; }
-  return { x, y, boost: input.boost === true, fire: input.fire === true,
+  return { x, y, fire: input.fire === true,
     split: input.split === true, eject: input.eject === true };
 }
 
@@ -123,7 +123,7 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
   const position = spawnPosition(arena);
   const player = { id, name: cleanName(name), color: skinColor(skin, arena.players.size), bot, ready,
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], hp: 100, energy: 60,
-    score: 0, kills: 0, boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
+    score: 0, kills: 0, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
     input: normalizeInput(), fireQueued: false, splitQueued: false, ejectQueued: false, shatteredAt: -10,
     pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
@@ -278,7 +278,7 @@ export function startRound(arena) {
   arena.impactSerial = 0;
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, hp: 100, energy: 60, score: 0, kills: 0,
-      boosting: false, respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
+      respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, splitQueued: false,
       ejectQueued: false, shatteredAt: -10, collisionRevision: 0, lastImpact: null,
       pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
@@ -314,7 +314,7 @@ function botInput(arena, player) {
   const dy = target.y - player.y;
   const length = Math.hypot(dx, dy) || 1;
   const flee = enemyDistance < 200 && (enemy?.mass ?? 0) > player.mass * 1.25;
-  return { x: dx / length * (flee ? -1 : 1), y: dy / length * (flee ? -1 : 1), boost: flee,
+  return { x: dx / length * (flee ? -1 : 1), y: dy / length * (flee ? -1 : 1),
     split: enemyDistance > 140 && enemyDistance < 320 && player.cells.length === 1 && player.mass > (enemy?.mass ?? Infinity) * 3,
     fire: enemyDistance < 175 && player.cooldown <= 0 && player.energy >= player.stats.blastCost };
 }
@@ -324,7 +324,6 @@ function destroyPlayer(arena, victim, ownerId, dropDust = true) {
   if (owner && owner.id !== victim.id) { owner.score += 25; owner.kills++; }
   victim.hp = 0;
   victim.respawnIn = 2;
-  victim.boosting = false;
   victim.vx = victim.vy = 0;
   victim.cells = [];
   victim.mass = 0;
@@ -394,11 +393,19 @@ function moveCells(player, input, dt) {
     cell.mergeIn = Math.max(0, cell.mergeIn - dt);
     cell.protectedFor = Math.max(0, cell.protectedFor - dt);
     cell.shatterCooldown = Math.max(0, cell.shatterCooldown - dt);
-    const speed = (player.boosting ? 360 : 210) * player.stats.speed * Math.pow(START_MASS / cell.mass, 0.18);
+    const speed = 210 * player.stats.speed * Math.pow(START_MASS / cell.mass, 0.18);
     cell.vx = finite(cell.vx) + finite(cell.impulseX);
     cell.vy = finite(cell.vy) + finite(cell.impulseY);
     cell.impulseX = cell.impulseY = 0;
+    cell._stepVx = cell.vx; cell._stepVy = cell.vy;
+    cell._targetVx = input.x * speed; cell._targetVy = input.y * speed;
+    cell._motionRate = Math.hypot(input.x, input.y) > 0 ? MOTION.response : MOTION.drag;
+    cell._motionDt = dt; cell._sweepTime = 0;
+    cell._sweepX = cell.x; cell._sweepY = cell.y;
+    cell._sweepVx = cell.vx; cell._sweepVy = cell.vy;
     integrateMotion(cell, input, speed, dt);
+    cell._freeX = cell.x; cell._freeY = cell.y;
+    cell._freeVx = cell.vx; cell._freeVy = cell.vy;
     confineCell(cell);
   }
   for (let i = 0; i < player.cells.length; i++) {
@@ -478,10 +485,29 @@ function chipCollider(arena, body, other, closingSpeed = 0) {
   }
 }
 
+function freeTrajectory(cell) {
+  return Number.isFinite(cell._sweepVx) &&
+    Math.abs(cell.x - cell._freeX) + Math.abs(cell.y - cell._freeY) <= 1e-7 &&
+    Math.abs(cell.vx - cell._freeVx) + Math.abs(cell.vy - cell._freeVy) <= 1e-7;
+}
+
+function trajectoryAt(cell, seconds) {
+  const elapsed = Math.max(0, seconds - cell._sweepTime);
+  const decay = Math.exp(-cell._motionRate * elapsed), integral = (1 - decay) / cell._motionRate;
+  return { x: cell._sweepX + cell._targetVx * elapsed + (cell._sweepVx - cell._targetVx) * integral,
+    y: cell._sweepY + cell._targetVy * elapsed + (cell._sweepVy - cell._targetVy) * integral,
+    vx: cell._targetVx + (cell._sweepVx - cell._targetVx) * decay,
+    vy: cell._targetVy + (cell._sweepVy - cell._targetVy) * decay };
+}
+
 function bodyContact(a, b) {
   const ac = a.cell, bc = b.cell;
-  const ax = ac._stepX ?? ac.x, ay = ac._stepY ?? ac.y;
-  const bx = bc._stepX ?? bc.x, by = bc._stepY ?? bc.y;
+  const valid = freeTrajectory(ac) && freeTrajectory(bc);
+  const duration = valid ? Math.min(ac._motionDt, bc._motionDt) : 0;
+  const startTime = valid ? Math.max(ac._sweepTime, bc._sweepTime) : 0;
+  const startA = valid ? trajectoryAt(ac, startTime) : ac;
+  const startB = valid ? trajectoryAt(bc, startTime) : bc;
+  const ax = startA.x, ay = startA.y, bx = startB.x, by = startB.y;
   const dx = bx - ax, dy = by - ay;
   const vx = (bc.x - bx) - (ac.x - ax), vy = (bc.y - by) - (ac.y - ay);
   const radius = ac.radius + bc.radius;
@@ -500,7 +526,63 @@ function bodyContact(a, b) {
   const length = Math.hypot(nx, ny);
   if (length > 1e-9) { nx /= length; ny /= length; }
   else { nx = 1; ny = 0; }
-  return { a, b, time, nx, ny, key: `${a.key}|${b.key}` };
+  const absoluteTime = duration > 0 ? (startTime + (duration - startTime) * time) / duration : 0;
+  return { a, b, time: absoluteTime, startTime, nx, ny, key: `${a.key}|${b.key}` };
+}
+
+function resolveSweptRemainder(contact, dt, stepTime) {
+  if (dt <= 0) return null;
+  const { a, b, time } = contact;
+  const ac = a.cell, bc = b.cell;
+  // A prior wall/other-body response invalidates this pair's free trajectory.
+  // Keep the conservative pile solver for those coupled contacts.
+  if (!freeTrajectory(ac) || !freeTrajectory(bc)) return null;
+  const startTime = contact.startTime ?? 0;
+  const initialA = trajectoryAt(ac, startTime), initialB = trajectoryAt(bc, startTime);
+  const initialDistance = Math.hypot(initialB.x - initialA.x, initialB.y - initialA.y);
+  if (initialDistance < ac.radius + bc.radius - 1e-6) return null;
+  let seconds = dt * time;
+  const radius = ac.radius + bc.radius;
+  // The initial sweep is a line-segment estimate. Refine its time against the
+  // same analytical inertia used by movement before advancing the remainder.
+  for (let i = 0; i < 5; i++) {
+    const ap = trajectoryAt(ac, seconds), bp = trajectoryAt(bc, seconds);
+    const dx = bp.x - ap.x, dy = bp.y - ap.y;
+    const error = dx * dx + dy * dy - radius * radius;
+    if (Math.abs(error) < 1e-8) break;
+    const derivative = 2 * (dx * (bp.vx - ap.vx) + dy * (bp.vy - ap.vy));
+    if (Math.abs(derivative) < 1e-10) return null;
+    seconds = clamp(seconds - error / derivative, startTime, dt);
+  }
+  const av = trajectoryAt(ac, seconds), bv = trajectoryAt(bc, seconds);
+  const separation = Math.hypot(bv.x - av.x, bv.y - av.y);
+  if (Math.abs(separation - radius) > 1e-5) return null;
+  const nx = (bv.x - av.x) / separation, ny = (bv.y - av.y) / separation;
+  const closing = -((bv.vx - av.vx) * nx + (bv.vy - av.vy) * ny);
+  if (closing <= 1e-7) return null;
+  const point = { x: av.x + nx * ac.radius, y: av.y + ny * ac.radius };
+  const restitution = closing > MOTION.restingThreshold ? MOTION.restitution : 0;
+  const inverseA = 1 / ac.mass, inverseB = 1 / bc.mass;
+  const impulse = (1 + restitution) * closing / (inverseA + inverseB);
+  const remaining = dt - seconds;
+  for (const [cell, magnitude, atContact] of [[ac, -impulse * inverseA, av], [bc, impulse * inverseB, bv]]) {
+    const decay = Math.exp(-cell._motionRate * remaining);
+    const displacement = (1 - decay) / cell._motionRate;
+    cell.x += magnitude * nx * displacement;
+    cell.y += magnitude * ny * displacement;
+    cell.vx += magnitude * nx * decay;
+    cell.vy += magnitude * ny * decay;
+    cell._sweepTime = seconds; cell._sweepX = atContact.x; cell._sweepY = atContact.y;
+    cell._sweepVx = atContact.vx + magnitude * nx;
+    cell._sweepVy = atContact.vy + magnitude * ny;
+    cell._freeX = cell.x; cell._freeY = cell.y; cell._freeVx = cell.vx; cell._freeVy = cell.vy;
+    confineCell(cell);
+  }
+  if (closing > MOTION.restingThreshold) {
+    a.player.collisionRevision++;
+    if (b.player !== a.player) b.player.collisionRevision++;
+  }
+  return { closing, ...point, nx, ny, at: stepTime - dt + seconds };
 }
 
 function travelRoom(cell, nx, ny) {
@@ -605,7 +687,7 @@ function constrainContactVelocities(bodies) {
   for (const body of bodies) constrainWallVelocity(body.cell);
 }
 
-function resolvePlayerBodies(arena) {
+function resolvePlayerBodies(arena, dt = 0, stepTime = arena.time) {
   const bodies = [];
   for (const player of arena.players.values()) if (player.respawnIn <= 0) {
     for (const cell of player.cells) bodies.push({ player, cell, key: `${player.id}:${cell.id}` });
@@ -618,12 +700,36 @@ function resolvePlayerBodies(arena) {
     if (contact) contacts.push(contact);
   }
   contacts.sort((a, b) => a.time - b.time || a.key.localeCompare(b.key));
-  for (const contact of contacts) {
-    const { a, b, nx, ny, key } = contact;
-    const closingSpeed = Math.max(0, -((b.cell.vx - a.cell.vx) * nx + (b.cell.vy - a.cell.vy) * ny));
+  const queued = new Set(contacts.map(contact => contact.key));
+  const processed = new Set();
+  while (contacts.length) {
+    const previous = contacts.shift();
+    if (processed.has(previous.key)) continue;
+    processed.add(previous.key);
+    // Earlier impacts may have changed this path. A stale broad-phase entry
+    // must never apply an impulse or fracture to a body it no longer reaches.
+    const contact = bodyContact(previous.a, previous.b);
+    if (!contact) continue;
+    let { a, b, nx, ny, key } = contact;
+    const swept = resolveSweptRemainder(contact, dt, stepTime);
+    if (swept) { nx = swept.nx; ny = swept.ny; }
+    const closingSpeed = swept?.closing ?? Math.max(0, -((b.cell.vx - a.cell.vx) * nx + (b.cell.vy - a.cell.vy) * ny));
     resolveBodyPair(a, b, nx, ny);
+    if (swept) {
+      // Advancing the remaining time can reach a third body that the original
+      // free path missed. Recheck only the two changed bodies' neighbors.
+      for (const changed of [a, b]) for (const other of bodies) {
+        if (other === changed || other.player === changed.player) continue;
+        const left = changed.key < other.key ? changed : other, right = left === changed ? other : changed;
+        const neighborKey = `${left.key}|${right.key}`;
+        if (queued.has(neighborKey) || processed.has(neighborKey)) continue;
+        const neighbor = bodyContact(left, right);
+        if (neighbor) { queued.add(neighborKey); contacts.push(neighbor); }
+      }
+      contacts.sort((left, right) => left.time - right.time || left.key.localeCompare(right.key));
+    }
     if (arena.bodyContacts.has(key)) continue;
-    const impactPoint = { x: a.cell.x + nx * a.cell.radius, y: a.cell.y + ny * a.cell.radius,
+    const impactPoint = { x: swept?.x ?? a.cell.x + nx * a.cell.radius, y: swept?.y ?? a.cell.y + ny * a.cell.radius,
       radius: Math.min(32, Math.min(a.cell.radius, b.cell.radius) * 0.65) };
     let fractured = false;
     if (a.cell.mass !== b.cell.mass) {
@@ -636,7 +742,7 @@ function resolvePlayerBodies(arena) {
       }
     }
     if (closingSpeed > 12 || fractured) {
-      const impact = { id: `impact-${arena.round}-${++arena.impactSerial}`, at: arena.time,
+      const impact = { id: `impact-${arena.round}-${++arena.impactSerial}`, at: swept?.at ?? stepTime,
         x: impactPoint.x, y: impactPoint.y, normalX: nx, normalY: ny, speed: closingSpeed,
         radius: impactPoint.radius, fractured };
       a.player.lastImpact = b.player.lastImpact = impact;
@@ -895,8 +1001,7 @@ export function stepArena(arena, elapsed) {
     const input = player.connected ? player.input : normalizeInput();
     const moving = Math.hypot(input.x, input.y) > 0;
     const actionDirection = moving ? { x: input.x / Math.hypot(input.x, input.y), y: input.y / Math.hypot(input.x, input.y) } : player.direction;
-    player.boosting = input.boost && moving && player.energy > 1;
-    player.energy = clamp(player.energy + dt * (player.boosting ? -13 : player.stats.energyRegen), 0, 100);
+    player.energy = clamp(player.energy + dt * player.stats.energyRegen, 0, 100);
     if (player.splitQueued) splitPlayer(arena, player, actionDirection);
     if (player.ejectQueued) ejectMass(arena, player, actionDirection);
     player.splitQueued = player.ejectQueued = false;
@@ -911,7 +1016,7 @@ export function stepArena(arena, elapsed) {
   const substep = dt / steps;
   for (let i = 0; i < steps; i++) {
     for (const { player, input } of movers) moveCells(player, input, substep);
-    resolvePlayerBodies(arena);
+    resolvePlayerBodies(arena, substep, arena.time - dt + (i + 1) * substep);
   }
   for (const { player, input } of movers) {
     player.inputAge += dt;
@@ -924,6 +1029,10 @@ export function stepArena(arena, elapsed) {
     // Collection can enlarge a body after its movement has finished.
     for (const player of arena.players.values()) for (const cell of player.cells) {
       cell._stepX = cell.x; cell._stepY = cell.y; confineCell(cell);
+      cell._motionDt = 0; cell._sweepTime = 0;
+      cell._sweepX = cell.x; cell._sweepY = cell.y;
+      cell._sweepVx = cell.vx; cell._sweepVy = cell.vy;
+      cell._freeX = cell.x; cell._freeY = cell.y; cell._freeVx = cell.vx; cell._freeVy = cell.vy;
     }
     resolvePlayerBodies(arena);
   }
@@ -957,14 +1066,13 @@ export function snapshotArena(arena, view) {
       lastInputSeq: p.lastInputSeq, inputAge: p.inputAge, collisionRevision: p.collisionRevision,
       lastImpact: p.lastImpact ? { ...p.lastImpact } : null,
       direction: { ...p.direction },
-      steering: { x: p.connected ? p.input.x : 0, y: p.connected ? p.input.y : 0,
-        boost: p.connected && p.input.boost },
+      steering: { x: p.connected ? p.input.x : 0, y: p.connected ? p.input.y : 0 },
       gravityRadius: p.cells.length ? round(Math.max(...p.cells.map(c => gravityRadius(c, p)))) : 0,
       cells: p.cells.map(c => ({ id: c.id, x: round(c.x), y: round(c.y), vx: round(c.vx), vy: round(c.vy),
         impulseX: round(c.impulseX), impulseY: round(c.impulseY), radius: round(c.radius), mass: round(c.mass),
         mergeIn: round(c.mergeIn), gravityRadius: round(gravityRadius(c, p)), protected: c.protectedFor > 0, protectedFor: round(c.protectedFor) })),
       hp: p.hp, energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
-      bot: p.bot, connected: p.connected, boosting: p.boosting, respawnIn: round(p.respawnIn),
+      bot: p.bot, connected: p.connected, respawnIn: round(p.respawnIn),
       level: p.level, peakMass: round(p.peakMass), nextUpgradeMass: UPGRADE_THRESHOLDS[p.upgradeMilestones] ?? null,
       upgradePending: p.upgradePending, upgradeChoices: p.upgradeChoices.map(option => ({ ...option })),
       shatteredAt: round(p.shatteredAt),

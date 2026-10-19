@@ -19,9 +19,8 @@
   let active = false, intentionalClose = false, joined = false, reconnecting = false;
   let pendingResolve, pendingReject, connectionTimer, retryTimer, retries = 0;
   let width = innerWidth, height = innerHeight, dpr = 1, raf, inputTimer, pingTimer, backgroundCanvas;
-  let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false, ejectPulse = false, boostTouch = false;
+  let lastFrame = 0, lastHud = 0, inputPulse = false, splitPulse = false, ejectPulse = false;
   let touchVector = { x: 0, y: 0 }, joystickPointer = null, sound = false, audioContext;
-  let boostPointerId = null;
   let previousStatus = '', previousRound = -1, lastScore = 0, lastUpgradeKey = '', lastShatteredAt = 0;
   let inputSeq = 0, lastInputAck = 0, lastMovementSeq = 0, rtt = null, fps = 0, frameCount = 0, fpsStarted = 0, lastSnapshotAt = 0;
   let renderedDust = 0, renderedCells = 0, camera = { x: NaN, y: NaN, scale: .95 };
@@ -31,14 +30,16 @@
   const planetSprites = new Map(), dustSprites = new Map();
   const materializedDust = new Map();
   const seenImpacts = new Map();
+  const predictedContactEffects = new Map();
   const waveVisuals = new Map();
   const remoteContactPositions = new Map();
   const remotePhysics = new Map(), contactEpisodes = new Map();
   const defaultMotion = { response: 6, drag: 2, stopSpeed: .5, restitution: .2, restingThreshold: 60, contactSlop: .01, physicsStep: 1 / 120 };
   let motionSettings = { ...defaultMotion }, simulationLead = 0;
+  let renderTimeline = null;
   let remoteContactFrame = -1;
   const movementKeys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
-  const gameKeys = new Set([...movementKeys, 'Space', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
+  const gameKeys = new Set([...movementKeys, 'Space', 'KeyQ', 'KeyE', 'Digit1', 'Digit2', 'Digit3', 'Escape']);
   const stars = Array.from({ length: 240 }, (_, i) => ({
     x: Math.abs(Math.sin(i * 127.1 + 311.7) * 43758.5453) % 1,
     y: Math.abs(Math.sin(i * 269.5 + 183.3) * 29813.3719) % 1,
@@ -51,7 +52,7 @@
     root = $('gameOverlay') || document.body.appendChild(Object.assign(document.createElement('div'), { id: 'gameOverlay', hidden: true }));
     const style = document.createElement('style');
     style.textContent = `
-      #gameOverlay{position:fixed;inset:0;z-index:1000;background:#070b15;color:#f2f5fc;font-family:inherit;overflow:hidden;isolation:isolate;touch-action:none}#gameOverlay[hidden]{display:none!important}#gameOverlay *{box-sizing:border-box}#gameOverlay button{font:inherit;cursor:pointer}#gameOverlay button:focus-visible{outline:2px solid #b7f4d5;outline-offset:5px}#gameOverlay button:disabled{cursor:not-allowed;opacity:.4}#gameOverlay svg{width:20px;height:20px;display:block}#gameCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}#gameOverlay .sg-top{position:absolute;top:28px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;gap:14px}#gameOverlay .sg-top>*{pointer-events:auto}.sg-brand{display:flex;align-items:center;gap:12px}.sg-symbol{width:38px;height:38px;border:1px solid #b8f3d450;border-radius:50%;display:grid;place-items:center;color:#b7f4d5;font-size:25px;box-shadow:0 0 28px #a0f9cb12}.sg-title{font-size:15px;font-weight:750;letter-spacing:2px}.sg-subtitle{font-size:9px;letter-spacing:2.2px;color:#84909f;margin-top:5px}.sg-round{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:17px;padding:11px 19px;background:#101722c9;border:1px solid #768b982b;border-radius:11px;backdrop-filter:blur(12px)}.sg-live-dot{width:6px;height:6px;background:#b9f6ca;border-radius:50%;box-shadow:0 0 10px #b9f6ca}.sg-round-label{font-size:10px;letter-spacing:2px;color:#a5b1bd}.sg-timer{font:600 21px ui-monospace,monospace;letter-spacing:2px}.sg-actions{display:flex;gap:9px}.sg-icon-btn{width:39px;height:39px;display:grid;place-items:center;background:#101722c9;border:1px solid #768b9835;border-radius:10px;color:#a6b1c0;backdrop-filter:blur(12px)}.sg-icon-btn:hover{color:#ddf8e9;border-color:#b9f6ca70}.sg-icon-btn[aria-pressed=false]{color:#687584}.sg-rank{position:absolute;left:34px;top:112px;width:198px;padding:18px 17px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;backdrop-filter:blur(16px)}.sg-eyebrow{color:#8c9aa8;font-size:9px;letter-spacing:2.2px;font-weight:650}.sg-rank-title{display:flex;justify-content:space-between;gap:10px;padding-bottom:13px;border-bottom:1px solid #afc4d912}.sg-rank-count{font:10px ui-monospace,monospace;color:#b9f6ca}.sg-rank-row{display:grid;grid-template-columns:15px 9px 1fr auto;gap:7px;align-items:center;font-size:11px;margin-top:15px;color:#b7c0ce}.sg-rank-row.me{color:#effcf4}.sg-rank-num{font:10px ui-monospace,monospace;color:#718092}.sg-player-dot{width:6px;height:6px;border-radius:50%;background:var(--planet);box-shadow:0 0 10px var(--planet)}.sg-rank-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sg-rank-score{font:11px ui-monospace,monospace;color:#f4f7fb}.sg-stat{position:absolute;right:34px;top:112px;width:159px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;padding:17px 18px;backdrop-filter:blur(16px)}.sg-score{font:500 36px ui-monospace,monospace;letter-spacing:-2px;margin:10px 0 4px}.sg-score-label{color:#738191;font-size:10px}.sg-health{display:flex;gap:4px;margin-top:18px}.sg-health i{height:3px;flex:1;border-radius:3px;background:#b9f6ca}.sg-health i.empty{background:#293242}.sg-hp-label{display:flex;justify-content:space-between;color:#84909f;font-size:9px;margin-top:7px;letter-spacing:1px}.sg-bottom{position:absolute;bottom:27px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:end;pointer-events:none;gap:24px}.sg-controls{display:flex;gap:20px;color:#83909f;font-size:10px;align-items:center;line-height:1.9}.sg-control{display:flex;align-items:center;gap:7px}.sg-key{font:10px ui-monospace,monospace;display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:23px;border:1px solid #61728455;border-radius:5px;color:#bac5d4;background:#101724aa;padding:0 6px}.sg-energy{width:210px;pointer-events:auto}.sg-energy-caption{display:flex;justify-content:space-between;margin-bottom:10px;font-size:9px;color:#9faab8;letter-spacing:1px}.sg-energy-track{height:4px;background:#273040;border-radius:10px;overflow:hidden}.sg-energy-fill{height:100%;width:60%;background:linear-gradient(90deg,#a68cff,#d4b5ff);box-shadow:0 0 12px #d4b5ff;transition:width .12s linear}.sg-blast-button{margin-top:12px;width:100%;display:flex;justify-content:center;align-items:center;gap:10px;background:#c9b5ff13;border:1px solid #ccb5ff50;border-radius:8px;color:#decfff;font-size:11px;padding:11px 12px;letter-spacing:1px}.sg-blast-button:hover{background:#c9b5ff26}.sg-blast-button svg{width:15px;height:15px}.sg-blast-button kbd{font:9px ui-monospace,monospace;padding:2px 5px;border:1px solid #ccb5ff40;border-radius:3px;color:#9e8fc1}.sg-room-code{position:absolute;bottom:29px;left:50%;transform:translateX(-50%);color:#667588;font:9px ui-monospace,monospace;letter-spacing:2px}.sg-panel-backdrop{position:absolute;inset:0;display:grid;place-items:center;padding:90px 24px;background:#05091366;backdrop-filter:blur(5px)}.sg-panel-backdrop[hidden]{display:none}.sg-panel{position:relative;width:100%;max-width:470px;border:1px solid #97afc32b;background:linear-gradient(145deg,#172130f5,#0d1421fa);box-shadow:0 30px 120px #0009;border-radius:22px;padding:33px}.sg-panel-topline{display:flex;align-items:center;justify-content:space-between;gap:10px}.sg-badge{font-size:9px;letter-spacing:2px;padding:6px 9px;border:1px solid #b9f6ca30;border-radius:5px;color:#b9f6ca;background:#b9f6ca08}.sg-panel h2{margin:20px 0 10px;font-size:30px;font-weight:600;letter-spacing:-.6px;line-height:1.25}.sg-panel-desc{font-size:12px;color:#8c9baa;line-height:1.9;margin:0}.sg-code-box{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid #7a91a52e;border-radius:11px;background:#080e19a8;margin:22px 0;padding:15px 17px}.sg-code-label{font-size:9px;color:#7f90a1;letter-spacing:2px}.sg-code{font:500 26px ui-monospace,monospace;color:#d4b5ff;letter-spacing:6px;margin-top:6px}.sg-copy{border:0;background:#d4b5ff0e;color:#b9a4e8;width:37px;height:37px;border-radius:8px;display:grid;place-items:center}.sg-copy:hover{background:#d4b5ff22}.sg-roster-title{display:flex;justify-content:space-between;font-size:10px;color:#9ca9b8;margin:0 0 10px;letter-spacing:1px}.sg-roster{display:flex;flex-direction:column;gap:7px}.sg-roster-row{display:flex;align-items:center;gap:11px;padding:10px 11px;background:#d8e6f305;border:1px solid #a4b8cc10;border-radius:9px;font-size:12px}.sg-mini-planet{width:23px;height:23px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#ffffffa8,var(--planet) 27%,#152237 95%);box-shadow:0 0 12px color-mix(in srgb,var(--planet) 18%,transparent);flex-shrink:0}.sg-roster-name{flex:1;color:#cbd6e3;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.sg-small-tag{font-size:8px;color:#7e8c9e;border:1px solid #7e8c9e35;border-radius:3px;padding:2px 4px;letter-spacing:1px;margin-left:6px}.sg-ready-status{font-size:9px;color:#7e8c9e;white-space:nowrap}.sg-ready-status.ready{color:#b9f6ca}.sg-panel-buttons{display:flex;gap:9px;margin-top:22px}.sg-primary,.sg-secondary{border-radius:9px;min-height:44px;padding:12px 17px;font-size:12px;letter-spacing:1px;border:1px solid transparent;flex:1}.sg-primary{background:#b9f6ca;color:#10221b;font-weight:700;box-shadow:0 0 28px #b9f6ca0b}.sg-primary:hover{background:#d2ffdf}.sg-secondary{background:#c5d4e806;border-color:#afc3d72b;color:#b0bece}.sg-secondary:hover{background:#c5d4e810;border-color:#afc3d75b}.sg-panel-note{text-align:center;font-size:10px;line-height:1.8;color:#6f8092;margin:13px 0 0}.sg-progress{width:30px;height:30px;border:2px solid #b9f6ca20;border-top-color:#b9f6ca;border-radius:50%;animation:sg-spin 1s linear infinite;margin-bottom:24px}@keyframes sg-spin{to{transform:rotate(360deg)}}.sg-status{position:absolute;top:87px;left:50%;transform:translateX(-50%);padding:7px 13px;border:1px solid #e2c18f3b;background:#171c26d9;color:#e4c698;font-size:10px;border-radius:6px;white-space:nowrap}.sg-status[hidden]{display:none}.sg-toast{position:absolute;left:50%;top:110px;transform:translateX(-50%);color:#c9f7dc;background:#101d1dec;border:1px solid #b9f6ca35;border-radius:8px;font-size:12px;padding:11px 19px;transition:opacity .2s;pointer-events:none;opacity:0}.sg-toast.show{opacity:1}.sg-result-place{font:500 70px ui-monospace,monospace;color:#d4b5ff;letter-spacing:-5px;margin:15px 0 6px}.sg-result-grid{display:flex;gap:20px;margin:20px 0;padding:17px 0;border-top:1px solid #a4b8cc20;border-bottom:1px solid #a4b8cc20}.sg-result-grid>div{flex:1}.sg-result-number{font:500 23px ui-monospace,monospace;color:#e6edf8;margin-bottom:6px}.sg-result-label{font-size:9px;color:#7f90a1;letter-spacing:1px}.sg-touch{display:none;position:absolute;inset:0;pointer-events:none}.sg-joystick{position:absolute;bottom:38px;left:27px;width:108px;height:108px;border:1px solid #b6cde42b;background:#b6cde407;border-radius:50%;pointer-events:auto;touch-action:none}.sg-joystick:before{content:'';position:absolute;inset:26px;border:1px dashed #b6cde424;border-radius:50%}.sg-joystick-knob{position:absolute;left:34px;top:34px;width:38px;height:38px;border:1px solid #b6cde46b;background:#b6cde415;border-radius:50%;box-shadow:0 0 22px #b6cde40b;pointer-events:none}.sg-touch-boost{position:absolute;bottom:153px;right:34px;pointer-events:auto;border:1px solid #b9f6ca50;color:#b9f6ca;background:#b9f6ca10;width:47px;height:47px;border-radius:50%;font-size:10px}.sg-mobile-hint{display:none}.sg-respawn{position:absolute;left:50%;top:58%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;color:#c7b7ed;font-size:12px;letter-spacing:2px}.sg-respawn strong{display:block;font:500 48px ui-monospace,monospace;margin-bottom:9px}.sg-respawn[hidden]{display:none}
+      #gameOverlay{position:fixed;inset:0;z-index:1000;background:#070b15;color:#f2f5fc;font-family:inherit;overflow:hidden;isolation:isolate;touch-action:none}#gameOverlay[hidden]{display:none!important}#gameOverlay *{box-sizing:border-box}#gameOverlay button{font:inherit;cursor:pointer}#gameOverlay button:focus-visible{outline:2px solid #b7f4d5;outline-offset:5px}#gameOverlay button:disabled{cursor:not-allowed;opacity:.4}#gameOverlay svg{width:20px;height:20px;display:block}#gameCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}#gameOverlay .sg-top{position:absolute;top:28px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:center;pointer-events:none;gap:14px}#gameOverlay .sg-top>*{pointer-events:auto}.sg-brand{display:flex;align-items:center;gap:12px}.sg-symbol{width:38px;height:38px;border:1px solid #b8f3d450;border-radius:50%;display:grid;place-items:center;color:#b7f4d5;font-size:25px;box-shadow:0 0 28px #a0f9cb12}.sg-title{font-size:15px;font-weight:750;letter-spacing:2px}.sg-subtitle{font-size:9px;letter-spacing:2.2px;color:#84909f;margin-top:5px}.sg-round{position:absolute;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:17px;padding:11px 19px;background:#101722c9;border:1px solid #768b982b;border-radius:11px;backdrop-filter:blur(12px)}.sg-live-dot{width:6px;height:6px;background:#b9f6ca;border-radius:50%;box-shadow:0 0 10px #b9f6ca}.sg-round-label{font-size:10px;letter-spacing:2px;color:#a5b1bd}.sg-timer{font:600 21px ui-monospace,monospace;letter-spacing:2px}.sg-actions{display:flex;gap:9px}.sg-icon-btn{width:39px;height:39px;display:grid;place-items:center;background:#101722c9;border:1px solid #768b9835;border-radius:10px;color:#a6b1c0;backdrop-filter:blur(12px)}.sg-icon-btn:hover{color:#ddf8e9;border-color:#b9f6ca70}.sg-icon-btn[aria-pressed=false]{color:#687584}.sg-rank{position:absolute;left:34px;top:112px;width:198px;padding:18px 17px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;backdrop-filter:blur(16px)}.sg-eyebrow{color:#8c9aa8;font-size:9px;letter-spacing:2.2px;font-weight:650}.sg-rank-title{display:flex;justify-content:space-between;gap:10px;padding-bottom:13px;border-bottom:1px solid #afc4d912}.sg-rank-count{font:10px ui-monospace,monospace;color:#b9f6ca}.sg-rank-row{display:grid;grid-template-columns:15px 9px 1fr auto;gap:7px;align-items:center;font-size:11px;margin-top:15px;color:#b7c0ce}.sg-rank-row.me{color:#effcf4}.sg-rank-num{font:10px ui-monospace,monospace;color:#718092}.sg-player-dot{width:6px;height:6px;border-radius:50%;background:var(--planet);box-shadow:0 0 10px var(--planet)}.sg-rank-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sg-rank-score{font:11px ui-monospace,monospace;color:#f4f7fb}.sg-stat{position:absolute;right:34px;top:112px;width:159px;border:1px solid #a4b8cc15;border-radius:13px;background:#0e1421b8;padding:17px 18px;backdrop-filter:blur(16px)}.sg-score{font:500 36px ui-monospace,monospace;letter-spacing:-2px;margin:10px 0 4px}.sg-score-label{color:#738191;font-size:10px}.sg-health{display:flex;gap:4px;margin-top:18px}.sg-health i{height:3px;flex:1;border-radius:3px;background:#b9f6ca}.sg-health i.empty{background:#293242}.sg-hp-label{display:flex;justify-content:space-between;color:#84909f;font-size:9px;margin-top:7px;letter-spacing:1px}.sg-bottom{position:absolute;bottom:27px;left:34px;right:34px;display:flex;justify-content:space-between;align-items:end;pointer-events:none;gap:24px}.sg-controls{display:flex;gap:20px;color:#83909f;font-size:10px;align-items:center;line-height:1.9}.sg-control{display:flex;align-items:center;gap:7px}.sg-key{font:10px ui-monospace,monospace;display:inline-flex;align-items:center;justify-content:center;min-width:23px;height:23px;border:1px solid #61728455;border-radius:5px;color:#bac5d4;background:#101724aa;padding:0 6px}.sg-energy{width:210px;pointer-events:auto}.sg-energy-caption{display:flex;justify-content:space-between;margin-bottom:10px;font-size:9px;color:#9faab8;letter-spacing:1px}.sg-energy-track{height:4px;background:#273040;border-radius:10px;overflow:hidden}.sg-energy-fill{height:100%;width:60%;background:linear-gradient(90deg,#a68cff,#d4b5ff);box-shadow:0 0 12px #d4b5ff;transition:width .12s linear}.sg-blast-button{margin-top:12px;width:100%;display:flex;justify-content:center;align-items:center;gap:10px;background:#c9b5ff13;border:1px solid #ccb5ff50;border-radius:8px;color:#decfff;font-size:11px;padding:11px 12px;letter-spacing:1px}.sg-blast-button:hover{background:#c9b5ff26}.sg-blast-button svg{width:15px;height:15px}.sg-blast-button kbd{font:9px ui-monospace,monospace;padding:2px 5px;border:1px solid #ccb5ff40;border-radius:3px;color:#9e8fc1}.sg-room-code{position:absolute;bottom:29px;left:50%;transform:translateX(-50%);color:#667588;font:9px ui-monospace,monospace;letter-spacing:2px}.sg-panel-backdrop{position:absolute;inset:0;display:grid;place-items:center;padding:90px 24px;background:#05091366;backdrop-filter:blur(5px)}.sg-panel-backdrop[hidden]{display:none}.sg-panel{position:relative;width:100%;max-width:470px;border:1px solid #97afc32b;background:linear-gradient(145deg,#172130f5,#0d1421fa);box-shadow:0 30px 120px #0009;border-radius:22px;padding:33px}.sg-panel-topline{display:flex;align-items:center;justify-content:space-between;gap:10px}.sg-badge{font-size:9px;letter-spacing:2px;padding:6px 9px;border:1px solid #b9f6ca30;border-radius:5px;color:#b9f6ca;background:#b9f6ca08}.sg-panel h2{margin:20px 0 10px;font-size:30px;font-weight:600;letter-spacing:-.6px;line-height:1.25}.sg-panel-desc{font-size:12px;color:#8c9baa;line-height:1.9;margin:0}.sg-code-box{display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid #7a91a52e;border-radius:11px;background:#080e19a8;margin:22px 0;padding:15px 17px}.sg-code-label{font-size:9px;color:#7f90a1;letter-spacing:2px}.sg-code{font:500 26px ui-monospace,monospace;color:#d4b5ff;letter-spacing:6px;margin-top:6px}.sg-copy{border:0;background:#d4b5ff0e;color:#b9a4e8;width:37px;height:37px;border-radius:8px;display:grid;place-items:center}.sg-copy:hover{background:#d4b5ff22}.sg-roster-title{display:flex;justify-content:space-between;font-size:10px;color:#9ca9b8;margin:0 0 10px;letter-spacing:1px}.sg-roster{display:flex;flex-direction:column;gap:7px}.sg-roster-row{display:flex;align-items:center;gap:11px;padding:10px 11px;background:#d8e6f305;border:1px solid #a4b8cc10;border-radius:9px;font-size:12px}.sg-mini-planet{width:23px;height:23px;border-radius:50%;background:radial-gradient(circle at 30% 28%,#ffffffa8,var(--planet) 27%,#152237 95%);box-shadow:0 0 12px color-mix(in srgb,var(--planet) 18%,transparent);flex-shrink:0}.sg-roster-name{flex:1;color:#cbd6e3;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.sg-small-tag{font-size:8px;color:#7e8c9e;border:1px solid #7e8c9e35;border-radius:3px;padding:2px 4px;letter-spacing:1px;margin-left:6px}.sg-ready-status{font-size:9px;color:#7e8c9e;white-space:nowrap}.sg-ready-status.ready{color:#b9f6ca}.sg-panel-buttons{display:flex;gap:9px;margin-top:22px}.sg-primary,.sg-secondary{border-radius:9px;min-height:44px;padding:12px 17px;font-size:12px;letter-spacing:1px;border:1px solid transparent;flex:1}.sg-primary{background:#b9f6ca;color:#10221b;font-weight:700;box-shadow:0 0 28px #b9f6ca0b}.sg-primary:hover{background:#d2ffdf}.sg-secondary{background:#c5d4e806;border-color:#afc3d72b;color:#b0bece}.sg-secondary:hover{background:#c5d4e810;border-color:#afc3d75b}.sg-panel-note{text-align:center;font-size:10px;line-height:1.8;color:#6f8092;margin:13px 0 0}.sg-progress{width:30px;height:30px;border:2px solid #b9f6ca20;border-top-color:#b9f6ca;border-radius:50%;animation:sg-spin 1s linear infinite;margin-bottom:24px}@keyframes sg-spin{to{transform:rotate(360deg)}}.sg-status{position:absolute;top:87px;left:50%;transform:translateX(-50%);padding:7px 13px;border:1px solid #e2c18f3b;background:#171c26d9;color:#e4c698;font-size:10px;border-radius:6px;white-space:nowrap}.sg-status[hidden]{display:none}.sg-toast{position:absolute;left:50%;top:110px;transform:translateX(-50%);color:#c9f7dc;background:#101d1dec;border:1px solid #b9f6ca35;border-radius:8px;font-size:12px;padding:11px 19px;transition:opacity .2s;pointer-events:none;opacity:0}.sg-toast.show{opacity:1}.sg-result-place{font:500 70px ui-monospace,monospace;color:#d4b5ff;letter-spacing:-5px;margin:15px 0 6px}.sg-result-grid{display:flex;gap:20px;margin:20px 0;padding:17px 0;border-top:1px solid #a4b8cc20;border-bottom:1px solid #a4b8cc20}.sg-result-grid>div{flex:1}.sg-result-number{font:500 23px ui-monospace,monospace;color:#e6edf8;margin-bottom:6px}.sg-result-label{font-size:9px;color:#7f90a1;letter-spacing:1px}.sg-touch{display:none;position:absolute;inset:0;pointer-events:none}.sg-joystick{position:absolute;bottom:38px;left:27px;width:108px;height:108px;border:1px solid #b6cde42b;background:#b6cde407;border-radius:50%;pointer-events:auto;touch-action:none}.sg-joystick:before{content:'';position:absolute;inset:26px;border:1px dashed #b6cde424;border-radius:50%}.sg-joystick-knob{position:absolute;left:34px;top:34px;width:38px;height:38px;border:1px solid #b6cde46b;background:#b6cde415;border-radius:50%;box-shadow:0 0 22px #b6cde40b;pointer-events:none}.sg-mobile-hint{display:none}.sg-respawn{position:absolute;left:50%;top:58%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;color:#c7b7ed;font-size:12px;letter-spacing:2px}.sg-respawn strong{display:block;font:500 48px ui-monospace,monospace;margin-bottom:9px}.sg-respawn[hidden]{display:none}
       @media(max-width:700px){#gameOverlay .sg-top{top:18px;left:18px;right:18px}.sg-brand{gap:9px}.sg-symbol{width:30px;height:30px;font-size:21px}.sg-title{font-size:12px;letter-spacing:1px}.sg-subtitle{font-size:7px;letter-spacing:1.2px}.sg-round{top:54px;padding:8px 12px;gap:10px}.sg-round-label{font-size:8px}.sg-timer{font-size:17px}.sg-icon-btn{width:32px;height:32px;border-radius:8px}.sg-icon-btn svg{width:16px;height:16px}.sg-actions{gap:6px}.sg-rank{left:18px;top:119px;width:145px;padding:12px}.sg-rank-row{font-size:9px;gap:5px;margin-top:11px;grid-template-columns:11px 6px 1fr auto}.sg-rank-num,.sg-rank-score{font-size:9px}.sg-eyebrow{font-size:8px;letter-spacing:1.2px}.sg-rank-count{font-size:8px}.sg-rank-title{padding-bottom:9px}.sg-stat{right:18px;top:119px;width:112px;padding:12px}.sg-score{font-size:28px;margin-top:7px}.sg-score-label{font-size:8px}.sg-health{margin-top:12px}.sg-bottom{left:18px;right:24px;bottom:35px}.sg-controls{display:none}.sg-energy{width:105px;margin-left:auto}.sg-blast-button{border-radius:50%;width:84px;height:84px;flex-direction:column;padding:13px;gap:6px;font-size:10px;margin:13px auto 0;background:#bda1ff18;border-color:#ccb5ff73}.sg-blast-button svg{width:23px;height:23px}.sg-blast-button kbd{display:none}.sg-energy-caption{font-size:8px;letter-spacing:0}.sg-touch{display:block}.sg-room-code{bottom:13px;font-size:8px;letter-spacing:1px}.sg-panel-backdrop{padding:98px 18px 24px}.sg-panel{padding:24px;max-width:410px;border-radius:17px;max-height:calc(100dvh - 122px);overflow:auto}.sg-panel h2{font-size:26px;margin-top:17px}.sg-panel-desc{font-size:11px}.sg-code-box{margin:17px 0;padding:12px 14px}.sg-code{font-size:23px}.sg-roster-row{font-size:11px;padding:8px}.sg-panel-buttons{margin-top:18px}.sg-primary,.sg-secondary{padding:10px 9px;font-size:11px}.sg-status{top:103px;font-size:8px;padding:5px 9px}.sg-toast{top:102px;font-size:10px}.sg-result-place{font-size:50px}.sg-result-grid{margin:14px 0;padding:13px 0}.sg-result-number{font-size:20px}}
       @media(max-height:580px) and (min-width:701px){.sg-panel-backdrop{padding:65px 24px 20px}.sg-panel{max-height:calc(100vh - 85px);overflow:auto;padding:24px}.sg-panel h2{margin-top:12px}.sg-code-box{margin:13px 0}.sg-rank,.sg-stat{top:90px}.sg-bottom{bottom:18px}.sg-panel-buttons{margin-top:14px}.sg-roster-row{padding:7px 10px}}
       .sg-mass-label{font-size:9px;color:#b9f6ca;margin-top:10px;letter-spacing:1px}.sg-growth{margin-top:10px;height:3px;background:#283343;border-radius:5px;overflow:hidden}.sg-growth>i{display:block;background:#b9f6ca;height:100%;transition:width .2s}.sg-growth-caption{font-size:8px;color:#718295;margin-top:6px;line-height:1.6}.sg-upgrades{position:absolute;left:50%;bottom:113px;transform:translateX(-50%);width:min(670px,calc(100% - 60px));pointer-events:auto;padding:17px;border:1px solid #d4b5ff55;border-radius:15px;background:#101826f2;box-shadow:0 12px 60px #0008,0 0 70px #b79bff0b;backdrop-filter:blur(20px)}.sg-upgrades[hidden]{display:none}.sg-upgrade-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:13px}.sg-upgrade-title{font-size:13px;color:#e4d8ff;font-weight:650;letter-spacing:1px}.sg-upgrade-hint{font-size:9px;color:#8293a5}.sg-upgrade-cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.sg-upgrade-card{position:relative;text-align:left;border:1px solid #a5b5cc26;background:linear-gradient(150deg,#27263d99,#131d2c80);color:#e6ddf8;border-radius:10px;padding:15px 13px;min-height:115px;transition:transform .15s,border-color .15s}.sg-upgrade-card:hover,.sg-upgrade-card:focus-visible{transform:translateY(-4px);border-color:#d4b5ff90;background:linear-gradient(150deg,#423257aa,#1b2835aa)}.sg-upgrade-card:nth-child(2){background:linear-gradient(150deg,#233c3890,#131d2c80)}.sg-upgrade-card:nth-child(3){background:linear-gradient(150deg,#34332b90,#131d2c80)}.sg-upgrade-icon{font-size:22px;line-height:1;display:block;margin-bottom:12px;color:#d4b5ff}.sg-upgrade-card:nth-child(2) .sg-upgrade-icon{color:#b9f6ca}.sg-upgrade-card:nth-child(3) .sg-upgrade-icon{color:#e4cd9c}.sg-upgrade-name{font-size:12px;font-weight:600;display:block;margin-bottom:7px}.sg-upgrade-desc{font-size:10px;color:#98a8b9;line-height:1.7;display:block}.sg-upgrade-key{position:absolute;right:10px;top:11px;color:#7c7a93;font:9px ui-monospace,monospace;border:1px solid #7c7a9344;padding:2px 5px;border-radius:3px}.sg-upgrade-active{position:absolute;right:34px;top:300px;width:159px;color:#8191a5;font-size:9px;line-height:1.9;pointer-events:none}.sg-upgrade-active b{color:#c8b6ef;font-weight:400}.sg-touch-utility{display:none;position:absolute;right:128px;bottom:40px;gap:10px;pointer-events:auto;flex-direction:column}.sg-touch-utility button{width:46px;height:46px;border:1px solid #b8d2ed44;background:#182435dc;color:#c1d2e5;border-radius:50%;font-size:10px}.sg-touch-utility button:first-child{border-color:#b9f6ca66;color:#b9f6ca}
@@ -66,9 +67,9 @@
       <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
       <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div><div class="sg-health" id="sgHealth"></div><div class="sg-hp-label"><span>星球护盾</span><span id="sgHp">100%</span></div></div>
-      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div><div class="sg-control"><span class="sg-key">SHIFT</span><span>加速</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向引力波</span><kbd>E</kbd></button></div></div>
+      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div><div class="sg-control"><span class="sg-key">Q</span><span>吐球</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向引力波</span><kbd>E</kbd></button></div></div>
       <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div>
-      <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><button class="sg-touch-boost" id="sgTouchBoost" aria-label="按住加速">加速</button><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button><button id="sgTouchEject">吐球</button></div></div>
+      <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button><button id="sgTouchEject">吐球</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
       <div class="sg-panel-backdrop" id="sgPanelBackdrop"><section class="sg-panel" id="sgPanel" aria-live="polite"></section></div>
     `;
@@ -106,15 +107,9 @@
     joystick.addEventListener('pointerup', releaseJoystick);
     joystick.addEventListener('pointercancel', releaseJoystick);
     joystick.addEventListener('lostpointercapture', releaseJoystick);
-    $('sgTouchBoost').addEventListener('pointerdown', (e) => { e.preventDefault(); boostTouch = true; boostPointerId = e.pointerId; e.currentTarget.setPointerCapture(e.pointerId); sendInput(); });
-    const releaseBoost = () => { boostTouch = false; boostPointerId = null; sendInput(); };
-    $('sgTouchBoost').addEventListener('pointerup', releaseBoost);
-    $('sgTouchBoost').addEventListener('pointercancel', releaseBoost);
-    $('sgTouchBoost').addEventListener('lostpointercapture', releaseBoost);
     const releaseHeldPointer = (e) => {
       let released = false;
       if (joystickPointer === e.pointerId) { resetJoystick(); released = true; }
-      if (boostPointerId === e.pointerId) { boostTouch = false; boostPointerId = null; released = true; }
       if (released) sendInput();
     };
     addEventListener('pointerup', releaseHeldPointer);
@@ -146,7 +141,7 @@
     if ($('sgJoystickKnob')) $('sgJoystickKnob').style.transform = '';
   }
   function resetHeldInputs(sendStop = true) {
-    keys.clear(); boostTouch = false; boostPointerId = null;
+    keys.clear();
     resetJoystick();
     inputPulse = false; splitPulse = false; ejectPulse = false;
     if (sendStop) sendInput();
@@ -159,7 +154,6 @@
     if (/^[wasdqe]$/i.test(key)) return `Key${key.toUpperCase()}`;
     if (/^[123]$/.test(key)) return `Digit${key}`;
     if (key === ' ' || key === 'Spacebar') return 'Space';
-    if (key === 'Shift') return event.location === 2 ? 'ShiftRight' : 'ShiftLeft';
     if (['Up', 'Down', 'Left', 'Right'].includes(key)) return `Arrow${key}`;
     return key;
   }
@@ -203,9 +197,10 @@
     currentOptions = { ...options, mode };
     active = true; joined = false; reconnecting = false; intentionalClose = false; retries = 0;
     resetHeldInputs(false);
+    renderTimeline = null;
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
     lastScore = 0; lastUpgradeKey = ''; lastShatteredAt = 0; drawnPlayers.clear(); drawnDust.clear(); particles.length = 0; seenBlasts.clear();
-    cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
+    cellTracks.clear(); dustTracks.clear(); materializedDust.clear(); seenImpacts.clear(); waveVisuals.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); predictedCells.clear(); inputHistory.length = 0; domCache.clear();
     inputSeq = 0; lastInputAck = 0; lastMovementSeq = 0; rtt = null; fps = 0; frameCount = 0; fpsStarted = 0;
     camera = { x: NaN, y: NaN, scale: width < 700 ? .8 : .95 };
     inputPulse = false; splitPulse = false; ejectPulse = false;
@@ -275,7 +270,7 @@
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
     reconnecting = true; retries += 1; resetHeldInputs(false);
-    predictedCells.clear(); remotePhysics.clear(); contactEpisodes.clear(); inputHistory.length = 0; waveVisuals.clear();
+    predictedCells.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); inputHistory.length = 0; waveVisuals.clear(); renderTimeline = null;
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
@@ -283,7 +278,7 @@
   function showConnectionError(message) {
     reconnecting = false; clearTimeout(retryTimer);
     waveVisuals.clear();
-    remotePhysics.clear(); contactEpisodes.clear();
+    remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); renderTimeline = null;
     resetHeldInputs(false);
     intentionalClose = true; socket?.close();
     showPanel(`<div class="sg-eyebrow">CONNECTION LOST</div><h2>信号暂时消失了</h2><p class="sg-panel-desc">${esc(message)}</p><div class="sg-panel-buttons"><button class="sg-primary" id="sgErrorExit">返回大厅</button></div>`);
@@ -303,7 +298,7 @@
   function closeSession(notify = true) {
     intentionalClose = true; active = false;
     waveVisuals.clear();
-    remotePhysics.clear(); contactEpisodes.clear(); remoteContactPositions.clear();
+    remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); remoteContactPositions.clear(); renderTimeline = null;
     clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
     send({ type: 'leave' }); socket?.close(); socket = null;
     resetHeldInputs(false);
@@ -359,38 +354,74 @@
   }
 
   function emitContactEffects(current, previous) {
-    if (previous?.round !== current.round) seenImpacts.clear();
+    if (previous?.round !== current.round) { seenImpacts.clear(); predictedContactEffects.clear(); }
     const events = new Map();
     for (const player of current.players) {
       const impact = player.lastImpact;
       if (!impact?.id) continue;
       let event = events.get(impact.id);
-      if (!event) { event = { impact, colors: [] }; events.set(impact.id, event); }
+      if (!event) { event = { impact, colors: [], players: [] }; events.set(impact.id, event); }
       event.colors.push(safeColor(player.color));
+      event.players.push(player.id);
     }
-    for (const { impact, colors } of events.values()) {
+    const at = performance.now();
+    trimPredictedContactEffects(at);
+    for (const { impact, colors, players } of events.values()) {
       if (seenImpacts.has(impact.id)) continue;
       seenImpacts.set(impact.id, impact.at);
       const age = current.time - impact.at;
       // A first snapshot establishes a baseline; old contacts never replay on join.
       if (current.status !== 'playing' || previous?.status !== 'playing' || previous.round !== current.round || !Number.isFinite(age) || age < -.02 || age > .35 || !Number.isFinite(impact.x) || !Number.isFinite(impact.y)) continue;
-      const speed = Math.max(0, impact.speed || 0);
-      if (!impact.fractured && speed <= 12) continue;
-      const strength = clamp(Math.max(impact.fractured ? .3 : 0, (speed - 12) / 360), 0, 1);
-      const normalLength = Math.hypot(impact.normalX, impact.normalY) || 1, nx = (impact.normalX || 0) / normalLength, ny = (impact.normalY || 0) / normalLength;
-      const angle = Math.atan2(ny, nx), radius = clamp(impact.radius || 8, 4, 32) * (.7 + strength * .5), duration = .12 + strength * .18;
-      particles.push({ kind: 'contact', x: impact.x, y: impact.y, radius, angle, strength, life: duration, duration, color: colors[0] });
-      const count = 2 + Math.round(strength * 6);
-      for (let i = 0; i < count; i++) {
-        const variance = .4 + Math.abs(Math.sin(i * 2.7 + impact.at * 4.3)) * .6;
-        const normal = (i % 2 ? 1 : -1) * (12 + strength * 65) * variance;
-        const tangent = (i % 4 < 2 ? 1 : -1) * (20 + strength * 125) * variance;
-        const life = .14 + strength * .25 + i % 2 * .03;
-        particles.push({ kind: 'chip', x: impact.x, y: impact.y, vx: nx * normal - ny * tangent, vy: ny * normal + nx * tangent, rotation: angle + i, size: 1 + strength * 1.7 + i % 2 * .4, life, duration: life, color: colors[i % colors.length] });
-      }
+      const predicted = predictedContactEffects.get(players.sort().join('|'));
+      const match = predicted?.find(effect => !effect.confirmed && at - effect.at < 900 &&
+        Math.hypot(effect.x - impact.x, effect.y - impact.y) < Math.max(80, (impact.speed || 0) * .4));
+      if (match) { match.confirmed = true; continue; }
+      const near = players.includes(myId) || [...remotePhysics.values()].some(proxy =>
+        players.includes(proxy.player?.id) && proxy.islandUntil > at);
+      const visualAge = near ? Math.max(0, age, (renderSimulationTime(at) + simulationLead * 1000) / 1000 - impact.at) : 0;
+      spawnContactParticles(impact, colors, visualAge);
     }
     for (const [id, at] of seenImpacts) if (current.time - at > 5) seenImpacts.delete(id);
     while (seenImpacts.size > 128) seenImpacts.delete(seenImpacts.keys().next().value);
+  }
+
+  function trimPredictedContactEffects(at) {
+    for (const [key, events] of predictedContactEffects) {
+      const recent = events.filter(event => at - event.at < 1000);
+      if (recent.length) predictedContactEffects.set(key, recent); else predictedContactEffects.delete(key);
+    }
+    while (predictedContactEffects.size > 128) predictedContactEffects.delete(predictedContactEffects.keys().next().value);
+  }
+
+  function emitPredictedContact(a, b, impact) {
+    const at = impact.at ?? performance.now();
+    if ((!a.own && !b.own && !(a.ref?.islandUntil > at) && !(b.ref?.islandUntil > at)) || impact.speed <= 12) return;
+    trimPredictedContactEffects(at);
+    const key = [a.player.id, b.player.id].sort().join('|'), recent = predictedContactEffects.get(key) || [];
+    if (recent.some(effect => at - effect.at < 200 && Math.hypot(effect.x - impact.x, effect.y - impact.y) < 80)) return;
+    recent.push({ at, x: impact.x, y: impact.y, confirmed: false });
+    predictedContactEffects.set(key, recent.slice(-4));
+    const radius = Math.min(32, Math.min(a.cell.radius, b.cell.radius) * .65);
+    spawnContactParticles({ ...impact, at: at / 1000, radius }, [safeColor(a.player.color), safeColor(b.player.color)]);
+  }
+
+  function spawnContactParticles(impact, colors, age = 0) {
+    const updatedAt = performance.now();
+    const speed = Math.max(0, impact.speed || 0);
+    if (!impact.fractured && speed <= 12) return;
+    const strength = clamp(Math.max(impact.fractured ? .3 : 0, (speed - 12) / 360), 0, 1);
+    const normalLength = Math.hypot(impact.normalX, impact.normalY) || 1, nx = (impact.normalX || 0) / normalLength, ny = (impact.normalY || 0) / normalLength;
+    const angle = Math.atan2(ny, nx), radius = clamp(impact.radius || 8, 4, 32) * (.7 + strength * .5), duration = .12 + strength * .18;
+    if (age < duration) particles.push({ kind: 'contact', x: impact.x, y: impact.y, radius, angle, strength, life: duration - age, duration, updatedAt, color: colors[0] });
+    const count = 2 + Math.round(strength * 6);
+    for (let i = 0; i < count; i++) {
+      const variance = .4 + Math.abs(Math.sin(i * 2.7 + impact.at * 4.3)) * .6;
+      const normal = (i % 2 ? 1 : -1) * (12 + strength * 65) * variance;
+      const tangent = (i % 4 < 2 ? 1 : -1) * (20 + strength * 125) * variance;
+      const life = .14 + strength * .25 + i % 2 * .03;
+      const vx = nx * normal - ny * tangent, vy = ny * normal + nx * tangent, decay = Math.exp(-age * 3), travel = (1 - decay) / 3;
+      if (age < life) particles.push({ kind: 'chip', x: impact.x + vx * travel, y: impact.y + vy * travel, vx: vx * decay, vy: vy * decay, rotation: angle + i + age * 2, size: 1 + strength * 1.7 + i % 2 * .4, life: life - age, duration: life, updatedAt, color: colors[i % colors.length] });
+    }
     if (particles.length > 180) particles.splice(0, particles.length - 180);
   }
 
@@ -449,7 +480,7 @@
         $('sgUpgradeCards').querySelectorAll('button').forEach((button) => { button.onclick = () => chooseUpgrade(Number(button.dataset.choice)); });
       }
     } else lastUpgradeKey = '';
-    const names = { speed: '光速引擎', growth: '星尘滋养', blast: '超新星回响', blastRange: '超新星回响', range: '超新星回响', energy: '能量核心', efficiency: '能量核心', magnet: '引力场', shield: '行星护盾', recovery: '恒星充能', regen: '恒星充能', cooldown: '脉冲加速' };
+    const names = { speed: '光速引擎', growth: '星尘滋养', blast: '超新星回响', blastRange: '超新星回响', range: '超新星回响', energy: '能量核心', efficiency: '能量核心', magnet: '引力场', shield: '行星护盾', recovery: '恒星充能', regen: '恒星充能', cooldown: '星波调谐' };
     setMarkup('sgUpgradeActive', (me?.upgrades || []).length ? `<span class="sg-eyebrow">已获得强化</span><br>${me.upgrades.map((u) => `<b>✧ ${esc(u.title || names[u.id] || u.id)}</b>${u.count > 1 ? ` ×${u.count}` : ''}`).join('<br>')}` : '');
   }
   function chooseUpgrade(index) {
@@ -548,7 +579,7 @@
     let y = (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) - (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0);
     if (!hasMovementKey() && Math.hypot(touchVector.x, touchVector.y) > .1) { x = touchVector.x; y = touchVector.y; }
     const length = Math.hypot(x, y); if (length > 1) { x /= length; y /= length; }
-    return { x, y, boost: keys.has('ShiftLeft') || keys.has('ShiftRight') || boostTouch };
+    return { x, y };
   }
 
   function getOwnCenter() {
@@ -581,9 +612,23 @@
     return { x: latest.x + latest.vx * dt, y: latest.y + latest.vy * dt };
   }
 
+  function renderSimulationTime(at) {
+    if (!renderTimeline) return room?._renderTime || 0;
+    const clock = renderTimeline, dt = Math.max(0, (at - clock.at) / 1000);
+    if (dt) {
+      // Packet arrival jitter changes the clock's target, never its position.
+      // Small continuous rate changes preserve a monotonic world reference.
+      const error = clock.target + at - clock.targetAt - (clock.time + dt * 1000);
+      const desiredRate = clamp(1 + error / 1000, .9, 1.1);
+      clock.rate += (desiredRate - clock.rate) * (1 - Math.exp(-dt * 2));
+      clock.time += dt * 1000 * clock.rate; clock.at = at;
+    }
+    return clock.time;
+  }
+
   function advanceOwnCell(state, cell, player, input, elapsed) {
     const moving = Math.hypot(input.x, input.y) > 0;
-    const speed = (input.boost && player.energy > 1 && moving ? 360 : 210) * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
+    const speed = 210 * (player.stats?.speed || 1) * Math.pow(36 / Math.max(1, cell.mass), .18);
     const rate = moving ? motionSettings.response : motionSettings.drag, dt = Math.max(0, elapsed), decay = Math.exp(-rate * dt);
     const targetX = input.x * speed, targetY = input.y * speed;
     const initialX = state.vx || 0, initialY = state.vy || 0;
@@ -603,13 +648,14 @@
 
   function replayOwnCell(cell, player, acknowledged, at) {
     const state = { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 };
-    if (!acknowledged || !Number.isFinite(player.inputAge)) return state;
-    const pending = inputHistory.filter(input => input.seq > acknowledged.seq && input.t <= at);
-    // inputAge is time already simulated by the server for the acknowledged
-    // command. Replay only its remaining time, then every unacknowledged command.
-    // RTT estimates and previously corrected render positions never enter physics.
-    const remaining = Math.max(0, ((pending[0]?.t ?? at) - acknowledged.t) / 1000 - player.inputAge);
-    advanceOwnCell(state, cell, player, acknowledged, Math.min(2, remaining));
+    const snapshotAt = at - simulationLead * 1000;
+    let command = acknowledged || player.steering || { x: 0, y: 0 };
+    for (const input of inputHistory) if (input.t <= snapshotAt) command = input;
+    const pending = inputHistory.filter(input => input.t > snapshotAt && input.t <= at);
+    // Both local authority and remote contact proxies represent server-now.
+    // The snapshot is one downlink old, not an entire input round trip old.
+    // Local controls remain immediate in the persistent prediction model.
+    advanceOwnCell(state, cell, player, command, Math.max(0, ((pending[0]?.t ?? at) - snapshotAt) / 1000));
     for (let i = 0; i < pending.length; i++) {
       const duration = Math.max(0, ((pending[i + 1]?.t ?? at) - pending[i].t) / 1000);
       advanceOwnCell(state, cell, player, pending[i], Math.min(2, duration));
@@ -622,14 +668,20 @@
     if (next.arena?.height > 0) WORLD.height = next.arena.height;
     motionSettings = { ...defaultMotion, ...next.motion };
     const snapshotAt = Number.isFinite(next.simulationTime) ? next.simulationTime : Number.isFinite(next.serverTime) ? next.serverTime : (next.time || 0) * 1000;
+    if (!renderTimeline || !room || next.round !== room.round || next.code !== room.code || snapshotAt < room._renderTime) {
+      renderTimeline = { time: snapshotAt, at, target: snapshotAt, targetAt: at, rate: 1 };
+    } else {
+      renderSimulationTime(at);
+      renderTimeline.target = snapshotAt; renderTimeline.targetAt = at;
+    }
     next._renderTime = snapshotAt; next._receivedAt = at;
     const own = next.players.find((p) => p.id === myId), previousOwn = room?.players?.find((p) => p.id === myId);
     const merged = own && previousOwn && own.cells.length < previousOwn.cells.length;
-    const collided = previousOwn && own?.collisionRevision !== previousOwn.collisionRevision;
     const acknowledged = inputHistory.find((input) => input.seq === own?.lastInputSeq);
-    simulationLead = acknowledged ? clamp((at - acknowledged.t) / 1000 - (own.inputAge || 0), 0, .45) : clamp((rtt || 0) / 1000, 0, .45);
+    const inputRoundTrip = acknowledged ? Math.max(0, at - acknowledged.t - (own.inputAge || 0) * 1000) : 0;
+    simulationLead = clamp((rtt ?? inputRoundTrip) / 2000, 0, .25);
     const cellsPresent = new Set(), dustPresent = new Set();
-    if (room && (next.round !== room.round || next.code !== room.code)) { remotePhysics.clear(); contactEpisodes.clear(); }
+    if (room && (next.round !== room.round || next.code !== room.code)) { remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); }
     for (const player of next.players) {
       const previousPlayer = room?.players?.find((p) => p.id === player.id);
       for (const cell of player.cells || []) {
@@ -644,31 +696,38 @@
           if (structural) {
             p = { x: model.x, y: model.y, vx: model.vx, vy: model.vy, offsetX: 0, offsetY: 0, model, normals: [], contactUntil: 0 };
             predictedCells.set(cell.id, p);
-          } else if (collided || p.contactUntil > at) {
-            // Keep the ongoing contact simulation. A revision is authority data,
-            // not a teleport or another collision impulse.
-            p.authority = model;
-            if (fractured) { p.model.vx = cell.vx || 0; p.model.vy = cell.vy || 0; }
           } else {
-            p.offsetX = p.x - model.x; p.offsetY = p.y - model.y;
-            p.model = model; p.authority = null;
+            // Keep one continuous local simulation. Replacing it at 15 Hz and
+            // hiding the replacement in a fading offset creates speed pulses.
+            if (fractured) { p.model.vx = cell.vx || 0; p.model.vy = cell.vy || 0; }
+            const newImpact = player.lastImpact?.id && player.lastImpact.id !== previousPlayer?.lastImpact?.id;
+            const revised = player.collisionRevision !== previousPlayer?.collisionRevision;
+            const velocityError = Math.hypot(model.vx - p.model.vx, model.vy - p.model.vy);
+            if ((newImpact && velocityError > 1) || (p.contactUntil <= at && revised && velocityError > motionSettings.restingThreshold)) {
+              // A server-only impact is real momentum, unlike ordinary ACK
+              // phase noise. Apply it once without moving the visible body.
+              p.model.vx = model.vx; p.model.vy = model.vy;
+              p.correctionX = p.correctionY = 0; p.contactUntil = at + 180; p.normals = [];
+            }
           }
-          p.modelAt = at; p.cell = cell; p.player = player;
+          if (structural) p.modelAt = at;
+          p.authority = { ...model }; p.authorityAt = at; p.cell = cell; p.player = player;
           p.stopConfirmed = Boolean(acknowledged && !acknowledged.x && !acknowledged.y);
         } else {
-          const steering = player.steering || { x: 0, y: 0, boost: false };
+          const steering = player.steering || { x: 0, y: 0 };
           const target = { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 };
           if (player.steering) advanceOwnCell(target, cell, player, steering, simulationLead);
           else { target.x += target.vx * Math.min(.15, simulationLead); target.y += target.vy * Math.min(.15, simulationLead); }
           let proxy = remotePhysics.get(key);
           if (!proxy || relocated || next.round !== room?.round) {
-            proxy = { model: { ...target }, authority: { ...target }, visual: { x: cell.x, y: cell.y }, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [] };
+            proxy = { model: { ...target }, authority: { ...target }, visual: { x: target.x, y: target.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [] };
             remotePhysics.set(key, proxy);
           } else {
             proxy.authority = target;
             if (fractured) { proxy.model.vx = cell.vx || 0; proxy.model.vy = cell.vy || 0; }
           }
           proxy.cell = cell; proxy.player = player; proxy.steering = steering;
+          proxy.modelAt ??= at; proxy.authorityAt = at;
         }
       }
     }
@@ -689,6 +748,12 @@
   function followAuthority(body, dt, at) {
     const ref = body.ref, target = ref.authority, model = body.position;
     if (!target) return;
+    if (ref.modelAt < ref.authorityAt) {
+      // A packet may arrive between two render frames. Keep the correction
+      // already in progress until both states reach the same simulation time.
+      if (body.own) { model.x += (ref.correctionX || 0) * dt; model.y += (ref.correctionY || 0) * dt; }
+      return;
+    }
     let dx = target.x - model.x, dy = target.y - model.y, dvx = target.vx - model.vx, dvy = target.vy - model.vy;
     if (ref.contactUntil > at) {
       // Old snapshots cannot pull a resting contact back through the surface.
@@ -699,6 +764,28 @@
         if (closingVelocity < 0) { dvx -= normal.x * closingVelocity; dvy -= normal.y * closingVelocity; }
       }
     }
+    if (body.own && ref.contactUntil <= at) {
+      // ACK timing is quantized by the server tick. Filter that phase error
+      // into a bounded correction velocity, separate from physical momentum.
+      const error = Math.hypot(dx, dy), limit = 30;
+      const scale = error > 0 ? Math.min(2, limit / error) : 0;
+      const blend = 1 - Math.exp(-dt * 8);
+      ref.correctionX = (ref.correctionX || 0) + (dx * scale - (ref.correctionX || 0)) * blend;
+      ref.correctionY = (ref.correctionY || 0) + (dy * scale - (ref.correctionY || 0)) * blend;
+      if (body.steering?.x || body.steering?.y) {
+        const speed = Math.hypot(model.vx, model.vy), nx = speed > 1e-7 ? model.vx / speed : 0, ny = speed > 1e-7 ? model.vy / speed : 0;
+        const opposing = ref.correctionX * nx + ref.correctionY * ny;
+        if (opposing < -speed * .2) { ref.correctionX -= nx * (opposing + speed * .2); ref.correctionY -= ny * (opposing + speed * .2); }
+      }
+      if (ref.stopConfirmed && Math.hypot(model.vx, model.vy, target.vx, target.vy) < motionSettings.stopSpeed && error < .03 && Math.hypot(ref.correctionX, ref.correctionY) < .15) {
+        model.x = target.x; model.y = target.y; ref.correctionX = ref.correctionY = 0;
+        return;
+      }
+      model.x = clamp(model.x + ref.correctionX * dt, body.cell.radius, WORLD.width - body.cell.radius);
+      model.y = clamp(model.y + ref.correctionY * dt, body.cell.radius, WORLD.height - body.cell.radius);
+      return;
+    }
+    ref.correctionX = ref.correctionY = 0;
     const blend = 1 - Math.exp(-dt * 10), error = Math.hypot(dx, dy), limit = (ref.contactUntil > at ? 30 : 100) * dt;
     const correction = error > 0 ? Math.min(blend, limit / error) : 0;
     model.x = clamp(model.x + dx * correction, body.cell.radius, WORLD.width - body.cell.radius);
@@ -715,7 +802,7 @@
         let ref = own ? predictedCells.get(cell.id) : remotePhysics.get(key);
         if (!ref) {
           if (own) continue;
-          ref = { model: { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 }, visual: { x: cell.x, y: cell.y }, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [], cell, player, steering: player.steering || { x: 0, y: 0, boost: false } };
+          ref = { model: { x: cell.x, y: cell.y, vx: cell.vx || 0, vy: cell.vy || 0 }, visual: { x: cell.x, y: cell.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [], cell, player, steering: player.steering || { x: 0, y: 0 } };
           remotePhysics.set(key, ref);
         }
         const position = ref.model || ref;
@@ -733,10 +820,20 @@
     for (let i = 0; i < steps; i++) {
       for (const body of bodies) {
         const p = body.position, ref = body.ref, steering = body.own ? input : ref.steering;
+        body.steering = steering;
         body.previousX = p.x; body.previousY = p.y;
-        advanceOwnCell(p, body.cell, body.player, steering, step);
-        if (ref.authority) advanceOwnCell(ref.authority, body.cell, body.player, steering, step);
-        followAuthority(body, step, at);
+        const endAt = at - (steps - i - 1) * step * 1000;
+        const elapsed = clamp((endAt - (ref.modelAt ?? endAt - step * 1000)) / 1000, 0, step);
+        const speed = 210 * (body.player.stats?.speed || 1) * Math.pow(36 / Math.max(1, body.cell.mass), .18);
+        body.motion = { x: p.x, y: p.y, vx: p.vx, vy: p.vy, targetX: steering.x * speed, targetY: steering.y * speed, rate: Math.hypot(steering.x, steering.y) > 0 ? motionSettings.response : motionSettings.drag, dt: elapsed };
+        advanceOwnCell(p, body.cell, body.player, steering, elapsed);
+        ref.modelAt = Math.max(ref.modelAt || 0, endAt);
+        if (ref.authority && endAt > ref.authorityAt) {
+          advanceOwnCell(ref.authority, body.cell, body.player, steering, (endAt - ref.authorityAt) / 1000);
+          ref.authorityAt = endAt;
+        }
+        followAuthority(body, elapsed, at);
+        Object.assign(body.motion, { freeX: p.x, freeY: p.y, freeVx: p.vx, freeVy: p.vy });
       }
       collidePredictedBodies(at, step, bodies);
     }
@@ -757,6 +854,58 @@
     }
   }
 
+  function validPredictedTrajectory(body) {
+    const m = body.motion, p = body.position, r = body.cell.radius;
+    return m && m.dt > 0 && Math.abs(p.x - m.freeX) + Math.abs(p.y - m.freeY) + Math.abs(p.vx - m.freeVx) + Math.abs(p.vy - m.freeVy) <= 1e-7 && p.x > r && p.x < WORLD.width - r && p.y > r && p.y < WORLD.height - r;
+  }
+  function predictedTrajectoryAt(m, seconds) {
+    if (m.sweepTime === undefined) {
+      const integral = (1 - Math.exp(-m.rate * m.dt)) / m.rate;
+      // Reconciliation changes position independently of physical momentum.
+      m.driftX = (m.freeX - (m.x + m.targetX * m.dt + (m.vx - m.targetX) * integral)) / m.dt;
+      m.driftY = (m.freeY - (m.y + m.targetY * m.dt + (m.vy - m.targetY) * integral)) / m.dt;
+      m.sweepTime = 0; m.sweepX = m.x; m.sweepY = m.y; m.sweepVx = m.vx; m.sweepVy = m.vy;
+    }
+    const elapsed = Math.max(0, seconds - m.sweepTime), decay = Math.exp(-m.rate * elapsed), integral = (1 - decay) / m.rate;
+    return { x: m.sweepX + m.targetX * elapsed + (m.sweepVx - m.targetX) * integral + m.driftX * elapsed,
+      y: m.sweepY + m.targetY * elapsed + (m.sweepVy - m.targetY) * integral + m.driftY * elapsed,
+      vx: m.targetX + (m.sweepVx - m.targetX) * decay, vy: m.targetY + (m.sweepVy - m.targetY) * decay,
+      driftX: m.driftX, driftY: m.driftY };
+  }
+  function resolvePredictedRemainder(a, b, fraction, restitution) {
+    const am = a.motion, bm = b.motion, radius = a.cell.radius + b.cell.radius;
+    if (!validPredictedTrajectory(a) || !validPredictedTrajectory(b) || Math.abs(am.dt - bm.dt) > 1e-8) return false;
+    const startTime = Math.max(am.sweepTime || 0, bm.sweepTime || 0), startA = predictedTrajectoryAt(am, startTime), startB = predictedTrajectoryAt(bm, startTime);
+    if (Math.hypot(startA.x - startB.x, startA.y - startB.y) < radius - 1e-6) return false;
+    let seconds = am.dt * fraction;
+    for (let i = 0; i < 5; i++) {
+      const ap = predictedTrajectoryAt(am, seconds), bp = predictedTrajectoryAt(bm, seconds), dx = ap.x - bp.x, dy = ap.y - bp.y;
+      const error = dx * dx + dy * dy - radius * radius;
+      if (Math.abs(error) < 1e-8) break;
+      const derivative = 2 * (dx * (ap.vx + ap.driftX - bp.vx - bp.driftX) + dy * (ap.vy + ap.driftY - bp.vy - bp.driftY));
+      if (Math.abs(derivative) < 1e-10) return false;
+      seconds = clamp(seconds - error / derivative, startTime, am.dt);
+    }
+    const ap = predictedTrajectoryAt(am, seconds), bp = predictedTrajectoryAt(bm, seconds), distance = Math.hypot(ap.x - bp.x, ap.y - bp.y);
+    if (Math.abs(distance - radius) > 1e-5) return false;
+    const nx = (ap.x - bp.x) / distance, ny = (ap.y - bp.y) / distance;
+    const closing = -((ap.vx - bp.vx) * nx + (ap.vy - bp.vy) * ny);
+    if (closing <= 1e-7) return false;
+    if (restitution > 0) emitPredictedContact(a, b, { x: ap.x - nx * a.cell.radius, y: ap.y - ny * a.cell.radius,
+      normalX: nx, normalY: ny, speed: closing, at: performance.now() });
+    const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass);
+    const impulse = (1 + (closing > motionSettings.restingThreshold ? restitution : 0)) * closing / (inverseA + inverseB);
+    const remaining = am.dt - seconds;
+    for (const [body, magnitude, contact] of [[a, impulse * inverseA, ap], [b, -impulse * inverseB, bp]]) {
+      const decay = Math.exp(-body.motion.rate * remaining), displacement = (1 - decay) / body.motion.rate;
+      body.position.x += magnitude * nx * displacement; body.position.y += magnitude * ny * displacement;
+      body.position.vx += magnitude * nx * decay; body.position.vy += magnitude * ny * decay;
+      Object.assign(body.motion, { sweepTime: seconds, sweepX: contact.x, sweepY: contact.y, sweepVx: contact.vx + magnitude * nx, sweepVy: contact.vy + magnitude * ny,
+        freeX: body.position.x, freeY: body.position.y, freeVx: body.position.vx, freeVy: body.position.vy });
+    }
+    return true;
+  }
+
   function collidePredictedBodies(at, dt, suppliedBodies) {
     const contacted = new Set(), bodies = suppliedBodies || physicsBodies(), slop = motionSettings.contactSlop;
     function eligible(a, b) { return a.player !== b.player || (a.cell.mergeIn > 0 || b.cell.mergeIn > 0); }
@@ -766,10 +915,14 @@
         const a = bodies[i], b = bodies[j];
         if (!eligible(a, b) || (!a.own && !b.own && a.ref.islandUntil < at && b.ref.islandUntil < at)) continue;
         const pa = a.position, pb = b.position, radius = a.cell.radius + b.cell.radius;
+        const key = a.key < b.key ? `${a.key}|${b.key}` : `${b.key}|${a.key}`;
+        const old = contactEpisodes.get(key), fresh = !old || at - old.lastTouch > 250;
+        const sharedImpact = a.player.lastImpact?.id && a.player.lastImpact.id === b.player.lastImpact?.id && room.time - a.player.lastImpact.at < .35;
         let dx = pa.x - pb.x, dy = pa.y - pb.y, distance = Math.hypot(dx, dy), nx = distance > 1e-7 ? dx / distance : 1, ny = distance > 1e-7 ? dy / distance : 0;
         let hit = distance <= radius + slop, sweptHit = false;
-        if (iteration === 0) {
-          const sx = a.previousX - b.previousX, sy = a.previousY - b.previousY, vx = dx - sx, vy = dy - sy;
+        if (iteration === 0 && validPredictedTrajectory(a) && validPredictedTrajectory(b)) {
+          const startTime = Math.max(a.motion.sweepTime || 0, b.motion.sweepTime || 0), startA = predictedTrajectoryAt(a.motion, startTime), startB = predictedTrajectoryAt(b.motion, startTime);
+          const sx = startA.x - startB.x, sy = startA.y - startB.y, vx = dx - sx, vy = dy - sy;
           const aa = vx * vx + vy * vy, bb = 2 * (sx * vx + sy * vy), cc = sx * sx + sy * sy - radius * radius, discriminant = bb * bb - 4 * aa * cc;
           if (aa > 1e-9 && cc >= -slop && discriminant >= 0) {
             const impact = (-bb - Math.sqrt(discriminant)) / (2 * aa);
@@ -777,6 +930,9 @@
               const ix = sx + vx * clamp(impact, 0, 1), iy = sy + vy * clamp(impact, 0, 1), length = Math.hypot(ix, iy) || 1;
               if (vx * ix + vy * iy < 0) {
                 nx = ix / length; ny = iy / length; hit = true; sweptHit = true;
+                const fraction = (startTime + (a.motion.dt - startTime) * clamp(impact, 0, 1)) / a.motion.dt;
+                resolvePredictedRemainder(a, b, fraction, fresh && !sharedImpact ? motionSettings.restitution : 0);
+                dx = pa.x - pb.x; dy = pa.y - pb.y;
                 const depth = radius - (dx * nx + dy * ny);
                 if (depth > 1e-7) { separateCircles(a, b, nx, ny, depth); corrected = true; }
                 dx = pa.x - pb.x; dy = pa.y - pb.y; distance = Math.hypot(dx, dy);
@@ -789,10 +945,10 @@
         // before actual contact; the relative sweep supplies that contact.
         if (!sweptHit && distance > radius + 1e-7 && -((pa.vx - pb.vx) * nx + (pa.vy - pb.vy) * ny) > motionSettings.restingThreshold) continue;
         if (distance < radius - 1e-7) { separateCircles(a, b, nx, ny, radius - distance); corrected = true; }
-        const key = a.key < b.key ? `${a.key}|${b.key}` : `${b.key}|${a.key}`;
-        const old = contactEpisodes.get(key), fresh = !old || at - old.lastTouch > 250;
-        const sharedImpact = a.player.lastImpact?.id && a.player.lastImpact.id === b.player.lastImpact?.id && room.time - a.player.lastImpact.at < .35;
         const normalVelocity = (pa.vx - pb.vx) * nx + (pa.vy - pb.vy) * ny;
+        if (fresh && !sharedImpact && normalVelocity < -12) emitPredictedContact(a, b, {
+          x: pa.x - nx * a.cell.radius, y: pa.y - ny * a.cell.radius,
+          normalX: nx, normalY: ny, speed: -normalVelocity, at });
         if (normalVelocity < -1e-7) {
           const restitution = fresh && !sharedImpact && -normalVelocity > motionSettings.restingThreshold ? motionSettings.restitution : 0;
           const inverseA = 1 / Math.max(1, a.cell.mass), inverseB = 1 / Math.max(1, b.cell.mass), impulse = -(1 + restitution) * normalVelocity / (inverseA + inverseB);
@@ -849,7 +1005,7 @@
 
   function publishVisibleBodies(at, dt, bodies) {
     const ownBodies = bodies.filter((body) => body.own), visualBodies = [];
-    const sampleAt = room._renderTime + Math.max(0, at - room._receivedAt) - 100;
+    const sampleAt = renderSimulationTime(at) - 100;
     remoteContactPositions.clear(); remoteContactFrame = at;
     for (const body of bodies) {
       const ref = body.ref, model = body.position;
@@ -860,10 +1016,15 @@
       } else {
         for (const own of ownBodies) {
           const relativeSpeed = Math.hypot(model.vx - own.position.vx, model.vy - own.position.vy);
-          if (Math.hypot(model.x - own.position.x, model.y - own.position.y) < body.cell.radius + own.cell.radius + Math.max(70, relativeSpeed * (simulationLead + .12))) ref.islandUntil = at + 400;
+          // Start the display handoff before contact, giving the existing
+          // far-field image time to converge without a snap at the surface.
+          if (Math.hypot(model.x - own.position.x, model.y - own.position.y) < body.cell.radius + own.cell.radius + Math.max(110, relativeSpeed * (simulationLead + .5))) ref.islandUntil = at + 400;
         }
         const island = ref.islandUntil > at, target = island ? model : sampleTrack(cellTracks.get(body.key), sampleAt) || model;
-        if (island !== ref.island) { ref.offsetX = ref.visual.x - target.x; ref.offsetY = ref.visual.y - target.y; ref.island = island; }
+        if (!ref.presented) {
+          // There is no earlier image to preserve on a proxy's first frame.
+          ref.offsetX = ref.offsetY = 0; ref.island = island; ref.presented = true;
+        } else if (island !== ref.island) { ref.offsetX = ref.visual.x - target.x; ref.offsetY = ref.visual.y - target.y; ref.island = island; }
         ref.offsetX *= Math.exp(-dt * 12); ref.offsetY *= Math.exp(-dt * 12);
         ref.visual.x = target.x + ref.offsetX; ref.visual.y = target.y + ref.offsetY;
         visualBodies.push({ ...body, position: ref.visual });
@@ -904,7 +1065,17 @@
     const minScale = Math.max(width / 3200, height / 2300, mobile ? .3 : .35);
     targetScale = clamp(targetScale, minScale, mobile ? 1 : 1.15);
     if (!Number.isFinite(camera.x) || Math.hypot(camera.x - targetX, camera.y - targetY) > 1600) { camera.x = targetX; camera.y = targetY; camera.scale = targetScale; }
-    else { const follow = 1 - Math.exp(-dt * 9); camera.x += (targetX - camera.x) * follow; camera.y += (targetY - camera.y) * follow; camera.scale += (targetScale - camera.scale) * (1 - Math.exp(-dt * 3)); }
+    else {
+      const previousX = camera.targetX ?? targetX, previousY = camera.targetY ?? targetY;
+      const decay = Math.exp(-dt * 9), integral = (1 - decay) / 9;
+      const velocityX = dt > 0 ? (targetX - previousX) / dt : 0, velocityY = dt > 0 ? (targetY - previousY) / dt : 0;
+      // Follow a moving target through the whole frame, including long frames.
+      // Treating its final position as stationary makes the camera lurch ahead.
+      camera.x = targetX + (camera.x - previousX) * decay - velocityX * integral;
+      camera.y = targetY + (camera.y - previousY) * decay - velocityY * integral;
+      camera.scale += (targetScale - camera.scale) * (1 - Math.exp(-dt * 3));
+    }
+    camera.targetX = targetX; camera.targetY = targetY;
     camera.scale = Math.max(camera.scale, minScale);
     const halfW = width / 2 / camera.scale, halfH = height / 2 / camera.scale;
     camera.x = clamp(camera.x, Math.min(halfW - 35, WORLD.width / 2), Math.max(WORLD.width - halfW + 35, WORLD.width / 2));
@@ -920,7 +1091,7 @@
 
   function render(time) {
     if (!active || !ctx) return;
-    const dt = Math.min((time - (lastFrame || time)) / 1000, .05); lastFrame = time;
+    const dt = Math.min((time - (lastFrame || time)) / 1000, .25); lastFrame = time;
     if (!fpsStarted) fpsStarted = time;
     frameCount++; if (time - fpsStarted >= 700) { fps = Math.round(frameCount * 1000 / (time - fpsStarted)); frameCount = 0; fpsStarted = time; }
     predictOwn(dt, time); updateCamera(dt);
@@ -929,7 +1100,7 @@
     ctx.save(); ctx.translate(view.offsetX, view.offsetY); ctx.scale(view.scale, view.scale); drawArena(view);
     renderedDust = 0; renderedCells = 0;
     if (room) {
-      const sampleAt = room._renderTime + Math.max(0, time - room._receivedAt) - 100;
+      const sampleAt = renderSimulationTime(time) - 100;
       for (const dust of room.dust) {
         const position = sampleTrack(dustTracks.get(dust.id), sampleAt, 75) || dust;
         const radius = dust.fragment ? Math.sqrt(dust.value || 1) * 4 * 1.3 + 30 : 15;
@@ -957,11 +1128,13 @@
         }
       }
       for (let i = particles.length - 1; i >= 0; i--) {
-        const p = particles[i]; p.life -= dt;
+        const p = particles[i], particleDt = p.updatedAt === undefined ? dt : Math.max(0, (time - p.updatedAt) / 1000);
+        if (p.updatedAt !== undefined) p.updatedAt = Math.max(p.updatedAt, time);
+        p.life -= particleDt;
         if (p.life <= 0) { particles.splice(i, 1); continue; }
         if (p.kind === 'chip') {
-          p.x += p.vx * dt; p.y += p.vy * dt; p.rotation += dt * 2;
-          p.vx *= Math.exp(-dt * 3); p.vy *= Math.exp(-dt * 3);
+          p.x += p.vx * particleDt; p.y += p.vy * particleDt; p.rotation += particleDt * 2;
+          p.vx *= Math.exp(-particleDt * 3); p.vy *= Math.exp(-particleDt * 3);
           if (!visible(p.x, p.y, 10, view)) continue;
           ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rotation); ctx.globalAlpha = p.life / p.duration * .8; ctx.fillStyle = p.color;
           ctx.beginPath(); ctx.moveTo(-p.size, -p.size * .35); ctx.lineTo(p.size * .7, -p.size); ctx.lineTo(p.size, p.size * .6); ctx.closePath(); ctx.fill(); ctx.restore();
@@ -1076,7 +1249,7 @@
     for (const blast of current.blasts) {
       present.add(blast.id);
       const previousVisual = waveVisuals.get(blast.id);
-      waveVisuals.set(blast.id, { blast, receivedAt: current._receivedAt, missingSince: null, timeline: previousVisual?.timeline, completed: previousVisual?.completed || false });
+      waveVisuals.set(blast.id, { blast, receivedAt: current._receivedAt, simulationAt: current._renderTime, missingSince: null, timeline: previousVisual?.timeline, completed: previousVisual?.completed || false });
     }
     for (const [id, entry] of waveVisuals) {
       if (present.has(id)) continue;
@@ -1096,7 +1269,8 @@
     const timeline = visual?.timeline ?? (remote ? contactIsland ? simulationLead : -.1 : 0);
     if (visual && visual.timeline === undefined) visual.timeline = timeline;
     const currentTimeWave = remote && timeline >= 0;
-    const elapsed = clamp((time - receivedAt) / 1000 + timeline, remote && !currentTimeWave ? -.1 : 0, currentTimeWave ? .55 : remote ? .1 : .09);
+    const elapsedTime = remote && !currentTimeWave ? (renderSimulationTime(time) - (visual?.simulationAt ?? room?._renderTime ?? 0)) / 1000 + timeline : (time - receivedAt) / 1000 + timeline;
+    const elapsed = clamp(elapsedTime, remote && !currentTimeWave ? -.1 : 0, currentTimeWave ? .55 : remote ? .1 : .09);
     const renderedTravel = travel + speed * elapsed, front = clamp(renderedTravel, 0, distance);
     const originX = blast.originX ?? blast.x - directionX * travel, originY = blast.originY ?? blast.y - directionY * travel;
     if (visual && renderedTravel >= distance) visual.completed = true;
@@ -1121,7 +1295,6 @@
     ctx.save();
     if (player.connected === false) ctx.globalAlpha = .5;
     else if (player.invulnerable > 0) ctx.globalAlpha = .75 + Math.sin(time * .015) * .2;
-    if (player.boosting) { const velocity = Math.hypot(player.vx || 0, player.vy || 0); if (velocity > 0) { ctx.strokeStyle = `${color}33`; ctx.lineWidth = radius * .8; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(position.x, position.y); ctx.lineTo(position.x - player.vx / velocity * radius * 2.2, position.y - player.vy / velocity * radius * 2.2); ctx.stroke(); } }
     ctx.drawImage(sprite.canvas, position.x - sprite.center * scale, position.y - sprite.center * scale, sprite.canvas.width * scale, sprite.canvas.height * scale);
     ctx.strokeStyle = `${color}dd`; ctx.lineWidth = .95 / Math.max(.3, camera.scale); ctx.beginPath(); ctx.arc(position.x, position.y, radius, 0, Math.PI * 2); ctx.stroke();
     if (me && !decoration) { ctx.strokeStyle = `${color}aa`; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.arc(position.x, position.y, Math.max(2, radius - 3), -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp(player.hp / (player.stats?.maxHp || 100), 0, 1)); ctx.stroke(); }

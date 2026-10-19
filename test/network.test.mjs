@@ -79,7 +79,7 @@ test('network inputs stay authoritative and only the offered player may select a
     a.ws.send('{"type":"input","x":1e999,"y":"1","boost":1,"fire":"true","split":"true","eject":{},"mass":99999,"stats":{"speed":99}}');
     a.send({ type: 'ping', time: 'input-validation-complete' });
     await a.wait(m => m.type === 'pong' && m.time === 'input-validation-complete');
-    assert.deepEqual(playerA.input, { x: 0, y: 0, boost: false, fire: false, split: false, eject: false });
+    assert.deepEqual(playerA.input, { x: 0, y: 0, fire: false, split: false, eject: false });
     assert.equal(playerA.mass, 60);
     assert.equal(playerA.stats.speed, 1);
 

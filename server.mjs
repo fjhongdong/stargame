@@ -48,7 +48,7 @@ function prepareDustUpdate(session, snapshot) {
 
 /**
  * Wire API: create/join/quick/ready/start/input/leave/ping.
- * Input x/y are a direction vector; boost/fire are booleans. All match state is
+ * Input x/y are a direction vector; fire/split/eject are booleans. All match state is
  * authoritative. Clients receive welcome, joined, state, left, pong, or error.
  * Reconnect with /ws?token=<reconnectToken> within 30 seconds.
  */

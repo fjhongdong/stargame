@@ -177,7 +177,7 @@ test('snapshots retain precise simulation time, accepted steering and shared con
   const state = snapshotArena(arena);
   assert.equal(state.simulationTime, arena.time * 1000);
   assert.notEqual(state.simulationTime, state.time * 1000);
-  assert.deepEqual(state.players[0].steering, { x: player.input.x, y: player.input.y, boost: true });
+  assert.deepEqual(state.players[0].steering, { x: player.input.x, y: player.input.y });
   assert.equal(state.motion.physicsStep, 1 / 120);
   assert.equal(state.motion.restingThreshold, 60);
   assert.equal(state.motion.contactSlop, 0.01);
