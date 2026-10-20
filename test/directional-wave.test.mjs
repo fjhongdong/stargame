@@ -88,25 +88,25 @@ test('launch direction follows actual motion while opposite thrust is still brak
   near(wave.x, origin.x + wave.travel); near(wave.y, origin.y);
 });
 
-test('a stationary one-core wave uses the retained facing and spawns the whole arc ahead of its source', () => {
+test('a stationary one-core wave uses the retained facing and spawns the whole arc outside its source surface', () => {
   const { arena, player } = fixture(), owner = player('owner', 1000, 1000, 100);
   owner.direction = { x: 0, y: -1 };
   const main = owner.cells[0], wave = fire(arena, owner);
   assert.equal(wave.sourceCellId, main.id); near(wave.directionX, 0); near(wave.directionY, -1);
   near(wave.originX, main.x); near(wave.originY, main.y - wave.originOffset);
-  near(wave.originOffset, main.radius + wave.curvature + wave.thickness / 2 + 4);
+  near(wave.originOffset, main.radius + wave.thickness / 2 + 4);
   const initial = { ...wave, x: wave.originX, y: wave.originY };
   for (let i = 0; i <= 16; i++) {
     const point = waveArcPoint(initial, -1 + i / 8);
-    const forward = (point.x - main.x) * wave.directionX + (point.y - main.y) * wave.directionY;
-    assert.ok(forward - wave.thickness / 2 >= main.radius + 4 - 1e-7, 'even the curved tips start outside the source body');
+    const distance = Math.hypot(point.x - main.x, point.y - main.y);
+    assert.ok(distance - wave.thickness / 2 >= main.radius + 4 - 1e-7, 'the curved tips extend sideways and remain outside the actual round source');
   }
 });
 
 test('a range upgrade increases wave travel distance without changing forward propagation speed', () => {
   const { arena, player } = fixture(), owner = player('owner'); owner.stats.blastRange = 1.36;
-  const target = player('target', 1000 + 24 + WAVE.curvature + WAVE.thickness / 2 + 4 + 480);
   const wave = fire(arena, owner);
+  const target = player('target', wave.originX + 480, wave.originY);
   near(wave.distance, WAVE.distance * 1.36); assert.equal(wave.speed, WAVE.speed);
   advance(arena, .8); near(target.mass, 36 * .88); assert.ok(arena.blasts.includes(wave));
   advance(arena, .3); assert.ok(!arena.blasts.includes(wave));

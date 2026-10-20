@@ -50,7 +50,9 @@ test('forward and rear waves cover opposite sides, push the hit target once and 
   for (const mode of ['forward', 'rear']) {
     const { arena, player } = fixture(), owner = player('owner');
     Object.assign(owner.cells[0], { vx: 180 });
-    const front = player('front', 1078), rear = player('rear', 922);
+    // Put the target at the outer edge of the surface-emitted front so the
+    // zero-time assertion measures only the impulse, with no movement damping.
+    const front = player('front', 1072), rear = player('rear', 928);
     setPlayerInput(arena, owner.id, { [mode === 'rear' ? 'rearFire' : 'fire']: true }); stepArena(arena, 0);
     const wave = arena.blasts[0], hit = mode === 'rear' ? rear : front, safe = mode === 'rear' ? front : rear;
     assert.equal(hit.lastWaveHit.mode, mode); assert.equal(hit.lastWaveHit.ownerId, owner.id);

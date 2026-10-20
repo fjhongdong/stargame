@@ -24,7 +24,9 @@ function advance(arena, duration) {
 test('a wave knocks the actual body, sheds twelve percent, and conserves the post-impulse mass and momentum', () => {
   for (const mass of [1, 36, 3600]) for (const direction of [{ x: 1, y: 0 }, { x: .6, y: .8 }, { x: 0, y: -1 }]) {
     const { arena, player, owner, fire } = fixture(); owner.direction = direction;
-    const distance = Math.max(78, owner.radius + 4 * Math.sqrt(mass) + 4);
+    // A surface-launched front must hit a genuinely adjacent, nonoverlapping
+    // target; do not rely on the old muzzle spawning thirty units farther out.
+    const distance = owner.radius + 4 * Math.sqrt(mass) + 4;
     const target = player('target', owner.x + direction.x * distance, owner.y + direction.y * distance, mass);
     Object.assign(target.cells[0], { vx: 15, vy: -8 });
     const wave = fire(), expected = Math.max(WAVE.minKnockback, Math.min(WAVE.maxKnockback, WAVE.knockback * (36 / mass) ** .35));
@@ -43,7 +45,7 @@ test('a wave knocks the actual body, sheds twelve percent, and conserves the pos
 });
 
 test('one hit produces real coasting displacement and cannot repeatedly add impulse during subsequent overlap', () => {
-  const { arena, player, fire } = fixture(), target = player('target', 1078), before = target.cells[0].x;
+  const { arena, player, fire } = fixture(), target = player('target', 1070), before = target.cells[0].x;
   const wave = fire(), revision = target.collisionRevision, event = target.lastWaveHit;
   near(target.cells[0].vx, WAVE.knockback);
   const massAfter = target.mass, looseAfter = fragments(arena, target.id).length;
@@ -58,7 +60,7 @@ test('one hit produces real coasting displacement and cannot repeatedly add impu
 });
 
 test('a multi-cell victim receives impulse only on the cells actually intersected by the arc', () => {
-  const { arena, player, fire } = fixture(), target = player('target', 1078, 3970);
+  const { arena, player, fire } = fixture(), target = player('target', 1058, 3970);
   target.cells[0].mergeIn = SIBLING.launchGrace;
   target.cells.push({ ...target.cells[0], id: 'second-hit', y: 4030, mass: 16, radius: 16 });
   target.cells.push({ ...target.cells[0], id: 'outside-wave', y: 4240 });
@@ -87,11 +89,11 @@ test('spawn protection, rear position and wave ownership prevent both mass loss 
 });
 
 test('wave feedback identifies the impacted cell and is copied safely, retained after the wave and reset with a new round', () => {
-  const { arena, player, owner, fire } = fixture(), target = player('target', 1078);
+  const { arena, player, owner, fire } = fixture(), target = player('target', 1070);
   assert.equal(snapshotArena(arena).players.find(p => p.id === target.id).lastWaveHit, null);
   const wave = fire(), event = target.lastWaveHit;
   assert.equal(event.ownerId, owner.id); assert.equal(event.waveId, wave.id); assert.equal(event.cellId, target.cells[0].id);
-  near(event.x, 1078 - 24); near(event.y, 4000); near(event.directionX, 1); near(event.directionY, 0);
+  near(event.x, 1070 - 24); near(event.y, 4000); near(event.directionX, 1); near(event.directionY, 0);
   for (const key of ['at', 'x', 'y', 'directionX', 'directionY', 'impulse', 'hitCells', 'lostMass']) assert.ok(Number.isFinite(event[key]));
   assert.equal(event.mode, 'forward');
   for (const key of ['damage', 'hpAfter', 'maxHp', 'killed']) assert.ok(!(key in event), `wave feedback must not retain removed ${key}`);
@@ -101,7 +103,7 @@ test('wave feedback identifies the impacted cell and is copied safely, retained 
     assert.ok(!(key in p.stats), `stat snapshot must not retain removed ${key}`);
   }
   assert.deepEqual(wire, event); wire.hitCellIds.push('tampered'); wire.x = -1;
-  assert.deepEqual(event.hitCellIds, [target.cells[0].id]); near(event.x, 1054);
+  assert.deepEqual(event.hitCellIds, [target.cells[0].id]); near(event.x, 1046);
   advance(arena, .8);
   assert.equal(arena.blasts.length, 0); assert.equal(target.lastWaveHit.id, event.id);
   startRound(arena);
@@ -127,13 +129,14 @@ test('wave knockback near a world wall keeps bodies finite and confined while th
 
 test('small cores shed only the available mass above one, with no duplicate mass or hidden health elimination', () => {
   for (const mass of [1, 1.01, 1.1, 3, 36]) {
-    const { arena, player, fire } = fixture(), target = player('target', 1078, 4000, mass);
+    const { arena, player, owner, fire } = fixture();
+    const target = player('target', owner.x + owner.radius + 4 * Math.sqrt(mass) + 4, 4000, mass);
     fire();
     const lost = Math.min(mass * .12, Math.max(0, mass - 1));
     near(target.mass, mass - lost); assert.ok(target.mass >= 1); near(totalMass(arena), 36 + mass);
     fragments(arena, target.id).forEach(piece => near(piece.value, lost / 3));
   }
-  const { arena, player, owner, fire } = fixture(), target = player('target', 1078);
+  const { arena, player, owner, fire } = fixture(), target = player('target', 1060);
   for (let hit = 0; hit < 5; hit++) {
     owner.cooldown = 0; owner.energy = 100; setPlayerInput(arena, owner.id, { fire: false }); fire();
     assert.equal(target.cells.length, 1, 'repeated hits change motion and mass rather than triggering a removed health/death system');
@@ -152,7 +155,7 @@ test('wave fragments have a legal opening outside their source core at every wal
     const { arena, player, owner, fire } = fixture(), radius = 4 * Math.sqrt(mass);
     const x = dx < 0 ? radius : dx > 0 ? ARENA.width - radius : ARENA.width / 2;
     const y = dy < 0 ? radius : dy > 0 ? ARENA.height - radius : ARENA.height / 2;
-    const separation = Math.max(78, owner.radius + radius + 4);
+    const separation = owner.radius + radius + 4;
     Object.assign(owner, { x: x - dx * separation, y: y - dy * separation, direction: { x: dx, y: dy } });
     Object.assign(owner.cells[0], { x: owner.x, y: owner.y });
     const target = player('edge-target', x, y, mass);

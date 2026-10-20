@@ -26,7 +26,11 @@ function fixture({ sourceMass = 36, distance = 78, rear = false } = {}) {
   const fire = (mode = rear ? 'rear' : 'forward') => {
     setPlayerInput(arena, attacker.id, { [mode === 'rear' ? 'rearFire' : 'fire']: true });
     stepArena(arena, 0);
-    return arena.blasts.find(wave => wave.ownerId === attacker.id);
+    const wave = arena.blasts.find(wave => wave.ownerId === attacker.id);
+    // Fronts originate at the source surface; close test targets need a short
+    // genuine flight before a hit can arm the shell, rather than spawning on it.
+    if (distance <= 150) for (let i = 0; i < 30 && !attacker.dysonReady; i++) stepArena(arena, 1 / 120);
+    return wave;
   };
   const activate = (input = {}) => {
     setPlayerInput(arena, attacker.id, {});
@@ -78,6 +82,7 @@ test('a real forward or rear hit arms only its firing core and a fresh Space tra
 test('Space held before the hit cannot trigger a delayed shell, and an expired mark preserves ordinary splitting', () => {
   const held = fixture();
   setPlayerInput(held.arena, held.attacker.id, { fire: true, split: true }); stepArena(held.arena, 0);
+  for (let i = 0; i < 30 && !held.attacker.dysonReady; i++) stepArena(held.arena, 1 / 120);
   assert.ok(held.attacker.dysonReady); assert.equal(held.attacker.dyson, null);
   setPlayerInput(held.arena, held.attacker.id, { split: true }); stepArena(held.arena, .1);
   assert.equal(held.attacker.dyson, null, 'holding an earlier Space must not convert after its wave lands');
@@ -165,6 +170,8 @@ test('only the marked target core is intercepted while another target sibling an
 test('the converted core is excluded from ordinary gravity, pickup, solid collisions and meteor impacts', () => {
   const { arena, attacker, target, player, fire, activate } = fixture({ sourceMass: 400, distance: 150 });
   fire(); const source = activate(), victim = target.cells[0], before = conservedMass(arena);
+  // Isolate ordinary source-body pickup/gravity from the new remote wave pickup.
+  arena.blasts = [];
   const untouched = player('near-shell', victim.x, victim.y - 65, 1);
   const dust = putDust(arena, victim, { id: 'outside-target-gravity', x: victim.x + 200 });
   const withinSourceOnly = putDust(arena, victim, { id: 'inside-source-only', y: victim.y + 60 });

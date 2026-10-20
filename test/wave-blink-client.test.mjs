@@ -93,6 +93,7 @@ function client(initial, ping = 0) {
     timeline() { return renderTimeline; },
     hud() { updateHud(true); },send:sendInput,
     camera() { return camera; }, updateCamera,
+    presentation(id,owner='pilot') { const p=room.players.find(p=>p.id===owner),c=p.cells.find(c=>c.id===id);return planetPresentation(this.ref(id,owner),c,performance.now()); },
     effective(id) { const p=room.players.find(p=>p.id===myId),c=p.cells.find(c=>c.id===id);return c?effectiveCell(p,c,performance.now()):null; },
     dirty(id) { const key='pilot:'+id,ref=predictedCells.get(id);Object.assign(ref,{offsetX:70,offsetY:-20,correctionX:100,correctionY:-50,contactUntil:500,normals:[{x:1,y:0}]});
       contactEpisodes.set(key+'|target:target-core',{fixture:true});remoteContactPositions.set(key,{x:1,y:1});drawnPlayers.set(key,{x:1,y:1}); },
@@ -137,7 +138,21 @@ test('front and rear wave combos accept fresh Space or touch below split mass wi
     assert.ok(c.sent.every(message => !message.fire && !message.rearFire));
     assert.equal(c.api.ref('source'), ref); near(ref.x, before.x); near(ref.model.x, before.x);
     assert.equal(ref.model.mass, 36, 'requesting a combo cannot speculate an ordinary split');
+    c.time(90); const anticipating = c.api.presentation('source');
+    assert.ok(anticipating.blinkAnticipation > 0, 'a fresh blink request gives immediate bounded visual anticipation');
+    near(anticipating.x, before.x); near(anticipating.y, before.y);
+    near(ref.model.x, before.x); assert.ok(!ref.blinkVisual);
   }
+});
+
+test('the offscreen blink-candidate fallback preserves source-scaled wave geometry', () => {
+  const initial = state(), own = player(initial), wave = initial.blasts[0];
+  Object.assign(wave, { sourceRadius: 96, width: 640, thickness: 80, curvature: 120, radius: 340, originOffset: 140 });
+  Object.assign(own.waveBlinkReady, wave, { waveId: wave.id }); initial.blasts = [];
+  const c = client(initial), visual = c.api.wave();
+  assert.ok(visual, 'own candidate remains visible even when ordinary viewport culling omits the blast');
+  for (const field of ['sourceRadius', 'width', 'thickness', 'curvature', 'radius', 'originOffset']) assert.equal(visual.blast[field], wave[field]);
+  assert.equal(c.api.combo().kind, 'blink');
 });
 
 test('held Space does not auto-activate a newly arriving wave opportunity', () => {
@@ -184,6 +199,41 @@ test('removing the newest authoritative opportunity cannot fall back to an older
   assert.ok(expired.sent.every(message => !message.split));
   const ordinary = client(state({ blink: false, mass: 72 })); ordinary.key('Space');
   assert.ok(ordinary.sent.some(message => message.split), 'ordinary split remains the final fallback');
+});
+
+for (const refresh of [60, 120]) test(`${refresh} FPS blink finishes one short visual transition while physics immediately occupies the destination`, () => {
+  const c = client(state()); c.api.updateCamera(0);
+  const old = { x: c.api.ref('source').x, y: c.api.ref('source').y }, originalCamera = { ...c.api.camera() };
+  const next = blinkPacket(state({ time: .1 }), { time: .1, dx: 420 });
+  c.time(100); c.api.packet(next); c.api.updateCamera(0);
+  const ref = c.api.ref('source'), destination = { x: ref.model.x, y: ref.model.y };
+  near(ref.x, destination.x); near(ref.model.mass, 36);
+  near(c.api.presentation('source').x, old.x);
+  near(c.api.camera().x, originalCamera.x);
+  const duration = ref.blinkVisual.duration, start = ref.blinkVisual.startedAt;
+  let previous = old.x, finished = false;
+  for (let frame = 1; frame <= Math.ceil(.4 * refresh); frame++) {
+    const elapsed = frame * 1000 / refresh;
+    c.time(100 + elapsed); c.api.frame(1 / refresh); c.api.updateCamera(1 / refresh);
+    const visible = c.api.presentation('source'), camera = c.api.camera();
+    near(ref.model.x, destination.x); near(ref.x, destination.x);
+    assert.ok(visible.x >= previous - 1e-7, 'visual warp must not reverse');
+    assert.ok(visible.x <= destination.x + 1e-7, 'visual warp must not overshoot the authoritative landing');
+    near(visible.x - camera.x, 0, 1e-6);
+    near(visible.y - camera.y, 0, 1e-6);
+    if (frame === 3) {
+      const repeated = structuredClone(next); repeated.time = (100 + elapsed) / 1000; repeated.simulationTime = 100 + elapsed;
+      c.api.packet(repeated);
+      assert.equal(c.api.ref('source'), ref);
+      assert.equal(ref.blinkVisual.startedAt, start, 'a normal packet cannot restart the warp');
+    }
+    if (elapsed >= duration) {
+      finished = true; near(visible.x, destination.x); near(camera.x, destination.x);
+      assert.equal(camera.warp, null, 'the camera must not add a slow catch-up after landing');
+    }
+    previous = visible.x;
+  }
+  assert.ok(finished); assert.equal(c.api.wave(), undefined); assert.equal(ref.blinkVisual, null);
 });
 
 test('a short authoritative blink resets only its source epoch while preserving unrelated waves and sibling continuity', () => {

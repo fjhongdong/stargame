@@ -84,7 +84,7 @@ function client(initial, ping = 0) {
   const api = context.window.dysonClientTest; api.start(initial, ping);
   function dispatch(key, event = {}) { for (const handler of listeners.get(key) || []) handler({ target: node('gameCanvas'), repeat: false, preventDefault() {}, ...event }); }
   return { api, sent, drawings, node, time: value => { clock = value; },
-    key: code => dispatch('window:keydown', { code, key: code }),
+    key: (code, repeat = false) => dispatch('window:keydown', { code, key: code, repeat }),
     release: code => dispatch('window:keyup', { code, key: code }),
     pointer: id => dispatch(`${id}:pointerdown`, { pointerType: 'touch', pointerId: 1 }),
     mouse: () => dispatch('window:mousemove', { clientX: 1200, clientY: 10 }),
@@ -105,7 +105,7 @@ test('fresh wave-hit Space and touch split activate the combo below ordinary spl
   assert.ok(ordinary.sent.some(message => message.split), 'ordinary splitting remains available without a combo');
 });
 
-test('an active shell ignores wave and split actions while ordinary movement input remains usable', () => {
+test('a newly active shell ignores wave and early split actions while ordinary movement input remains usable', () => {
   const c = client(state({ wrapped: true, extraCore: true }));
   for (const key of ['KeyE', 'KeyR', 'Space']) { c.key(key); c.release(key); }
   for (const id of ['sgBlast', 'sgRearBlast', 'sgTouchSplit']) c.pointer(id);
@@ -113,6 +113,49 @@ test('an active shell ignores wave and split actions while ordinary movement inp
   c.key('ArrowRight'); assert.equal(c.sent.at(-1).x, 1);
   c.release('ArrowRight'); c.mouse();
   assert.equal(c.api.intent().x, 0); assert.equal(c.api.intent().y, 0, 'mouse position must not steer a shell or an unrelated core');
+});
+
+test('Dyson exit enables after its minimum, locks during warning, and requires a new press to split after restoration', () => {
+  for (const control of ['keyboard', 'touch']) {
+    const c = client(state({ wrapped: true, mass: 72 })); c.api.hud();
+    assert.equal(c.node('sgTouchSplit').disabled, true);
+    c.key('Space');
+    const active = state({ wrapped: true, time: .65, mass: 72 });
+    active.players.find(p => p.id === 'pilot').dyson.canExitAt = .6;
+    c.time(650); c.api.packet(active); c.api.hud();
+    assert.equal(c.node('sgTouchSplit').disabled, false);
+    assert.equal(c.node('sgTouchSplit').textContent, '还原');
+    assert.equal(c.node('sgComboAction').textContent, '提前还原');
+    c.key('Space', true);
+    assert.equal(c.sent.filter(message => message.split).length, 0, 'holding through the minimum cannot auto-request exit');
+    c.release('Space');
+    if (control === 'keyboard') c.key('Space'); else c.pointer('sgTouchSplit');
+    assert.equal(c.sent.filter(message => message.split).length, 1);
+    const winding = structuredClone(active); winding.time = .7; winding.simulationTime = 700;
+    Object.assign(winding.players.find(p => p.id === 'pilot').dyson, { exitRequestedAt: .65, exitAt: .95,
+      exitDirectionX: 0, exitDirectionY: 1, exitPreview: { x: 6136.5, y: 4100, radius: 4 * Math.sqrt(72) } });
+    c.time(700); c.api.packet(winding); c.api.hud();
+    assert.equal(c.node('sgTouchSplit').disabled, true);
+    assert.equal(c.node('sgTouchSplit').textContent, '还原中');
+    assert.equal(c.node('sgComboAction').textContent, '正在还原');
+    const shell = c.api.shell(), target = c.api.target();
+    near(shell.exitPreview.x - shell.x, 0);
+    near(shell.exitPreview.y - shell.y, 100);
+    assert.ok(shell.exitRemaining > 0 && shell.exitRemaining <= .3);
+    c.release('Space'); c.key('Space'); c.release('Space'); c.pointer('sgTouchSplit');
+    assert.equal(c.sent.filter(message => message.split).length, 1, 'warning cannot be converted into an ordinary split');
+    const returned = state({ time: .95, mass: 72 }), own = returned.players.find(p => p.id === 'pilot');
+    Object.assign(own.cells[0], { x: 6200, y: 4100 });
+    own.dysonRevision = 2; own.dysonCooldown = 7.05;
+    own.lastDysonEnd = { id: 'exit-one', sourceCellId: 'source', at: .95, reason: 'early-exit', x: 6200, y: 4100 };
+    c.time(950); c.api.packet(returned); c.api.hud(); c.api.hold(null);
+    assert.equal(c.node('sgTouchSplit').disabled, false); assert.equal(c.node('sgTouchSplit').textContent, '分裂');
+    c.api.render();
+    assert.equal(c.sent.filter(message => message.split).length, 1);
+    if (control === 'keyboard') c.key('Space'); else c.pointer('sgTouchSplit');
+    assert.equal(c.sent.filter(message => message.split).length, 2, 'a distinct press after return permits normal mass-gated splitting');
+    assert.ok(c.sent.every(message => !message.fire && !message.rearFire));
+  }
 });
 
 test('multiple authoritative cores disable E and R until one core remains, without blocking split-after-launch combo state', () => {

@@ -21,7 +21,9 @@ function fixture(remote = false, ping = 0, simultaneousAttackers = false) {
   victim.cells.push({ ...first, id: 'second-core', x: 3000 });
   victim.cells.push({ ...first, id: 'untouched-core', x: 4000 });
   Object.assign(victim, { x: 3000, y: 4000, mass: 108, invulnerable: 0 });
-  const attackers = simultaneousAttackers ? [2078, 3078].map((x, i) => {
+  // The new front starts at the source surface. Keep both victims within its
+  // true initial thickness while preserving separate, nonoverlapping bodies.
+  const attackers = simultaneousAttackers ? [2070, 3070].map((x, i) => {
     const p = addPlayer(arena, { id: `attacker-${i}` });
     Object.assign(p, { x, y: 4000, energy: 100, invulnerable: 0, direction: { x: -1, y: 0 } });
     Object.assign(p.cells[0], { x, y: 4000 });

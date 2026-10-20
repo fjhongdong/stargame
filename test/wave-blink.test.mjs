@@ -119,7 +119,7 @@ test('a consumed wave cannot hit later or arm a late Dyson combo, while an other
   assert.equal(owner.cells.length, 1); assert.equal(owner.cells[0].id, sourceId); near(owner.mass, 36);
 
   const control = fixture(), controlTarget = control.player('target', 4300), liveWave = control.fire();
-  advance(control.arena, .35);
+  advance(control.arena, .4);
   assert.equal(controlTarget.lastWaveHit.waveId, liveWave.id); assert.ok(control.owner.dysonReady);
   control.space(); assert.ok(control.owner.dyson, 'real hits still retain the higher-priority Dyson combo');
 });
@@ -250,7 +250,9 @@ test('teleportation does not sweep the old source-to-front segment through inter
 
 test('a real unfinished Dyson cooldown does not impose a second cost or cooldown on a fresh unhit wave blink', () => {
   const { arena, owner, player, fire, space } = fixture(), target = player('target', 4078);
-  fire(); space(); assert.ok(owner.dyson);
+  fire();
+  for (let i = 0; i < 30 && !owner.dysonReady; i++) stepArena(arena, 1 / 120);
+  space(); assert.ok(owner.dyson);
   advance(arena, 2.4); assert.equal(owner.dyson, null); assert.ok(owner.dysonCooldown > 0);
   Object.assign(target.cells[0], { x: 9000, y: 7000, vx: 0, vy: 0 });
   const wave = fire(), energy = owner.energy, cooldown = owner.cooldown, dysonCooldown = owner.dysonCooldown;

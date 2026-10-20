@@ -8,9 +8,9 @@ export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, rest
   baseSpeed: 210, referenceMass: 36, speedExponent: 0.22 });
 export const SIBLING = Object.freeze({ launchGrace: 0.9, rangeBase: 600, rangeScale: 2,
   attraction: 900, radialDamping: 12, maxAcceleration: 4000, fusionDuration: 1.2 });
-export const DYSON = Object.freeze({ window: 0.9, duration: 2.4, cooldown: 8,
+export const DYSON = Object.freeze({ window: 0.9, duration: 2.4, cooldown: 8, minActive: 0.6, exitWindup: 0.3,
   returnClearance: 16, returnProtection: 0.3 });
-export const WAVE = Object.freeze({ speed: 600, distance: 420, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, clashRetention: 1.5, clashLimit: 64 });
+export const WAVE = Object.freeze({ speed: 600, distance: 420, referenceRadius: 24, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, clashRetention: 1.5, clashLimit: 64 });
 export const METEOR = Object.freeze({ count: 72, minSpeed: 180, maxSpeed: 300, minRadius: 3, maxRadius: 5,
   mass: 4, interaction: 'impact', nearPlayerCount: 3, nearRadius: 1200, nearSpawnMinDistance: 450,
   nearSpawnMaxDistance: 900, spawnClearance: 80, tailScale: 0.22, minTail: 40, maxTail: 75,
@@ -114,7 +114,7 @@ export function createArena({ random = Math.random, endless = false } = {}) {
   return { endless: endless === true, status: 'lobby', time: 0, remaining: endless === true ? null : ROUND_DURATION, round: 0, winnerId: null,
     players: new Map(), dust: [], blasts: [], meteors: [], meteorsInitialized: false, waveClashes: [], clashSerial: 0, serial: 0, random,
     dustGrid: null, activeDust: new Set(), naturalDustCount: 0, _dustOrderSerial: 0,
-    bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0 };
+    bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0, waveHarvestSerial: 0 };
 }
 
 function spawnPosition(arena) {
@@ -134,9 +134,9 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
   const player = { id, name: cleanName(name), color: skinColor(skin, arena.players.size), bot, ready,
     connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], energy: 60,
     score: 0, kills: 0, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
-    input: normalizeInput(), fireQueued: false, rearFireQueued: false, splitQueued: false, shatteredAt: -10,
+    input: normalizeInput(), fireQueued: false, rearFireQueued: false, splitQueued: false, splitQueuedAsExit: false, shatteredAt: -10,
     pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, lastWaveHit: null, lastMeteorHit: null,
-    dysonReady: null, dyson: null, dysonCooldown: 0, dysonRevision: 0, lastDysonEnd: null,
+    dysonReady: null, dyson: null, dysonCooldown: 0, dysonRevision: 0, lastDysonEnd: null, lastWaveHarvest: null,
     _latestWaveId: null, waveBlinkRevision: 0, lastWaveBlink: null,
     botState: null, direction: { x: 1, y: 0 } };
   player.cells.push(newCell(arena, position.x, position.y, START_MASS));
@@ -152,7 +152,10 @@ export function setPlayerInput(arena, id, input) {
   const next = normalizeInput(input);
   if (next.fire && !player.input.fire) player.fireQueued = true;
   if (next.rearFire && !player.input.rearFire) player.rearFireQueued = true;
-  if (next.split && !player.input.split) player.splitQueued = true;
+  if (next.split && !player.input.split) {
+    player.splitQueued = true;
+    player.splitQueuedAsExit = !!player.dyson;
+  }
   player.input = next;
   if (Number.isSafeInteger(input?.seq) && input.seq >= 0) player.pendingInputSeq = Math.max(player.pendingInputSeq, input.seq);
 }
@@ -299,29 +302,35 @@ function dysonTarget(arena, player) {
   return cell && !dysonOccupant(arena, target.id, cell.id, player.id) ? cell : null;
 }
 
+function dysonReturnPosition(arena, player, source) {
+  const shell = player.dyson;
+  const length = player.connected ? Math.hypot(player.input.x, player.input.y) : 0;
+  const nx = shell.exitDirectionX ?? (length > 0 ? player.input.x / length : -shell.directionX);
+  const ny = shell.exitDirectionY ?? (length > 0 ? player.input.y / length : -shell.directionY);
+  const angle = Math.atan2(ny, nx), distance = (shell._targetRadius ?? 0) + source.radius + DYSON.returnClearance;
+  let best = null;
+  search: for (let ring = 0; ring < 16; ring++) for (let i = 0; i < 48; i++) {
+    const turn = i === 0 ? 0 : Math.ceil(i / 2) * (i % 2 ? 1 : -1) * Math.PI / 24;
+    const offset = distance + ring * Math.max(32, source.radius);
+    const x = clamp(shell.x + Math.cos(angle + turn) * offset, source.radius, ARENA.width - source.radius);
+    const y = clamp(shell.y + Math.sin(angle + turn) * offset, source.radius, ARENA.height - source.radius);
+    let overlap = 0;
+    for (const other of arena.players.values()) if (other.respawnIn <= 0) for (const cell of other.cells) {
+      if (cell === source || cell.dysonId) continue;
+      overlap += Math.max(0, source.radius + cell.radius + 0.01 - Math.hypot(x - cell.x, y - cell.y));
+    }
+    if (!best || overlap < best.overlap) best = { x, y, overlap };
+    if (overlap === 0) break search;
+  }
+  return best;
+}
+
 function returnDysonSource(arena, player, reason, at = arena.time) {
   const shell = player.dyson;
   if (!shell) return;
   const source = player.cells.find(cell => cell.id === shell.sourceCellId);
   if (source) {
-    const length = player.connected ? Math.hypot(player.input.x, player.input.y) : 0;
-    const nx = length > 0 ? player.input.x / length : -shell.directionX;
-    const ny = length > 0 ? player.input.y / length : -shell.directionY;
-    const angle = Math.atan2(ny, nx), distance = (shell._targetRadius ?? 0) + source.radius + DYSON.returnClearance;
-    let best = null;
-    search: for (let ring = 0; ring < 16; ring++) for (let i = 0; i < 48; i++) {
-      const turn = i === 0 ? 0 : Math.ceil(i / 2) * (i % 2 ? 1 : -1) * Math.PI / 24;
-      const offset = distance + ring * Math.max(32, source.radius);
-      const x = clamp(shell.x + Math.cos(angle + turn) * offset, source.radius, ARENA.width - source.radius);
-      const y = clamp(shell.y + Math.sin(angle + turn) * offset, source.radius, ARENA.height - source.radius);
-      let overlap = 0;
-      for (const other of arena.players.values()) if (other.respawnIn <= 0) for (const cell of other.cells) {
-        if (cell === source || cell.dysonId) continue;
-        overlap += Math.max(0, source.radius + cell.radius + 0.01 - Math.hypot(x - cell.x, y - cell.y));
-      }
-      if (!best || overlap < best.overlap) best = { x, y, overlap };
-      if (overlap === 0) break search;
-    }
+    const best = dysonReturnPosition(arena, player, source);
     Object.assign(source, { x: best.x, y: best.y, vx: shell._targetVx ?? 0, vy: shell._targetVy ?? 0,
       impulseX: 0, impulseY: 0, dysonId: null, protectedFor: Math.max(source.protectedFor, DYSON.returnProtection),
       mergeIn: Math.max(source.mergeIn, DYSON.returnProtection), _motionDt: 0, _sweepTime: 0 });
@@ -363,9 +372,30 @@ function updateDysons(arena, at = arena.time) {
     shell.radius = target.radius + DYSON.returnClearance;
     shell._targetRadius = target.radius; shell._targetVx = source.vx = target.vx; shell._targetVy = source.vy = target.vy;
     source.impulseX = source.impulseY = 0;
-    if (at + 1e-9 >= shell.endsAt) returnDysonSource(arena, player, 'expired', shell.endsAt);
+    if (shell.exitAt != null) {
+      const exit = dysonReturnPosition(arena, player, source);
+      shell.exitPreview = { x: exit.x, y: exit.y, radius: source.radius };
+    }
+    const end = Math.min(shell.endsAt, shell.exitAt ?? Infinity);
+    if (at + 1e-9 >= end) returnDysonSource(arena, player, shell.exitAt != null ? 'early-exit' : 'expired', end);
     else syncPlayer(player);
   }
+}
+
+function requestDysonExit(arena, player, at) {
+  const shell = player.dyson;
+  if (!shell || shell.exitAt != null || at + 1e-9 < shell.canExitAt) return false;
+  const length = Math.hypot(player.input.x, player.input.y);
+  shell.exitDirectionX = length > 0 ? player.input.x / length : -shell.directionX;
+  shell.exitDirectionY = length > 0 ? player.input.y / length : -shell.directionY;
+  shell.exitRequestedAt = at;
+  shell.exitAt = Math.min(shell.endsAt, at + DYSON.exitWindup);
+  const source = player.cells.find(cell => cell.id === shell.sourceCellId);
+  if (source) {
+    const exit = dysonReturnPosition(arena, player, source);
+    shell.exitPreview = { x: exit.x, y: exit.y, radius: source.radius };
+  }
+  return true;
 }
 
 function activateDyson(arena, player, at) {
@@ -389,13 +419,18 @@ function activateDyson(arena, player, at) {
   const id = `dyson:${ready.id}`;
   source.dysonId = id; source.mergeIn = 0;
   player.dyson = { id, sourceCellId: source.id, targetId: targetPlayer.id, targetCellId: target.id,
-    startedAt: at, endsAt: at + DYSON.duration, x: target.x, y: target.y,
+    startedAt: at, endsAt: at + DYSON.duration, canExitAt: at + DYSON.minActive,
+    exitRequestedAt: null, exitAt: null, exitDirectionX: null, exitDirectionY: null, exitPreview: null,
+    x: target.x, y: target.y,
     radius: target.radius + DYSON.returnClearance, capturedMass: 0, directionX: ready.directionX, directionY: ready.directionY,
     _targetRadius: target.radius, _targetVx: target.vx, _targetVy: target.vy };
   source.x = target.x; source.y = target.y; source.vx = target.vx; source.vy = target.vy;
   source.impulseX = source.impulseY = 0;
   player._dysonCooldownUntil = at + DYSON.cooldown;
   player.dysonCooldown = DYSON.cooldown; player.dysonReady = null;
+  // A shell is a new combo branch. Older airborne fronts keep their normal
+  // flight, but cannot hijack the fresh post-return Space intended to split.
+  player._latestWaveId = null;
   player.dysonRevision++; player.collisionRevision++;
   player.fireQueued = player.rearFireQueued = false;
   syncPlayer(player);
@@ -415,7 +450,9 @@ function waveBlinkReady(arena, player) {
   if (!candidate) return null;
   const { wave } = candidate;
   return { waveId: wave.id, sourceCellId: wave.sourceCellId, x: wave.x, y: wave.y,
-    originX: wave.originX, originY: wave.originY, directionX: wave.directionX, directionY: wave.directionY,
+    originX: wave.originX, originY: wave.originY, originOffset: wave.originOffset,
+    directionX: wave.directionX, directionY: wave.directionY,
+    sourceRadius: wave.sourceRadius, width: wave.width, thickness: wave.thickness, curvature: wave.curvature, radius: wave.radius,
     speed: wave.speed, travel: wave.travel, distance: wave.distance,
     launchAt: wave.launchAt ?? arena.time - wave.travel / wave.speed,
     expiresAt: arena.time + (wave.distance - wave.travel) / wave.speed };
@@ -792,14 +829,15 @@ export function startRound(arena) {
   arena.meteorsInitialized = true;
   arena.waveClashes = [];
   arena.clashSerial = 0;
+  arena.waveHarvestSerial = 0;
   arena.bodyContacts = new Set();
   arena.fractureContacts = new Map();
   arena.impactSerial = 0;
   for (const player of arena.players.values()) {
     Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, energy: 60, score: 0, kills: 0,
-      respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, rearFireQueued: false, splitQueued: false,
+      respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, rearFireQueued: false, splitQueued: false, splitQueuedAsExit: false,
       shatteredAt: -10, collisionRevision: 0, lastImpact: null, lastWaveHit: null, lastMeteorHit: null,
-      dysonReady: null, dyson: null, dysonCooldown: 0, dysonRevision: 0, lastDysonEnd: null, _dysonCooldownUntil: 0, botState: null,
+      dysonReady: null, dyson: null, dysonCooldown: 0, dysonRevision: 0, lastDysonEnd: null, lastWaveHarvest: null, _dysonCooldownUntil: 0, botState: null,
       _latestWaveId: null, waveBlinkRevision: 0, lastWaveBlink: null,
       pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, input: normalizeInput() });
     player.cells = [newCell(arena, player.x, player.y, START_MASS)];
@@ -1383,6 +1421,7 @@ function gravityStrength(cell) {
 }
 
 function attractDust(arena, dt) {
+  arena._dustFrameSweep = 0;
   if (dt <= 0) return;
   const targets = new Map();
   for (const player of arena.players.values()) {
@@ -1405,6 +1444,8 @@ function attractDust(arena, dt) {
   }
   const damping = Math.exp(-2.3 * dt);
   for (const dust of arena.activeDust) {
+    dust._waveFrameAt = arena.time;
+    dust._waveFrameX = dust.x; dust._waveFrameY = dust.y;
     const target = targets.get(dust);
     let vx = finite(dust.vx), vy = finite(dust.vy);
     if (target && target.distanceSquared > 0.000001) {
@@ -1418,6 +1459,8 @@ function attractDust(arena, dt) {
     if (speed > maxSpeed) { vx *= maxSpeed / speed; vy *= maxSpeed / speed; }
     dust.x = clamp(dust.x + vx * dt, 8, ARENA.width - 8);
     dust.y = clamp(dust.y + vy * dt, 8, ARENA.height - 8);
+    if (!dust.fragment) arena._dustFrameSweep = Math.max(arena._dustFrameSweep,
+      Math.hypot(dust.x - dust._waveFrameX, dust.y - dust._waveFrameY));
     dust.vx = vx * damping;
     dust.vy = vy * damping;
     if (gridKey(dust.x, dust.y) !== dust._gridKey) { removeDustFromGrid(arena, dust); insertDust(arena, dust); }
@@ -1428,48 +1471,61 @@ function attractDust(arena, dt) {
   }
 }
 
-function collectDust(arena) {
-  const consumed = [];
+function dustInterceptors(arena) {
   const shells = new Map();
   for (const owner of arena.players.values()) if (owner.dyson) {
     const source = owner.cells.find(cell => cell.id === owner.dyson.sourceCellId);
     if (source) shells.set(`${owner.dyson.targetId}:${owner.dyson.targetCellId}`, { owner, source, shell: owner.dyson });
   }
+  return shells;
+}
+
+function awardDust(arena, player, cell, dust, shells, at = arena.time) {
+  if (dust._consumed || at < (dust.collectAfter ?? 0) ||
+      (dust.ownerId === player.id && at < dust.availableAt)) return null;
+  const intercepted = shells.get(`${player.id}:${cell.id}`);
+  const capture = intercepted && !(dust.ownerId === intercepted.owner.id && at < dust.availableAt) ? intercepted : null;
+  const receiver = capture?.owner ?? player, receiverCell = capture?.source ?? cell;
+  const gain = dust.value * (dust.fragment ? 1 : receiver.stats.growth);
+  receiverCell.mass += gain;
+  receiverCell.radius = 4 * Math.sqrt(receiverCell.mass);
+  if (capture) { capture.shell.capturedMass += gain; syncPlayer(receiver); }
+  if (!dust.fragment) {
+    receiver.score += 2 * dust.value;
+    receiver.energy = Math.min(100, receiver.energy + 4 * dust.value);
+    arena.naturalDustCount--;
+  }
+  dust._consumed = true;
+  return { receiver, receiverCell, gain };
+}
+
+function removeCollectedDust(arena, consumed) {
+  if (!consumed.length) return;
+  for (const dust of consumed) { removeDustFromGrid(arena, dust); arena.activeDust.delete(dust); }
+  arena.dust = arena.dust.filter(dust => !dust._consumed);
+  arena._indexedDust = arena.dust;
+  arena._indexedCount = arena.dust.length;
+  arena._indexedItems = arena.dust.slice();
+}
+
+function collectDust(arena) {
+  const consumed = [], shells = dustInterceptors(arena);
   for (const player of arena.players.values()) {
     if (player.respawnIn > 0) continue;
     for (const cell of player.cells) {
       if (cell.dysonId) continue;
-      const intercepted = shells.get(`${player.id}:${cell.id}`);
       const range = cell.radius + 5;
       visitDustRect(arena, cell.x - range, cell.y - range, cell.x + range, cell.y + range, dust => {
         if (dust._consumed || arena.time < (dust.collectAfter ?? 0) ||
           (dust.ownerId === player.id && arena.time < dust.availableAt)) return;
         const dx = dust.x - cell.x, dy = dust.y - cell.y;
         if (dx * dx + dy * dy > (cell.radius + 5) ** 2) return;
-        const capture = intercepted && !(dust.ownerId === intercepted.owner.id && arena.time < dust.availableAt) ? intercepted : null;
-        const receiver = capture?.owner ?? player, receiverCell = capture?.source ?? cell;
-        const gain = dust.value * (dust.fragment ? 1 : receiver.stats.growth);
-        receiverCell.mass += gain;
-        receiverCell.radius = 4 * Math.sqrt(receiverCell.mass);
-        if (capture) { capture.shell.capturedMass += gain; syncPlayer(receiver); }
-        if (!dust.fragment) {
-          receiver.score += 2 * dust.value;
-          receiver.energy = Math.min(100, receiver.energy + 4 * dust.value);
-          arena.naturalDustCount--;
-        }
-        dust._consumed = true;
-        consumed.push(dust);
+        if (awardDust(arena, player, cell, dust, shells)) consumed.push(dust);
       });
     }
     syncPlayer(player);
   }
-  if (consumed.length) {
-    for (const dust of consumed) { removeDustFromGrid(arena, dust); arena.activeDust.delete(dust); }
-    arena.dust = arena.dust.filter(dust => !dust._consumed);
-    arena._indexedDust = arena.dust;
-    arena._indexedCount = arena.dust.length;
-    arena._indexedItems = arena.dust.slice();
-  }
+  removeCollectedDust(arena, consumed);
   return consumed.length;
 }
 
@@ -1495,15 +1551,20 @@ function launchWave(arena, player, mode = 'forward', at = arena.time) {
   const facing = speed >= 5 ? { x: source.vx / speed, y: source.vy / speed } : player.direction;
   const sign = mode === 'rear' ? -1 : 1;
   const direction = { x: facing.x * sign, y: facing.y * sign };
-  const originOffset = source.radius + WAVE.curvature + WAVE.thickness / 2 + 4;
+  const size = source.radius / WAVE.referenceRadius;
+  const width = WAVE.width * size, thickness = WAVE.thickness * size, curvature = WAVE.curvature * size;
+  // The curved wings already extend sideways beyond the source surface.
+  // Placing the centre one whole curvature farther out creates a blind spot
+  // directly in front of a large planet; start at the surface instead.
+  const originOffset = source.radius + thickness / 2 + 4;
   const x = source.x + direction.x * originOffset, y = source.y + direction.y * originOffset;
   player.energy -= player.stats.blastCost;
   player.cooldown = player.stats.blastCooldown;
   arena.blasts.push({ id: `b${++arena.serial}`, ownerId: player.id, kind: 'wave', mode, sourceCellId: source.id,
     x, y, originX: x, originY: y, originOffset, directionX: direction.x, directionY: direction.y,
-    width: WAVE.width, thickness: WAVE.thickness, curvature: WAVE.curvature,
+    sourceRadius: source.radius, width, thickness, curvature,
     speed: WAVE.speed, distance: WAVE.distance * player.stats.blastRange, travel: 0,
-    color: player.color, radius: WAVE.width / 2 + WAVE.curvature + WAVE.thickness / 2,
+    color: player.color, radius: width / 2 + curvature + thickness / 2,
     launchAt: at, blinkUsed: false, hit: new Set() });
   player._latestWaveId = arena.blasts[arena.blasts.length - 1].id;
 }
@@ -1714,16 +1775,37 @@ function waveCellTOI(wave, arc, cell, dt, duration) {
   return earliest;
 }
 
+function waveDustHits(arena, wave, arc, dt, duration, cancelTime, hits) {
+  const owner = arena.players.get(wave.ownerId);
+  if (!owner?.connected || owner.respawnIn > 0 || !owner.cells.some(cell => cell.id === wave.sourceCellId)) return;
+  const dx = wave.directionX * wave.speed * duration, dy = wave.directionY * wave.speed * duration;
+  const margin = wave.thickness / 2 + 1.5 + (arena._dustFrameSweep ?? 0);
+  const left = Math.min(...arc.map(point => point.x)) + Math.min(0, dx) - margin;
+  const right = Math.max(...arc.map(point => point.x)) + Math.max(0, dx) + margin;
+  const top = Math.min(...arc.map(point => point.y)) + Math.min(0, dy) - margin;
+  const bottom = Math.max(...arc.map(point => point.y)) + Math.max(0, dy) + margin;
+  visitDustRect(arena, left, top, right, bottom, dust => {
+    if (dust.fragment) return;
+    const moving = dt > 0 && dust._waveFrameAt === arena.time;
+    const time = waveCellTOI(wave, arc, { x: dust.x, y: dust.y, radius: 1.5,
+      _frameX: moving ? dust._waveFrameX : dust.x, _frameY: moving ? dust._waveFrameY : dust.y }, dt, duration);
+    if (Number.isFinite(time) && (cancelTime === undefined || time < cancelTime - WAVE_TIME_EPSILON)) {
+      hits.push({ wave, dust, time });
+    }
+  });
+}
+
 function advanceWaves(arena, dt) {
   const waves = [...arena.blasts].sort((a, b) => a.id.localeCompare(b.id));
   // Cancellation paths are independent of player hits. Resolve that timeline
   // first, then clip every player's hit sweep to the wave's cancellation time.
   const cancelled = waveClashTimeline(arena, waves, dt);
-  const hits = [];
+  const hits = [], consumed = [], shells = dustInterceptors(arena), harvests = new Map();
   for (const wave of waves) {
     const duration = Math.min(waveLiveTime(wave, dt), cancelled.get(wave.id) ?? Infinity);
     if (duration < 0) continue;
     const arc = waveArc(wave), cancelTime = cancelled.get(wave.id);
+    waveDustHits(arena, wave, arc, dt, duration, cancelTime, hits);
     for (const player of arena.players.values()) {
       if (player.id === wave.ownerId || player.respawnIn > 0 || player.invulnerable > 0 || wave.hit.has(player.id)) continue;
       const touched = player.cells.filter(cell => !cell.dysonId).map(cell => ({ cell, time: waveCellTOI(wave, arc, cell, dt, duration) }))
@@ -1732,8 +1814,28 @@ function advanceWaves(arena, dt) {
       if (touched.length) hits.push({ wave, player, hitCells: touched.map(hit => hit.cell), time: touched[0].time });
     }
   }
-  hits.sort((a, b) => a.time - b.time || a.wave.id.localeCompare(b.wave.id) || a.player.id.localeCompare(b.player.id));
-  for (const { wave, player, hitCells, time } of hits) {
+  hits.sort((a, b) => a.time - b.time || a.wave.id.localeCompare(b.wave.id) ||
+    (a.player?.id ?? a.dust.id).localeCompare(b.player?.id ?? b.dust.id));
+  for (const { wave, player, dust, hitCells, time } of hits) {
+    if (dust) {
+      const owner = arena.players.get(wave.ownerId), source = owner?.cells.find(cell => cell.id === wave.sourceCellId);
+      if (!owner?.connected || owner.respawnIn > 0 || !source) continue;
+      const received = awardDust(arena, owner, source, dust, shells, arena.time - dt + time);
+      if (!received) continue;
+      consumed.push(dust);
+      const { receiver, receiverCell, gain } = received;
+      const key = `${wave.id}:${receiver.id}:${receiverCell.id}`;
+      let harvest = harvests.get(key);
+      if (!harvest) {
+        harvest = { receiver, event: { id: `harvest:${arena.round}:${++arena.waveHarvestSerial}`,
+          waveId: wave.id, sourceCellId: receiverCell.id, at: arena.time,
+          x: receiverCell.x, y: receiverCell.y, mass: 0, count: 0, points: [] } };
+        harvests.set(key, harvest);
+      }
+      harvest.event.mass += gain; harvest.event.count++;
+      if (harvest.event.points.length < 6) harvest.event.points.push({ x: dust.x, y: dust.y });
+      continue;
+    }
     wave.hit.add(player.id);
     const eventId = `${wave.id}:${player.id}`, primary = hitCells[0];
     const impulseFor = cell => clamp(WAVE.knockback * Math.pow(START_MASS / cell.mass, 0.35), WAVE.minKnockback, WAVE.maxKnockback);
@@ -1759,6 +1861,11 @@ function advanceWaves(arena, dt) {
     }
     syncPlayer(player);
   }
+  removeCollectedDust(arena, consumed);
+  for (const { receiver, event } of harvests.values()) {
+    receiver.lastWaveHarvest = event;
+    syncPlayer(receiver);
+  }
   for (const wave of waves) {
     const duration = Math.max(0, Math.min(waveLiveTime(wave, dt), cancelled.get(wave.id) ?? Infinity));
     wave.travel = Math.min(wave.distance, wave.travel + wave.speed * duration);
@@ -1766,6 +1873,7 @@ function advanceWaves(arena, dt) {
   }
   arena.blasts = waves.filter(wave => !cancelled.has(wave.id) && wave.travel < wave.distance);
   arena.waveClashes = arena.waveClashes.filter(event => arena.time - event.at <= WAVE.clashRetention).slice(-WAVE.clashLimit);
+  return consumed.length;
 }
 
 export function stepArena(arena, elapsed) {
@@ -1784,7 +1892,7 @@ export function stepArena(arena, elapsed) {
     player.invulnerable = Math.max(0, player.invulnerable - dt);
     if (player.respawnIn > 0) {
       player.respawnIn = Math.max(0, player.respawnIn - dt);
-      player.fireQueued = player.rearFireQueued = player.splitQueued = false;
+      player.fireQueued = player.rearFireQueued = player.splitQueued = player.splitQueuedAsExit = false;
       if (player.respawnIn === 0) {
         Object.assign(player, spawnPosition(arena), { energy: 45, invulnerable: 2 });
         player.cells = [newCell(arena, player.x, player.y, START_MASS)];
@@ -1796,10 +1904,12 @@ export function stepArena(arena, elapsed) {
     const moving = Math.hypot(input.x, input.y) > 0;
     const actionDirection = moving ? { x: input.x / Math.hypot(input.x, input.y), y: input.y / Math.hypot(input.x, input.y) } : player.direction;
     player.energy = clamp(player.energy + dt * player.stats.energyRegen, 0, 100);
-    if (player.dyson) player.fireQueued = player.rearFireQueued = player.splitQueued = false;
-    if (player.splitQueued && !activateDyson(arena, player, arena.time - dt) &&
+    if (player.dyson) {
+      player.fireQueued = player.rearFireQueued = false;
+      if (player.splitQueued) requestDysonExit(arena, player, arena.time - dt);
+    } else if (player.splitQueued && !player.splitQueuedAsExit && !activateDyson(arena, player, arena.time - dt) &&
         !activateWaveBlink(arena, player, arena.time - dt)) splitPlayer(arena, player, actionDirection);
-    player.splitQueued = false;
+    player.splitQueued = player.splitQueuedAsExit = false;
     if (player.pendingInputSeq !== player.lastInputSeq) player.inputAge = 0;
     for (const cell of player.cells) { cell._frameX = cell.x; cell._frameY = cell.y; }
     movers.push({ player, input });
@@ -1841,7 +1951,19 @@ export function stepArena(arena, elapsed) {
     else if (player.rearFireQueued) launchWave(arena, player, 'rear', arena.time - dt);
     player.fireQueued = player.rearFireQueued = false;
   }
-  advanceWaves(arena, dt);
+  if (advanceWaves(arena, dt)) {
+    // Remote harvesting can enlarge a planet too. Separate enlarged bodies
+    // before publishing the frame, just like ordinary surface pickups.
+    for (const player of arena.players.values()) for (const cell of player.cells) {
+      if (cell.dysonId) continue;
+      cell._stepX = cell.x; cell._stepY = cell.y; confineCell(cell);
+      cell._motionDt = 0; cell._sweepTime = 0;
+      cell._sweepX = cell.x; cell._sweepY = cell.y;
+      cell._sweepVx = cell.vx; cell._sweepVy = cell.vy;
+      cell._freeX = cell.x; cell._freeY = cell.y; cell._freeVx = cell.vx; cell._freeVy = cell.vy;
+    }
+    resolvePlayerBodies(arena);
+  }
   advanceMeteors(arena, dt, { frameStart: arena.time - dt });
   updateDysons(arena);
   refillDust(arena);
@@ -1884,9 +2006,13 @@ export function snapshotArena(arena, view) {
       dyson: p.dyson ? { id: p.dyson.id, sourceCellId: p.dyson.sourceCellId, targetId: p.dyson.targetId,
         targetCellId: p.dyson.targetCellId, startedAt: p.dyson.startedAt, endsAt: p.dyson.endsAt,
         x: p.dyson.x, y: p.dyson.y, radius: p.dyson.radius, capturedMass: p.dyson.capturedMass,
-        directionX: p.dyson.directionX, directionY: p.dyson.directionY } : null,
+        directionX: p.dyson.directionX, directionY: p.dyson.directionY,
+        canExitAt: p.dyson.canExitAt, exitRequestedAt: p.dyson.exitRequestedAt, exitAt: p.dyson.exitAt,
+        exitDirectionX: p.dyson.exitDirectionX, exitDirectionY: p.dyson.exitDirectionY,
+        exitPreview: p.dyson.exitPreview ? { ...p.dyson.exitPreview } : null } : null,
       dysonCooldown: p.dysonCooldown, dysonRevision: p.dysonRevision,
       lastDysonEnd: p.lastDysonEnd ? { ...p.lastDysonEnd } : null,
+      lastWaveHarvest: p.lastWaveHarvest ? { ...p.lastWaveHarvest, points: p.lastWaveHarvest.points.map(point => ({ ...point })) } : null,
       waveBlinkReady: waveBlinkReady(arena, p), waveBlinkRevision: p.waveBlinkRevision,
       lastWaveBlink: p.lastWaveBlink ? { ...p.lastWaveBlink } : null,
       direction: { ...p.direction },
@@ -1913,7 +2039,7 @@ export function snapshotArena(arena, view) {
         ...(d.sourceKind ? { sourceKind: d.sourceKind } : {}) } : {}) })),
     blasts: visibleBlasts.map(b => ({ id: b.id, ownerId: b.ownerId, kind: b.kind, mode: b.mode, sourceCellId: b.sourceCellId,
       x: round(b.x), y: round(b.y), originX: round(b.originX), originY: round(b.originY), originOffset: round(b.originOffset),
-      directionX: b.directionX, directionY: b.directionY, width: b.width, thickness: b.thickness, curvature: b.curvature,
+      directionX: b.directionX, directionY: b.directionY, sourceRadius: b.sourceRadius, width: b.width, thickness: b.thickness, curvature: b.curvature,
       speed: b.speed, distance: round(b.distance), travel: round(b.travel),
       launchAt: b.launchAt ?? arena.time - b.travel / b.speed, blinkUsed: b.blinkUsed === true,
       color: b.color, radius: round(b.radius), progress: round(b.travel / b.distance) })),

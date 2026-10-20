@@ -41,6 +41,8 @@
   const combatFeedback = new Map(), seenCombatEvents = new Map();
   let combatMarkerTimer;
   const seenWaveBlinks = new Map();
+  const seenWaveHarvests = new Map();
+  const blinkVisualDuration = 140;
   let blinkBaselinePending = true;
   const consumedBlinkWaves = new Map();
   let blinkConsumptionScope = null, blinkConsumptionRevision = 0;
@@ -390,6 +392,7 @@
     receiveWaveFeedback(room, old);
     receiveMeteorFeedback(room, old);
     receiveWaveBlinkFeedback(room, old);
+    receiveWaveHarvestFeedback(room, old);
     receiveWaveClashes(room, old);
     cacheWaveVisuals(room, old);
     for (const blast of room.blasts) {
@@ -434,9 +437,9 @@
   }
 
   function resetWaveFeedback() {
-    combatFeedback.clear(); seenCombatEvents.clear(); seenWaveBlinks.clear(); blinkBaselinePending = true; clearTimeout(combatMarkerTimer);
+    combatFeedback.clear(); seenCombatEvents.clear(); seenWaveBlinks.clear(); seenWaveHarvests.clear(); blinkBaselinePending = true; clearTimeout(combatMarkerTimer);
     const prompt = $('sgComboPrompt'); if (prompt) prompt.hidden = true;
-    for (let i = particles.length - 1; i >= 0; i--) if (particles[i].kind === 'wave-blink') particles.splice(i, 1);
+    for (let i = particles.length - 1; i >= 0; i--) if (particles[i].kind === 'wave-blink' || particles[i].kind === 'wave-harvest') particles.splice(i, 1);
     const marker = $('sgWaveFeedback'); if (marker) marker.hidden = true;
   }
   function receiveWaveBlinkFeedback(current, previous) {
@@ -453,9 +456,9 @@
       if (baseline || current.status !== 'playing' || age > .6 || player.dyson?.sourceCellId === event.sourceCellId) continue;
       const ref = player.id === myId ? predictedCells.get(event.sourceCellId) : remotePhysics.get(`${player.id}:${event.sourceCellId}`);
       const radius = ref?.model?.radius || 24, position = ref?.model || event, from = ref?.blinkFrom || { x: event.fromX, y: event.fromY };
-      if (age < .36) for (const [point, departure] of [[from, true], [position, false]]) {
-        if (Number.isFinite(point.x) && Number.isFinite(point.y)) particles.push({ kind: 'wave-blink', x: point.x, y: point.y, radius: radius + 8, departure, duration: .36, life: .36 - age, updatedAt: now });
-      }
+      if (age < .22 && Number.isFinite(from.x) && Number.isFinite(position.x)) particles.push({ kind: 'wave-blink',
+        x: from.x, y: from.y, toX: position.x, toY: position.y, radius, color: safeColor(player.color),
+        duration: .22, life: .22 - age, updatedAt: now });
       if (player.id === myId) {
         const marker = $('sgWaveFeedback');
         if (marker) {
@@ -465,6 +468,27 @@
       }
     }
     while (seenWaveBlinks.size > 128) seenWaveBlinks.delete(seenWaveBlinks.keys().next().value);
+    if (particles.length > 180) particles.splice(0, particles.length - 180);
+  }
+  function receiveWaveHarvestFeedback(current, previous) {
+    const baseline = previous?.code !== current.code || previous?.round !== current.round || previous?.status !== 'playing';
+    if (baseline) seenWaveHarvests.clear();
+    const now = performance.now();
+    for (const player of current.players) {
+      const event = player.lastWaveHarvest;
+      if (!event?.id || seenWaveHarvests.has(event.id)) continue;
+      seenWaveHarvests.set(event.id, event.at);
+      const age = Math.max(0, current.time - event.at);
+      if (baseline || age > .3) continue;
+      // A few short returning sparks communicate pickup without a counter,
+      // an expanding ring, or animating thousands of natural dust particles.
+      for (const point of (event.points || []).slice(0, 6)) {
+        if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+        particles.push({ kind: 'wave-harvest', ownerId: player.id, sourceCellId: event.sourceCellId,
+          x: point.x, y: point.y, radius: 1.4, color: safeColor(player.color), duration: .24, life: .24 - age, updatedAt: now });
+      }
+    }
+    while (seenWaveHarvests.size > 128) seenWaveHarvests.delete(seenWaveHarvests.keys().next().value);
     if (particles.length > 180) particles.splice(0, particles.length - 180);
   }
   function resetWaveClashes() {
@@ -780,9 +804,19 @@
   }
   function split() {
     const me = room?.players?.find((p) => p.id === myId);
-    if (room?.status !== 'playing' || !me || me.respawnIn > 0 || me.dyson || reconnecting) return;
-    if (!comboReady(me) && !(me.cells || [{ mass: me.mass }]).some((cell) => cell.mass >= 48)) {
+    if (room?.status !== 'playing' || !me || me.respawnIn > 0 || reconnecting) return;
+    if (me.dyson) {
+      const shell = dysonPose(me, performance.now());
+      if (!shell || shell.exitAt != null || shell.exitWait > 0) return;
+      splitPulse = true; sendInput(); return;
+    }
+    const combo = comboReady(me);
+    if (!combo && !(me.cells || [{ mass: me.mass }]).some((cell) => cell.mass >= 48)) {
       toast('单颗星球质量达到 48 后即可分裂'); return;
+    }
+    if (combo?.kind === 'blink') {
+      const ref = predictedCells.get(combo.ready.sourceCellId);
+      if (ref) ref.blinkPending = { at: performance.now(), directionX: combo.ready.directionX, directionY: combo.ready.directionY };
     }
     splitPulse = true; sendInput();
   }
@@ -831,8 +865,13 @@
     const ref = cell && (target.id === myId ? predictedCells.get(cell.id) : remotePhysics.get(`${target.id}:${cell.id}`));
     const position = target?.id === myId ? ref : ref?.presented ? ref.visual : ref?.model;
     const seconds = peekRenderSimulationTime(at) / 1000 + simulationLead;
+    const exitPreview = shell.exitPreview && { ...shell.exitPreview,
+      x: shell.exitPreview.x + (position?.x ?? shell.x) - shell.x,
+      y: shell.exitPreview.y + (position?.y ?? shell.y) - shell.y };
     return { ...shell, x: position?.x ?? shell.x, y: position?.y ?? shell.y,
       radius: ref?.model?.mass > 0 ? ref.model.radius + (room?.dysonRules?.returnClearance ?? 16) : shell.radius || (cell?.radius ?? 24) + (room?.dysonRules?.returnClearance ?? 16),
+      exitPreview, exitWait: Math.max(0, (shell.canExitAt ?? shell.startedAt + (room?.dysonRules?.minActive ?? .6)) - seconds),
+      exitRemaining: shell.exitAt != null ? Math.max(0, shell.exitAt - seconds) : null,
       elapsed: Math.max(0, seconds - shell.startedAt), remaining: Math.max(0, shell.endsAt - seconds) };
   }
   function updateDysonHud(player, at) {
@@ -842,33 +881,62 @@
     const cooldown = Math.max(0, (player?.dysonCooldown || 0) - Math.max(0, at - (room?._receivedAt ?? at)) / 1000);
     // Ready actions use the central keycap; do not stack the older status card
     // underneath it on touch screens. Active and recovery states stay compact.
-    status.hidden = room?.status !== 'playing' || reconnecting || Boolean(combo) || !shell && !cooldown;
+    status.hidden = room?.status !== 'playing' || reconnecting || Boolean(combo) || Boolean(shell) || !cooldown;
     status.dataset.phase = shell ? 'active' : ready ? 'ready' : 'cooldown';
     if (shell) setMarkup('sgDysonStatus', `<strong>戴森球 · ${shell.remaining.toFixed(1)} 秒</strong><small>已截获 ${Math.floor(shell.capturedMass || 0)} 质量 · 方向键 / 摇杆选择回归侧</small>`);
     else if (ready) setMarkup('sgDysonStatus', `<strong>命中连招 · ${ready.toFixed(1)} 秒</strong><small>按空格 / 点击分裂 → 戴森球</small>`);
     else if (cooldown) setMarkup('sgDysonStatus', `<strong>戴森球恢复 · ${cooldown.toFixed(1)} 秒</strong>`);
-    button.disabled = Boolean(shell) || reconnecting;
-    button.dataset.combo = shell ? 'active' : ready ? 'ready' : combo ? 'blink' : '';
-    button.textContent = shell ? '环绕中' : ready ? '戴森球' : combo ? '瞬移' : '分裂';
-    button.setAttribute('aria-label', shell ? '戴森球正在环绕' : ready ? '发动戴森球连招' : combo ? '瞬移到波前' : '主动分裂');
-    if (label) label.textContent = shell ? '戴森球环绕中' : ready ? '戴森球连招' : combo ? '瞬移到波前' : '分裂 / 波前连招';
+    const exiting = shell?.exitAt != null, exitReady = shell && !exiting && shell.exitWait <= 0;
+    button.disabled = Boolean(shell && !exitReady) || reconnecting;
+    button.dataset.combo = shell ? exitReady ? 'ready' : 'active' : ready ? 'ready' : combo ? 'blink' : '';
+    button.textContent = shell ? exiting ? '还原中' : exitReady ? '还原' : '环绕中' : ready ? '戴森球' : combo ? '瞬移' : '分裂';
+    button.setAttribute('aria-label', shell ? exiting ? '戴森球出口已锁定，正在还原' : exitReady ? '提前还原，出壳后再次点击分裂' : '戴森球环绕中，稍后可提前还原' : ready ? '发动戴森球连招' : combo ? '瞬移到波前' : '主动分裂');
+    if (label) label.textContent = shell ? exiting ? '还原后再按空格分裂' : exitReady ? '提前还原 · 方向键选侧' : '戴森球环绕中' : ready ? '戴森球连招' : combo ? '瞬移到波前' : '分裂 / 波前连招';
     const prompt = $('sgComboPrompt');
     if (prompt) {
-      prompt.hidden = room?.status !== 'playing' || reconnecting || !combo;
+      prompt.hidden = room?.status !== 'playing' || reconnecting || !combo && !shell;
       root.dataset.comboRaised = String(Boolean(player?.upgradeChoices?.length));
-      if (combo) {
-        prompt.dataset.kind = combo.kind;
+      if (combo || shell) {
+        prompt.dataset.kind = shell ? 'dyson' : combo.kind;
         $('sgComboKey').textContent = width < 700 ? '点击' : '空格';
-        $('sgComboAction').textContent = ready ? '戴森球' : '瞬移';
-        $('sgComboDescription').textContent = ready ? '包围目标 · 截获碎片' : '瞬移后消耗冲击波';
-        $('sgComboTime').textContent = `${combo.remaining.toFixed(1)}s`;
-        $('sgComboFill').style.width = `${clamp(combo.remaining / combo.duration * 100, 0, 100)}%`;
+        $('sgComboAction').textContent = shell ? exiting ? '正在还原' : exitReady ? '提前还原' : '戴森球环绕中' : ready ? '戴森球' : '瞬移';
+        $('sgComboDescription').textContent = shell ? exiting ? '出口已锁定 · 出壳后再按空格分裂' : exitReady ? `已截获 ${Math.floor(shell.capturedMass || 0)} 质量 · 方向键 / 摇杆选侧` : '短暂环绕后可提前还原 · 方向键 / 摇杆选侧' : ready ? '包围目标 · 截获碎片' : '瞬移后消耗冲击波';
+        const remaining = shell ? exiting ? shell.exitRemaining : exitReady ? shell.remaining : shell.exitWait : combo.remaining;
+        const duration = shell ? exiting ? room?.dysonRules?.exitWindup || .3 : exitReady ? shell.endsAt - shell.startedAt : room?.dysonRules?.minActive || .6 : combo.duration;
+        $('sgComboTime').textContent = `${remaining.toFixed(1)}s`;
+        $('sgComboFill').style.width = `${clamp(remaining / duration * 100, 0, 100)}%`;
       }
     }
   }
   function clearDysonSourceContacts(key) {
     for (const pair of contactEpisodes.keys()) if (pair.split('|').includes(key)) contactEpisodes.delete(pair);
     remoteContactPositions.delete(key); drawnPlayers.delete(key);
+  }
+  function planetPresentation(ref, fallback, at) {
+    const base = ref ? ref.player?.id === myId ? ref : ref.presented ? ref.visual : ref.model : fallback;
+    const warp = ref?.blinkVisual;
+    if (!warp) {
+      if (ref?.blinkPending) {
+        const progress = clamp((at - ref.blinkPending.at) / 180, 0, 1);
+        if (progress >= 1) ref.blinkPending = null;
+        else return { ...(base || fallback), blinkAnticipation: Math.sin(progress * Math.PI) * .14,
+          warpAngle: Math.atan2(ref.blinkPending.directionY, ref.blinkPending.directionX) };
+      }
+      return base || fallback;
+    }
+    const progress = clamp((at - warp.startedAt) / warp.duration, 0, 1);
+    if (progress >= 1) { ref.blinkVisual = null; return base || fallback; }
+    // This is a short draw-only warp. The physical model, contacts and dust
+    // collection stay at the authoritative destination throughout the effect.
+    const ease = progress * progress * (3 - 2 * progress), remaining = 1 - ease;
+    return { ...(base || fallback), x: base.x + (warp.fromX - warp.toX) * remaining,
+      y: base.y + (warp.fromY - warp.toY) * remaining, warpProgress: progress,
+      warpAngle: Math.atan2(warp.toY - warp.fromY, warp.toX - warp.fromX) };
+  }
+  function newBlinkPresentation(ref, model, at) {
+    if (!ref) return null;
+    const from = planetPresentation(ref, ref.model, at);
+    return { startedAt: at, duration: blinkVisualDuration, fromX: from.x, fromY: from.y, toX: model.x, toY: model.y };
   }
   function sendInput() {
     if (!active || !room || room.status !== 'playing' || reconnecting) return;
@@ -1294,7 +1362,9 @@
           let p = predictedCells.get(cell.id);
           const structural = !p || dysonReturned || blinked || player.respawnIn > 0 || next.round !== room?.round || (relocated && !predictionPaused);
           if (structural) {
-            p = { x: model.x, y: model.y, vx: model.vx, vy: model.vy, offsetX: 0, offsetY: 0, model, normals: [], contactUntil: 0, blinkFrom: blinked && p ? { x: p.x, y: p.y } : null };
+            const blinkVisual = blinked ? newBlinkPresentation(p, model, at) : null;
+            p = { x: model.x, y: model.y, vx: model.vx, vy: model.vy, offsetX: 0, offsetY: 0, model, normals: [], contactUntil: 0,
+              blinkVisual, blinkFrom: blinkVisual ? { x: blinkVisual.fromX, y: blinkVisual.fromY } : null };
             predictedCells.set(cell.id, p);
           } else {
             // Keep one continuous local simulation. Replacing it at 15 Hz and
@@ -1320,7 +1390,9 @@
           const target = authorityCells.get(cell.id);
           let proxy = remotePhysics.get(key);
           if (!proxy || dysonReturned || blinked || (relocated && !predictionPaused) || next.round !== room?.round) {
-            proxy = { model: { ...target }, authority: { ...target }, visual: { x: target.x, y: target.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [], blinkFrom: blinked && proxy ? { ...proxy.visual } : null };
+            const blinkVisual = blinked ? newBlinkPresentation(proxy, target, at) : null;
+            proxy = { model: { ...target }, authority: { ...target }, visual: { x: target.x, y: target.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [],
+              blinkVisual, blinkFrom: blinkVisual ? { x: blinkVisual.fromX, y: blinkVisual.fromY } : null };
             remotePhysics.set(key, proxy);
           } else {
             proxy.authority = target;
@@ -1724,6 +1796,13 @@
     const focusId = shell?.id || null;
     const blinkId = me?.lastWaveBlink?.id || null;
     if (camera.dysonId !== focusId || camera.blinkId !== blinkId) {
+      const warp = predictedCells.get(me?.lastWaveBlink?.sourceCellId)?.blinkVisual;
+      if (camera.blinkId !== blinkId && warp && Number.isFinite(camera.x)) {
+        camera.warp = { startedAt: warp.startedAt, duration: warp.duration,
+          fromOffsetX: camera.x - targetX, fromOffsetY: camera.y - targetY,
+          toOffsetX: camera.warp?.toOffsetX ?? camera.x - (camera.targetX ?? targetX),
+          toOffsetY: camera.warp?.toOffsetY ?? camera.y - (camera.targetY ?? targetY) };
+      } else if (camera.dysonId !== focusId) camera.warp = null;
       // A deliberate transformation changes the focus, not its physical speed.
       camera.targetX = targetX; camera.targetY = targetY; camera.dysonId = focusId; camera.blinkId = blinkId;
     }
@@ -1735,7 +1814,16 @@
     }
     const minScale = Math.max(width / 3200, height / 2300, mobile ? .3 : .35);
     targetScale = clamp(targetScale, minScale, mobile ? 1 : 1.15);
-    if (!Number.isFinite(camera.x) || Math.hypot(camera.x - targetX, camera.y - targetY) > 1600) { camera.x = targetX; camera.y = targetY; camera.scale = targetScale; }
+    if (camera.warp) {
+      const warp = camera.warp, progress = clamp(((lastFrame || performance.now()) - warp.startedAt) / warp.duration, 0, 1);
+      const ease = progress * progress * (3 - 2 * progress);
+      camera.x = targetX + warp.fromOffsetX * (1 - ease) + warp.toOffsetX * ease;
+      camera.y = targetY + warp.fromOffsetY * (1 - ease) + warp.toOffsetY * ease;
+      camera.scale += (targetScale - camera.scale) * (1 - Math.exp(-dt * 3));
+      // End on the pre-existing follow lag, rather than adding a second slow
+      // camera catch-up after the source has already arrived.
+      if (progress >= 1) camera.warp = null;
+    } else if (!Number.isFinite(camera.x) || Math.hypot(camera.x - targetX, camera.y - targetY) > 1600) { camera.x = targetX; camera.y = targetY; camera.scale = targetScale; }
     else {
       const previousX = camera.targetX ?? targetX, previousY = camera.targetY ?? targetY;
       const decay = Math.exp(-dt * 9), integral = (1 - decay) / 9;
@@ -1801,14 +1889,27 @@
         let primary = cells[0]; for (const c of cells) if (!primary || c.mass > primary.mass) primary = c;
         for (const cell of cells) {
           const own = player.id === myId;
-          const position = own ? predictedCells.get(cell.id) || cell : remotePhysics.get(`${player.id}:${cell.id}`)?.visual || cell;
+          const ref = own ? predictedCells.get(cell.id) : remotePhysics.get(`${player.id}:${cell.id}`);
+          const position = planetPresentation(ref, cell, time);
           drawnPlayers.set(`${player.id}:${cell.id}`, { x: position.x, y: position.y, radius: cell.radius });
-          if (own && cell.gravityRadius && visible(position.x, position.y, cell.gravityRadius, view)) drawGravity(position.x, position.y, cell.gravityRadius, player.color, time, primary === cell);
+          if (own && position.warpProgress === undefined && cell.gravityRadius && visible(position.x, position.y, cell.gravityRadius, view)) drawGravity(position.x, position.y, cell.gravityRadius, player.color, time, primary === cell);
           if (!visible(position.x, position.y, cell.radius * 2.3 + 35, view)) continue;
-          drawPlanet(player, cell, position, time, primary === cell); renderedCells++;
+          if (position.warpProgress !== undefined || position.blinkAnticipation > 0) {
+            const stretch = position.warpProgress !== undefined ? Math.sin(position.warpProgress * Math.PI) : position.blinkAnticipation;
+            ctx.save(); ctx.translate(position.x, position.y); ctx.rotate(position.warpAngle);
+            ctx.scale(1 + stretch * .8, 1 - stretch * .7); ctx.rotate(-position.warpAngle); ctx.translate(-position.x, -position.y);
+            ctx.globalAlpha = position.warpProgress !== undefined ? 1 - stretch * .7 : 1;
+            drawPlanet(player, cell, position, time, primary === cell); ctx.restore();
+          } else drawPlanet(player, cell, position, time, primary === cell);
+          renderedCells++;
         }
       }
-      for (const player of room.players) { const shell = dysonPose(player, time); if (shell && visible(shell.x, shell.y, shell.radius + 45, view)) drawDyson(player, shell, time); }
+      for (const player of room.players) {
+        const shell = dysonPose(player, time);
+        if (!shell) continue;
+        if (visible(shell.x, shell.y, shell.radius + 45, view)) drawDyson(player, shell, time);
+        if (shell.exitPreview && visible(shell.exitPreview.x, shell.exitPreview.y, shell.exitPreview.radius + 40, view)) drawDysonExit(player, shell);
+      }
       drawComboTarget(time, view);
       drawWaveFeedback(time, view);
       for (let i = particles.length - 1; i >= 0; i--) {
@@ -1833,12 +1934,24 @@
           }
           ctx.restore();
         } else if (p.kind === 'wave-blink') {
-          const progress = 1 - p.life / p.duration, radius = p.radius * (p.departure ? 1 - progress * .6 : .5 + progress * .7);
-          if (!visible(p.x, p.y, radius + 8, view)) continue;
-          ctx.save(); ctx.translate(p.x, p.y); ctx.globalAlpha = (1 - progress) * .9; ctx.strokeStyle = '#9aeeff'; ctx.lineWidth = (2.5 - progress) / camera.scale;
-          ctx.beginPath(); ctx.arc(0, 0, radius, -.6 + progress, Math.PI * 1.7 + progress); ctx.stroke();
-          for (let i = 0; i < 4; i++) { const a = i * Math.PI / 2 + .4, r = radius + 5; ctx.beginPath(); ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r); ctx.lineTo(Math.cos(a) * (r + 6), Math.sin(a) * (r + 6)); ctx.stroke(); }
-          ctx.restore();
+          const progress = 1 - p.life / p.duration, ease = 1 - (1 - progress) ** 3;
+          const dx = p.toX - p.x, dy = p.toY - p.y, distance = Math.hypot(dx, dy);
+          const x = p.x + dx * ease, y = p.y + dy * ease, tail = Math.min(110, distance * .4) * (1 - progress);
+          if (!visible(x, y, tail + 12, view)) continue;
+          ctx.save(); ctx.translate(x, y); ctx.rotate(Math.atan2(dy, dx)); ctx.globalAlpha = (1 - progress) * .4;
+          ctx.fillStyle = p.color; ctx.beginPath(); ctx.moveTo(8, 0); ctx.lineTo(-tail, -Math.min(8, p.radius * .24) * (1 - progress)); ctx.lineTo(-tail * .65, 0); ctx.lineTo(-tail, Math.min(8, p.radius * .24) * (1 - progress)); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = '#d4faff'; ctx.lineWidth = 1 / camera.scale; ctx.beginPath(); ctx.moveTo(-tail * .7, 0); ctx.lineTo(8, 0); ctx.stroke(); ctx.restore();
+        } else if (p.kind === 'wave-harvest') {
+          const progress = 1 - p.life / p.duration, player = room.players.find(player => player.id === p.ownerId);
+          const ref = p.ownerId === myId ? predictedCells.get(p.sourceCellId) : remotePhysics.get(`${p.ownerId}:${p.sourceCellId}`);
+          const target = player?.dyson ? dysonPose(player, time) : ref?.model;
+          if (!target) { particles.splice(i, 1); continue; }
+          const ease = progress * progress, dx = target.x - p.x, dy = target.y - p.y;
+          const x = p.x + dx * ease, y = p.y + dy * ease;
+          if (!visible(x, y, 18, view)) continue;
+          const distance = Math.hypot(dx, dy) || 1, tail = Math.min(16, distance * .08);
+          ctx.save(); ctx.globalAlpha = Math.sin(progress * Math.PI) * .8; ctx.strokeStyle = p.color; ctx.lineWidth = 1.4 / camera.scale;
+          ctx.beginPath(); ctx.moveTo(x - dx / distance * tail, y - dy / distance * tail); ctx.lineTo(x, y); ctx.stroke(); ctx.restore();
         } else if (p.kind === 'contact') {
           const progress = 1 - p.life / p.duration, radius = 2 + p.radius * progress;
           if (!visible(p.x, p.y, radius, view)) continue;
@@ -1976,10 +2089,37 @@
     ctx.fillText(`${player.name || '星球'} · 戴森球`, 0, -radius - 12);
     ctx.restore();
   }
+  function drawDysonExit(player, shell) {
+    const exit = shell.exitPreview;
+    if (!exit) return;
+    const color = safeColor(player.color), radius = exit.radius || 24;
+    const progress = 1 - clamp((shell.exitRemaining ?? .3) / (room?.dysonRules?.exitWindup || .3), 0, 1);
+    // Every observer sees the same server-selected legal exit. A light cage
+    // and a connection line reveal the commitment without hiding the victim.
+    ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 1.2 / camera.scale; ctx.globalAlpha = .45;
+    ctx.setLineDash([4 / camera.scale, 5 / camera.scale]); ctx.beginPath(); ctx.moveTo(shell.x, shell.y); ctx.lineTo(exit.x, exit.y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.translate(exit.x, exit.y); ctx.globalAlpha = .8;
+    for (let i = 0; i < 4; i++) {
+      const angle = i * Math.PI / 2 + Math.PI / 4, reach = radius + 5;
+      ctx.save(); ctx.rotate(angle); ctx.beginPath(); ctx.moveTo(reach, -5); ctx.lineTo(reach, 5); ctx.stroke(); ctx.restore();
+    }
+    ctx.globalAlpha = .15 + progress * .2; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(0, 0, radius * (.9 + progress * .1), 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = .9; ctx.fillStyle = '#eddbff'; ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('还原落点', 0, -radius - 13); ctx.restore();
+  }
   function drawComboTarget(time, view) {
     const player = room.players.find(player => player.id === myId), target = comboTargetPose(player, time);
     if (!target) return;
     if (!visible(target.x, target.y, target.radius + 30, view)) { drawComboDirection(target, view); return; }
+    if (target.kind === 'blink') {
+      // A directional cue belongs to a travelling wave; a large circular
+      // target made each launch look like another planet or a shield.
+      ctx.save(); ctx.translate(target.x, target.y); ctx.rotate(Math.atan2(target.directionY, target.directionX));
+      ctx.strokeStyle = '#c2f7ff'; ctx.lineWidth = 1.5 / view.scale; ctx.globalAlpha = .85;
+      ctx.beginPath(); ctx.moveTo(10, -5); ctx.lineTo(16, 0); ctx.lineTo(10, 5); ctx.stroke();
+      ctx.restore(); return;
+    }
     const pulse = (Math.sin(time * .009) + 1) * .5, radius = target.radius + pulse * 3;
     const color = target.kind === 'dyson' ? '#e4bdff' : '#8feaff';
     ctx.save(); ctx.translate(target.x, target.y); ctx.strokeStyle = color; ctx.lineWidth = 2 / view.scale; ctx.globalAlpha = .8 + pulse * .2;
@@ -2041,7 +2181,7 @@
     const renderedTravel = speed * (sampleAt - launchAt) / 1000, front = clamp(renderedTravel, 0, distance);
     const originX = blast.originX ?? blast.x - directionX * travel, originY = blast.originY ?? blast.y - directionY * travel;
     if (visual && renderedTravel >= distance) visual.completed = true;
-    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: !cancelledWaves.has(blast.id) && !consumedBlinkWaves.has(blast.id) && !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
+    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(Math.max(34, (blast.sourceRadius || 24) * 2), front), active: !cancelledWaves.has(blast.id) && !consumedBlinkWaves.has(blast.id) && !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
   }
   function drawBlast(blast, time, pose = wavePose(blast, time)) {
     if (!pose.active) return;
@@ -2049,14 +2189,18 @@
     const opacity = Math.min(1, (1 - pose.progress) * 5);
     ctx.save(); ctx.translate(pose.x, pose.y); ctx.rotate(Math.atan2(pose.directionY, pose.directionX)); ctx.lineCap = 'round';
     if (pose.tail > 1) {
-      ctx.globalAlpha = opacity * .065; ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(-curve, -halfWidth); ctx.quadraticCurveTo(curve, 0, -curve, halfWidth); ctx.lineTo(-curve - pose.tail, halfWidth * .8); ctx.quadraticCurveTo(curve - pose.tail, 0, -curve - pose.tail, -halfWidth * .8); ctx.closePath(); ctx.fill();
-      ctx.globalAlpha = opacity * .12; ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(-curve - pose.tail * .45, -halfWidth * .92); ctx.quadraticCurveTo(curve - pose.tail * .45, 0, -curve - pose.tail * .45, halfWidth * .92); ctx.stroke();
+      ctx.globalAlpha = opacity * .045; ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(-curve, -halfWidth); ctx.quadraticCurveTo(curve, 0, -curve, halfWidth); ctx.lineTo(-curve - pose.tail, halfWidth * .6); ctx.quadraticCurveTo(curve - pose.tail, 0, -curve - pose.tail, -halfWidth * .6); ctx.closePath(); ctx.fill();
     }
+    // A tapered crescent keeps its exact authoritative front while avoiding
+    // the old uniform luminous tube and the large circular launch reticle.
+    ctx.globalAlpha = opacity * .25; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.moveTo(-curve, -halfWidth); ctx.quadraticCurveTo(curve, 0, -curve, halfWidth);
+    ctx.lineTo(-curve - thickness * .15, halfWidth); ctx.quadraticCurveTo(curve - thickness * 2, 0, -curve - thickness * .15, -halfWidth); ctx.closePath(); ctx.fill();
     // This curve is the server's swept wave front: (x,y) + perp*u*width/2 - direction*curvature*u².
     ctx.beginPath(); ctx.moveTo(-curve, -halfWidth); ctx.quadraticCurveTo(curve, 0, -curve, halfWidth);
-    ctx.globalAlpha = opacity * .12; ctx.strokeStyle = color; ctx.lineWidth = thickness + 8; ctx.stroke();
-    ctx.globalAlpha = opacity * .5; ctx.lineWidth = thickness; ctx.stroke();
-    ctx.globalAlpha = opacity; ctx.strokeStyle = '#eff9ff'; ctx.lineWidth = 1.6; ctx.stroke(); ctx.restore();
+    ctx.globalAlpha = opacity * .1; ctx.strokeStyle = color; ctx.lineWidth = thickness; ctx.stroke();
+    ctx.globalAlpha = opacity * .7; ctx.lineWidth = Math.max(1.5 / camera.scale, thickness * .12); ctx.stroke();
+    ctx.globalAlpha = opacity * .95; ctx.strokeStyle = '#e6fbff'; ctx.lineWidth = 1.05 / camera.scale; ctx.stroke(); ctx.restore();
   }
   function drawPlanet(player, cell, position, time, primary, decoration = false) {
     const color = safeColor(player.color), radius = cell.fusionRole === 'donor' ? Math.max(.01, cell.radius) : Math.max(4, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;
