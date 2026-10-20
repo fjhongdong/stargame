@@ -185,8 +185,11 @@ test('a wave launched before a normal split still lands and converts only its or
   const { arena, attacker, target, fire, activate } = fixture({ sourceMass: 72, distance: 300 });
   const sourceId = attacker.cells[0].id, wave = fire(); assert.equal(attacker.dysonReady, null);
   setPlayerInput(arena, attacker.id, { split: true }); stepArena(arena, 0);
+  assert.equal(attacker.lastWaveBlink.waveId, wave.id); assert.equal(attacker.cells.length, 1);
+  setPlayerInput(arena, attacker.id, {});
+  setPlayerInput(arena, attacker.id, { split: true }); stepArena(arena, 0);
   assert.equal(attacker.cells.length, 2); assert.ok(arena.blasts.includes(wave));
-  setPlayerInput(arena, attacker.id, {}); advance(arena, .35);
+  setPlayerInput(arena, attacker.id, {}); advance(arena, .5);
   assert.ok(target.lastWaveHit); assert.equal(attacker.dysonReady.sourceCellId, sourceId);
   const shell = activate(), ordinary = attacker.cells.find(cell => cell.id !== sourceId);
   assert.equal(shell.id, sourceId); assert.ok(!ordinary.dysonId);
