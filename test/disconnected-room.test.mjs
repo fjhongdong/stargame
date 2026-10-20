@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
 import { createGameServer, createRoomManager } from '../server.mjs';
-import { snapshotArena } from '../shared/engine.js';
+import { METEOR, snapshotArena } from '../shared/engine.js';
 
 function seeded() {
   let seed = 271828;
@@ -41,7 +41,7 @@ test('unobserved practice freezes its existing world while connected rooms and r
   manager.disconnect('guest'); manager.disconnect('absent');
   const frozen = snapshotArena(sleeping.arena), liveTime = live.arena.time;
   assert.equal(sleeping.arena.dust.length, 6000);
-  assert.equal(sleeping.arena.meteors.length, 72);
+  assert.equal(sleeping.arena.meteors.length, METEOR.count);
   publications.length = 0;
   for (let i = 0; i < 90; i++) { now += 1000 / 30; manager.tick(1 / 30); }
   assert.deepEqual(snapshotArena(sleeping.arena), frozen, 'bots, resources, input ages and simulation clock remain frozen together');

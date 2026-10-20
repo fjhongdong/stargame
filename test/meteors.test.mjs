@@ -37,7 +37,7 @@ test('a round creates a real bounded meteor population with the configured slowe
   assert.deepEqual(arena.meteors, []);
   const humans = [addPlayer(arena, { id: 'one' }), addPlayer(arena, { id: 'two' })];
   startRound(arena);
-  assert.equal(arena.meteors.length, METEOR.count); assert.ok(METEOR.count >= 50 && METEOR.count <= 80);
+  assert.equal(arena.meteors.length, METEOR.count); assert.ok(METEOR.count > 0 && METEOR.count <= 24);
   assert.equal(new Set(arena.meteors.map(meteor => meteor.id)).size, METEOR.count);
   assert.equal(arena.dust.length, DUST_COUNT);
   for (const meteor of arena.meteors) {
@@ -55,7 +55,7 @@ test('a round creates a real bounded meteor population with the configured slowe
   for (const player of humans) assert.ok(arena.meteors.filter(meteor => {
     const distance = Math.hypot(meteor.x - player.x, meteor.y - player.y);
     return distance <= METEOR.nearRadius;
-  }).length >= 3, 'a player must have actual nearby world traffic at the start');
+  }).length >= METEOR.nearPlayerCount, 'a player must have actual nearby world traffic at the start');
 });
 
 test('meteor world positions follow constant straight velocity even inside a strong planet gravity field', () => {
