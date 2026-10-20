@@ -181,16 +181,15 @@ test('the converted core is excluded from ordinary gravity, pickup, solid collis
   near(conservedMass(arena), before + 1);
 });
 
-test('a wave launched before a normal split still lands and converts only its original source core while the other core keeps moving', () => {
-  const { arena, attacker, target, fire, activate } = fixture({ sourceMass: 72, distance: 300 });
-  const sourceId = attacker.cells[0].id, wave = fire(); assert.equal(attacker.dysonReady, null);
-  setPlayerInput(arena, attacker.id, { split: true }); stepArena(arena, 0);
-  assert.equal(attacker.lastWaveBlink.waveId, wave.id); assert.equal(attacker.cells.length, 1);
-  setPlayerInput(arena, attacker.id, {});
-  setPlayerInput(arena, attacker.id, { split: true }); stepArena(arena, 0);
-  assert.equal(attacker.cells.length, 2); assert.ok(arena.blasts.includes(wave));
-  setPlayerInput(arena, attacker.id, {}); advance(arena, .5);
-  assert.ok(target.lastWaveHit); assert.equal(attacker.dysonReady.sourceCellId, sourceId);
+test('a genuine hit converts only its firing source while a second controlled core keeps ordinary movement', () => {
+  const { arena, attacker, target, fire, activate } = fixture({ sourceMass: 72, distance: 100 });
+  const source = attacker.cells[0], sourceId = source.id, wave = fire();
+  assert.equal(target.lastWaveHit.waveId, wave.id); assert.equal(attacker.dysonReady.sourceCellId, sourceId);
+  // Isolate the source-only transition using a valid multi-core state after
+  // a genuine hit; Space before that hit now consumes the travelling wave.
+  attacker.cells.push({ ...source, id: 'ordinary-companion', x: 3000, y: 4500,
+    mass: 36, radius: 24, vx: 120, vy: -30, mergeIn: 0 });
+  attacker.mass += 36;
   const shell = activate(), ordinary = attacker.cells.find(cell => cell.id !== sourceId);
   assert.equal(shell.id, sourceId); assert.ok(!ordinary.dysonId);
   const x = ordinary.x, energy = attacker.energy, ids = attacker.cells.map(cell => cell.id);

@@ -62,7 +62,7 @@ test('a fresh Space on either directional wave blinks a small source to the curr
     near(event.vx, before.vx); near(event.vy, before.vy); near(event.at, arena.time);
     assert.equal(source.lastWaveBlinkId, event.id); assert.equal(owner.waveBlinkRevision, 1);
     near(owner.energy, energy); near(owner.cooldown, cooldown);
-    assert.ok(arena.blasts.includes(wave)); assert.equal(wave.blinkUsed, true);
+    assert.ok(!arena.blasts.includes(wave)); assert.equal(wave.blinkUsed, true);
   }
 });
 
@@ -75,7 +75,8 @@ test('the event uses the server boundary front rather than advancing the wave in
   near(event.vx, vx); near(event.vy, vy);
   near(source.x, frontX + vx * (1 - Math.exp(-.2)) / 2);
   near(source.y, frontY + vy * (1 - Math.exp(-.2)) / 2);
-  near(wave.x, frontX + wave.directionX * 60); near(wave.y, frontY + wave.directionY * 60);
+  assert.ok(!arena.blasts.includes(wave));
+  near(wave.x, frontX); near(wave.y, frontY);
 });
 
 test('same-tick fire and Space cannot blink to a wave which has not yet been launched, and holding Space never triggers later', () => {
@@ -92,7 +93,7 @@ test('same-tick fire and Space cannot blink to a wave which has not yet been lau
   assert.ok(small.space());
 });
 
-test('one wave grants only one blink, remains alive afterward and allows a new Space to fall back to ordinary splitting', () => {
+test('one wave is consumed by its only blink and a new Space falls back to ordinary splitting', () => {
   const { arena, owner, fire, space } = fixture(96), source = owner.cells[0];
   const wave = fire(); advance(arena, .1); const first = space();
   assert.ok(first); const revision = owner.waveBlinkRevision, energy = owner.energy;
@@ -100,20 +101,44 @@ test('one wave grants only one blink, remains alive afterward and allows a new S
   space();
   assert.equal(owner.lastWaveBlink.id, id); assert.equal(owner.waveBlinkRevision, revision);
   assert.equal(owner.cells.length, 2); near(owner.cells.reduce((mass, cell) => mass + cell.mass, 0), 96);
-  assert.equal(owner.cells[0].id, source.id); assert.ok(arena.blasts.includes(wave)); near(wave.travel, travel);
+  assert.equal(owner.cells[0].id, source.id); assert.ok(!arena.blasts.includes(wave)); near(wave.travel, travel);
   near(owner.energy, energy);
 });
 
-test('a blinked wave can still hit an opponent and the next Space takes the Dyson combo instead of blinking or splitting', () => {
+test('a consumed wave cannot hit later or arm a late Dyson combo, while an otherwise identical unconsumed wave still hits', () => {
   const { arena, owner, player, fire, space } = fixture(), target = player('target', 4300);
   const sourceId = owner.cells[0].id, wave = fire(); advance(arena, .1);
   const blink = space(); assert.ok(blink); assert.equal(target.lastWaveHit, null);
-  advance(arena, .25);
-  assert.equal(target.lastWaveHit.waveId, wave.id); assert.ok(owner.dysonReady);
+  assert.ok(!arena.blasts.includes(wave));
+  advance(arena, .7);
+  assert.equal(target.lastWaveHit, null); assert.equal(owner.dysonReady, null);
+  near(target.mass, 36); near(target.vx, 0); near(target.vy, 0);
+  assert.equal(arena.dust.filter(dust => dust.fragment).length, 0);
   space();
-  assert.ok(owner.dyson); assert.equal(owner.dyson.sourceCellId, sourceId);
-  assert.equal(owner.dyson.targetId, target.id); assert.equal(owner.lastWaveBlink.id, blink.id);
-  assert.equal(owner.cells.length, 1);
+  assert.equal(owner.dyson, null); assert.equal(owner.lastWaveBlink.id, blink.id);
+  assert.equal(owner.cells.length, 1); assert.equal(owner.cells[0].id, sourceId); near(owner.mass, 36);
+
+  const control = fixture(), controlTarget = control.player('target', 4300), liveWave = control.fire();
+  advance(control.arena, .35);
+  assert.equal(controlTarget.lastWaveHit.waveId, liveWave.id); assert.ok(control.owner.dysonReady);
+  control.space(); assert.ok(control.owner.dyson, 'real hits still retain the higher-priority Dyson combo');
+});
+
+test('consumption happens before the same tick can produce another hit or a ghost wave clash', () => {
+  const hit = fixture(), target = hit.player('same-tick-target', 4200), wave = hit.fire();
+  advance(hit.arena, .1);
+  assert.equal(target.lastWaveHit, null); const blink = hit.space(.1);
+  assert.ok(blink); assert.ok(!hit.arena.blasts.includes(wave));
+  assert.equal(target.lastWaveHit, null); assert.equal(hit.owner.dysonReady, null);
+  near(target.mass, 36); near(target.vx, 0);
+
+  const clash = fixture(), selected = clash.fire(); advance(clash.arena, .1);
+  const counter = counterWave('would-have-clashed', selected.x + 120, selected.y);
+  clash.arena.blasts.push(counter);
+  const event = clash.space(.1);
+  assert.ok(event); assert.ok(!clash.arena.blasts.includes(selected));
+  assert.ok(clash.arena.blasts.includes(counter), 'other waves continue after only the selected wave is consumed');
+  assert.equal(clash.arena.waveClashes.length, 0, 'a removed wave cannot participate in a later cancellation timeline');
 });
 
 test('the latest launched wave is authoritative and used, hit, cancelled or expired latest waves never fall back to an older one', () => {
@@ -130,6 +155,7 @@ test('the latest launched wave is authoritative and used, hit, cancelled or expi
     assert.notEqual(latest.id, older.id); assert.ok(arena.blasts.includes(older)); assert.equal(older.hit.size, 0);
     if (blocked === 'used') {
       const first = space(); assert.equal(first.waveId, latest.id);
+      assert.ok(!arena.blasts.includes(latest)); assert.ok(arena.blasts.includes(older));
     } else if (blocked === 'hit') {
       assert.ok(latest.hit.size > 0); assert.equal(owner.dysonReady, null);
     } else if (blocked === 'cancelled') {
@@ -243,7 +269,7 @@ test('snapshots copy authoritative blink eligibility and the persistent event, a
   const event = space(), snapshot = snapshotArena(arena), wire = snapshot.players.find(player => player.id === owner.id);
   assert.deepEqual(wire.lastWaveBlink, event); assert.equal(wire.waveBlinkRevision, owner.waveBlinkRevision);
   assert.equal(wire.waveBlinkReady, null); assert.equal(wire.cells[0].lastWaveBlinkId, event.id);
-  assert.equal(snapshot.blasts.find(blast => blast.id === wave.id).blinkUsed, true);
+  assert.ok(!snapshot.blasts.some(blast => blast.id === wave.id));
   wire.lastWaveBlink.x = -999; near(owner.lastWaveBlink.x, event.x);
   startRound(arena); const fresh = wirePlayer(arena, owner.id);
   assert.equal(fresh.waveBlinkReady, null); assert.equal(fresh.lastWaveBlink, null);

@@ -80,14 +80,16 @@ function client(initial, ping = 0) {
       drawBackground=drawArena=drawMinimap=drawDust=drawMeteor=drawGravity=drawWaveFeedback=()=>{};
       drawPlanet=(p,c,pos)=>window.onDraw({kind:'planet',playerId:p.id,cellId:c.id,x:pos.x,y:pos.y});
       drawBlast=(b,at,pose)=>window.onDraw({kind:'wave',id:b.id,...pose});drawDyson=()=>{}; },
-    packet(state) { const previous=room;ingestSnapshot(state,performance.now());room=state;receiveWaveClashes(state,previous);cacheWaveVisuals(state,previous); },
+    packet:receiveRoom,
     frame(dt) { predictOwn(dt,performance.now()); }, render() { render(performance.now()); },
     ref(id,owner='pilot') { return owner===myId?predictedCells.get(id):remotePhysics.get(owner+':'+id); },
     combo() { return comboReady(room.players.find(p=>p.id===myId),performance.now()); },
     marker() { return comboTargetPose(room?.players?.find(p=>p.id===myId),performance.now()); },
     remaining() { return waveBlinkRemaining(room.players.find(p=>p.id===myId),performance.now()); },
     pose(id='wave-one') { return wavePose(waveVisuals.get(id)?.blast||room.blasts.find(b=>b.id===id),performance.now()); },
+    poseOf(blast) { return wavePose(blast,performance.now()); },
     wave(id='wave-one') { return waveVisuals.get(id); },
+    consumption() { return {size:consumedBlinkWaves.size,clashes:cancelledWaves.size}; },
     timeline() { return renderTimeline; },
     hud() { updateHud(true); },send:sendInput,
     camera() { return camera; }, updateCamera,
@@ -117,12 +119,12 @@ function blinkPacket(previous, { time = .11, owner = 'pilot', ids = ['source'], 
   next.time = time; next.simulationTime = time * 1000;
   p.waveBlinkReady = null; p.waveBlinkRevision += ids.length;
   for (const id of ids) {
-    const cell = p.cells.find(c => c.id === id), eventId = `blink-${id}`;
+    const cell = p.cells.find(c => c.id === id), waveId = id === 'source' ? 'wave-one' : `wave-${id}`, eventId = `blink:${waveId}`;
     cell.x += dx; cell.y += 25; cell.lastWaveBlinkId = eventId;
-    if (id === latest) p.lastWaveBlink = { id: eventId, waveId: `wave-${id}`, sourceCellId: id, at: time,
+    if (id === latest) p.lastWaveBlink = { id: eventId, waveId, sourceCellId: id, at: time,
       fromX: cell.x - dx, fromY: cell.y - 25, x: cell.x, y: cell.y, vx: cell.vx, vy: cell.vy };
+    next.blasts = next.blasts.filter(wave => wave.id !== waveId);
   }
-  next.blasts[0].blinkUsed = true;
   return next;
 }
 
@@ -184,12 +186,15 @@ test('removing the newest authoritative opportunity cannot fall back to an older
   assert.ok(ordinary.sent.some(message => message.split), 'ordinary split remains the final fallback');
 });
 
-test('a short authoritative blink resets only its source epoch and old contacts while preserving wave and sibling continuity', () => {
-  const initial = state({ extraCore: true }), c = client(initial);
+test('a short authoritative blink resets only its source epoch while preserving unrelated waves and sibling continuity', () => {
+  const initial = state({ extraCore: true }), otherWave = { ...initial.blasts[0], id: 'other-wave', ownerId: 'target' };
+  initial.blasts.push(otherWave);
+  const c = client(initial);
   c.time(100); c.api.frame(.1); c.api.updateCamera(.1); c.api.dirty('source');
   const sibling = c.api.ref('unrelated'), siblingModel = sibling.model, siblingAt = sibling.modelAt,
-    siblingBefore = { ...siblingModel }, timeline = c.api.timeline(), wave = c.api.wave();
+    siblingBefore = { ...siblingModel }, timeline = c.api.timeline(), wave = c.api.wave('other-wave');
   const next = blinkPacket(state({ time: .11, extraCore: true }));
+  next.blasts.push({ ...otherWave, travel: 86, x: 2086 });
   Object.assign(player(next).cells[0], { vx: 15, vy: -8 });
   Object.assign(player(next).lastWaveBlink, { vx: 15, vy: -8 });
   c.time(110); c.api.packet(next);
@@ -200,7 +205,7 @@ test('a short authoritative blink resets only its source epoch and old contacts 
   assert.equal(c.api.track('source').length, 1, 'interpolation cannot carry a segment across the teleport');
   assert.equal(c.api.ref('unrelated'), sibling); assert.equal(sibling.model, siblingModel);
   assert.equal(sibling.modelAt, siblingAt); near(siblingModel.x, siblingBefore.x); near(siblingModel.vx, siblingBefore.vx);
-  assert.equal(c.api.timeline(), timeline); near(c.api.wave().launchAt, wave.launchAt);
+  assert.equal(c.api.timeline(), timeline); near(c.api.wave('other-wave').launchAt, wave.launchAt);
   c.api.updateCamera(0);
   const centerX = (ref.x * ref.model.mass + sibling.x * sibling.model.mass) / (ref.model.mass + sibling.model.mass);
   near(c.api.camera().targetX, centerX);
@@ -249,6 +254,91 @@ test('a source blink cannot revive a consumed unrelated sibling donor from an ol
   assert.equal(c.api.ref(receiver.id), receiverRef); assert.equal(c.api.ref(donor.id), donorRef);
   assert.equal(receiverRef.model._completedFusionId, completed); assert.equal(donorRef.model.mass, 0);
   assert.equal(c.api.effective(donor.id), null);
+});
+
+for (const remote of [false, true]) {
+  test(`a successful ${remote ? 'remote' : 'own'} blink immediately consumes its wave head and tail while another wave continues`, () => {
+    const initial = state({ remote }), owner = remote ? 'target' : 'pilot';
+    if (remote) { initial.blasts[0].ownerId = owner; player(initial).waveBlinkReady = null; }
+    const original = structuredClone(initial.blasts[0]), other = { ...original, id: 'unconsumed-wave', ownerId: 'target' };
+    initial.blasts.push(other);
+    const c = client(initial); c.api.hud();
+    assert.ok(c.api.wave()); assert.ok(c.api.poseOf(original).active);
+    const next = blinkPacket(initial, { owner });
+    c.time(110); c.api.packet(next);
+    assert.equal(c.api.wave(), undefined, 'consumption must delete a cached remote tail in the arrival frame');
+    assert.equal(c.api.poseOf(original).active, false, 'the old front must be inactive even if a caller still holds its blast object');
+    assert.ok(c.api.wave(other.id)); assert.ok(c.api.pose(other.id).active);
+    assert.equal(c.api.consumption().clashes, 0, 'using a wave is not a wave-on-wave cancellation');
+    if (!remote) {
+      assert.equal(c.node('sgComboPrompt').hidden, true, 'the HUD must clear on the consuming packet without another RAF');
+      assert.equal(c.api.marker(), null); assert.equal(c.api.remaining(), 0);
+      assert.doesNotMatch(c.node('sgTouchSplit').textContent, /瞬移/);
+    }
+    c.api.render();
+    assert.ok(!c.drawings.some(draw => draw.kind === 'wave' && draw.id === original.id));
+    assert.ok(c.drawings.some(draw => draw.kind === 'wave' && draw.id === other.id));
+    c.time(150); c.api.render();
+    assert.equal(c.api.wave(), undefined, 'consumption cannot use the ordinary remote missing-wave fade window');
+  });
+
+  test(`a consumed ${remote ? 'remote' : 'own'} wave cannot return through a late old blast or readiness snapshot`, () => {
+    const initial = state({ remote }), owner = remote ? 'target' : 'pilot';
+    if (remote) { initial.blasts[0].ownerId = owner; player(initial).waveBlinkReady = null; }
+    const c = client(initial), original = structuredClone(initial.blasts[0]);
+    c.time(110); c.api.packet(blinkPacket(initial, { owner }));
+    const late = structuredClone(initial); late.time = .12; late.simulationTime = 120;
+    c.time(120); c.api.packet(late); c.api.hud();
+    assert.equal(c.api.wave(), undefined); assert.equal(c.api.poseOf(original).active, false);
+    assert.equal(c.api.combo(), null); assert.equal(c.api.marker(), null);
+    assert.equal(c.node('sgComboPrompt').hidden, true);
+    if (!remote) { c.key('Space'); assert.ok(c.sent.every(message => !message.split)); }
+  });
+}
+
+test('coalesced cell blink tags consume every selected wave even when the player event names only the latest one', () => {
+  const initial = state({ extraCore: true }), second = { ...initial.blasts[0], id: 'wave-unrelated', sourceCellId: 'unrelated' };
+  initial.blasts.push(second);
+  const c = client(initial), first = structuredClone(initial.blasts[0]);
+  c.time(110); c.api.packet(blinkPacket(initial, { ids: ['source', 'unrelated'] }));
+  assert.equal(c.api.wave(first.id), undefined); assert.equal(c.api.wave(second.id), undefined);
+  assert.equal(c.api.poseOf(first).active, false); assert.equal(c.api.poseOf(second).active, false);
+  const late = structuredClone(initial); late.time = .12; late.simulationTime = 120;
+  c.time(120); c.api.packet(late);
+  assert.equal(c.api.wave(first.id), undefined); assert.equal(c.api.wave(second.id), undefined);
+});
+
+test('a consumed-wave baseline prevents stale resurrection and resets cleanly for a new round or session', () => {
+  const initial = state(), consumed = blinkPacket(initial), c = client(consumed);
+  const late = structuredClone(initial); late.time = .12; late.simulationTime = 120;
+  c.time(120); c.api.packet(late); assert.equal(c.api.wave(), undefined);
+  c.time(130); c.api.packet(state({ round: 2 }));
+  assert.ok(c.api.wave()); assert.equal(c.api.combo()?.kind, 'blink', 'round reset must clear obsolete consumed IDs');
+  c.time(140); c.api.packet(blinkPacket(state({ round: 2 }), { time: .14 }));
+  assert.equal(c.api.wave(), undefined);
+  c.api.reconnect();
+  c.time(150); c.api.resume(state({ code: 'NEW-SESSION' }));
+  assert.ok(c.api.wave()); assert.equal(c.api.combo()?.kind, 'blink');
+});
+
+test('a long session bounds consumed-wave records and clears them on round and session teardown', () => {
+  const initial = state({ blink: false }), c = client(initial);
+  for (let index = 0; index < 540; index++) {
+    const next = structuredClone(initial), own = player(next), waveId = `consumed-${index}`;
+    next.time = (index + 1) / 1000; next.simulationTime = index + 1;
+    own.lastWaveBlink = { id: `blink:${waveId}`, waveId, sourceCellId: 'source', at: next.time,
+      fromX: 2000, fromY: 4000, x: 2000, y: 4000, vx: 0, vy: 0 };
+    own.cells[0].lastWaveBlinkId = own.lastWaveBlink.id;
+    c.time(index + 1); c.api.packet(next);
+  }
+  assert.ok(c.api.consumption().size > 0 && c.api.consumption().size <= 512);
+  const recent = { ...initial.blasts[0], id: 'consumed-539' };
+  assert.equal(c.api.poseOf(recent).active, false, 'the most recent consumed front stays inactive at the memory bound');
+  c.time(600); c.api.packet(state({ round: 2, blink: false }));
+  assert.equal(c.api.consumption().size, 0);
+  c.time(650); c.api.packet(blinkPacket(state({ round: 2 }), { time: .65 }));
+  assert.equal(c.api.consumption().size, 1);
+  c.api.close(); assert.equal(c.api.consumption().size, 0);
 });
 
 for (const fps of [60, 120]) {

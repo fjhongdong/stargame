@@ -467,6 +467,9 @@ function activateWaveBlink(arena, player, at) {
   source._stepVy = source._sweepVy = source._freeVy = source.vy;
   source._motionDt = source._sweepTime = 0;
   wave.blinkUsed = true;
+  // A successful blink spends this wave before its remaining flight or hits
+  // are simulated. Keep the latest id so an older wave cannot replace it.
+  arena.blasts = arena.blasts.filter(blast => blast !== wave);
   const id = `blink:${wave.id}`;
   source.lastWaveBlinkId = id;
   player.waveBlinkRevision++;

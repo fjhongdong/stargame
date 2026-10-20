@@ -59,10 +59,14 @@ async function fixture(targetX = 10000, sourceMass = 36) {
     async close(extra) { a.ws.terminate(); b.ws.terminate(); extra?.ws.terminate(); await game.close(); } };
 }
 
-test('a 36-mass source blinks once to its authoritative wave front and the same wave can subsequently unlock Dyson', async () => {
+test('a 36-mass source blinks once, consumes only its selected front and cannot cause a later hit or Dyson unlock', async () => {
   const f = await fixture(6400);
   try {
     const { a, b, source, target, room, command, acknowledged } = f;
+    const otherSeq = command(b, { fire: true });
+    const otherLaunch = await acknowledged(b, target.id, otherSeq);
+    const otherId = otherLaunch.room.blasts.find(blast => blast.ownerId === target.id)?.id;
+    assert.ok(otherId, 'an unrelated front is already flying away from both bodies');
     const launched = await f.launch(), launchedSource = player(launched, source.id);
     const ready = launchedSource.waveBlinkReady, waveId = ready.waveId, sourceCellId = source.cells[0].id;
     assert.equal(ready.sourceCellId, sourceCellId); assert.ok(ready.expiresAt > launched.room.simulationTime / 1000);
@@ -82,33 +86,39 @@ test('a 36-mass source blinks once to its authoritative wave front and the same 
     near(event.fromX, 6000); near(event.fromY, 4000); near(event.y, 4000);
     near(event.vx, 0); near(event.vy, 0); near(own.cells[0].vx, event.vx); near(own.cells[0].vy, event.vy);
     near(own.cells[0].x, event.x, .02); near(own.cells[0].y, event.y, .02);
-    const wave = blinked.room.blasts.find(blast => blast.id === waveId);
-    assert.ok(wave?.blinkUsed, 'the front survives but records its one consumed blink');
-    const age = blinked.room.simulationTime / 1000 - event.at;
-    near(event.x, wave.x - wave.directionX * wave.speed * age, .03);
-    near(event.y, wave.y - wave.directionY * wave.speed * age, .03);
+    assert.ok(!blinked.room.blasts.some(blast => blast.id === waveId), 'the blink and consumed-front removal are delivered in the same packet');
+    assert.ok(blinked.room.blasts.some(blast => blast.id === otherId), 'consuming one front leaves the unrelated front intact');
+    const age = event.at - launched.room.simulationTime / 1000;
+    near(event.x, ready.x + ready.directionX * ready.speed * age, .03);
+    near(event.y, ready.y + ready.directionY * ready.speed * age, .03);
     const elapsed = (blinked.room.simulationTime - launched.room.simulationTime) / 1000;
     near(own.energy, Math.min(100, launchedSource.energy + source.stats.energyRegen * elapsed), .03);
     near(own.cooldown, Math.max(0, launchedSource.cooldown - elapsed), .03);
     const sameTick = await b.wait(m => m.type === 'state' && m.room.tick === blinked.room.tick);
     assert.deepEqual(player(sameTick, source.id).lastWaveBlink, event);
     assert.deepEqual(player(sameTick, source.id).cells, own.cells);
+    assert.ok(!sameTick.room.blasts.some(blast => blast.id === waveId), 'the second human also receives the warp without a surviving front');
+    assert.ok(sameTick.room.blasts.some(blast => blast.id === otherId));
     event.x = 11111; own.cells[0].mass = 99999;
     assert.notEqual(source.lastWaveBlink.x, 11111); near(source.cells[0].mass, 36);
 
     const held = command(a, { split: true });
     const holding = await acknowledged(a, source.id, held);
     assert.equal(player(holding, source.id).waveBlinkRevision, 1); assert.equal(player(holding, source.id).cells.length, 1);
-    const hit = await a.wait(m => m.type === 'state' && player(m, target.id)?.lastWaveHit?.waveId === waveId
-      && player(m, source.id)?.dysonReady);
-    assert.equal(player(hit, source.id).waveBlinkReady, null);
-    assert.equal(player(hit, source.id).dysonReady.sourceCellId, sourceCellId);
+    assert.ok(!holding.room.blasts.some(blast => blast.id === waveId));
     const released = command(a); await acknowledged(a, source.id, released);
-    const activate = command(a, { split: true });
-    const dyson = await a.wait(m => m.type === 'state' && player(m, source.id)?.lastInputSeq === activate && player(m, source.id)?.dyson);
-    assert.equal(player(dyson, source.id).dyson.targetId, target.id, 'a hit gives Dyson precedence over another blink or normal split');
-    assert.equal(player(dyson, source.id).cells.length, 1); assert.equal(player(dyson, source.id).waveBlinkRevision, 1);
-    assert.equal(player(dyson, source.id).lastWaveBlink.id, source.lastWaveBlink.id);
+    const retry = command(a, { split: true, waveId });
+    const retried = await acknowledged(a, source.id, retry);
+    assert.equal(player(retried, source.id).waveBlinkRevision, 1);
+    assert.equal(player(retried, source.id).lastWaveBlink.id, source.lastWaveBlink.id);
+    assert.equal(player(retried, source.id).cells.length, 1);
+    assert.ok(!retried.room.blasts.some(blast => blast.id === waveId), 'a fresh retry cannot restore the consumed front');
+    const pastDeadline = await a.wait(m => m.type === 'state' && m.room.simulationTime / 1000 > ready.expiresAt + .05);
+    assert.ok(!pastDeadline.room.blasts.some(blast => blast.id === waveId));
+    assert.equal(player(pastDeadline, target.id).lastWaveHit, null, 'the removed wave cannot hit the body that lay along its remaining path');
+    assert.equal(player(pastDeadline, source.id).dysonReady, null);
+    assert.equal(player(pastDeadline, source.id).dyson, null);
+    assert.equal(player(pastDeadline, source.id).waveBlinkRevision, 1);
     assert.ok(room.arena.dust.filter(dust => !dust.fragment).length >= DUST_COUNT);
   } finally { await f.close(); }
 });
@@ -153,7 +163,7 @@ test('an expired front disappears from authoritative readiness and cannot accept
   } finally { await f.close(); }
 });
 
-test('reconnecting sends a complete baseline with the consumed wave and blink event intact, without rearming it', async () => {
+test('reconnecting retains the blink event while the consumed front stays absent and cannot rearm', async () => {
   const f = await fixture(10000, 72); let restored;
   try {
     const { a, source, command } = f;
@@ -169,12 +179,12 @@ test('reconnecting sends a complete baseline with the consumed wave and blink ev
     assert.equal(own.id, source.id); assert.equal(own.waveBlinkRevision, 1);
     assert.deepEqual(own.lastWaveBlink, event); assert.equal(own.cells[0].lastWaveBlinkId, event.id);
     assert.equal(own.waveBlinkReady, null);
-    const wave = baseline.room.blasts.find(blast => blast.id === waveId);
-    assert.ok(wave?.blinkUsed, 'reconnection preserves the existing continuing front, not a fresh ability');
+    assert.ok(!baseline.room.blasts.some(blast => blast.id === waveId), 'a complete reconnect baseline cannot recreate the consumed wave');
     const normal = command(restored, { split: true });
     const split = await restored.wait(m => m.type === 'state' && player(m, source.id)?.lastInputSeq === normal);
     assert.equal(player(split, source.id).waveBlinkRevision, 1);
     assert.equal(player(split, source.id).lastWaveBlink.id, event.id);
     assert.equal(player(split, source.id).cells.length, 2, 'another fresh Space uses normal splitting after the one blink was spent');
+    assert.ok(!split.room.blasts.some(blast => blast.id === waveId));
   } finally { await f.close(restored); }
 });

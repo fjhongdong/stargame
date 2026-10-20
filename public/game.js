@@ -42,6 +42,8 @@
   let combatMarkerTimer;
   const seenWaveBlinks = new Map();
   let blinkBaselinePending = true;
+  const consumedBlinkWaves = new Map();
+  let blinkConsumptionScope = null, blinkConsumptionRevision = 0;
   const remoteContactPositions = new Map();
   const remotePhysics = new Map(), contactEpisodes = new Map();
   const defaultMotion = { response: 6, drag: 2, stopSpeed: .5, restitution: .2, restingThreshold: 60, contactSlop: .01, physicsStep: 1 / 120, baseSpeed: 210, referenceMass: 36, speedExponent: .22 };
@@ -85,7 +87,7 @@
       <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div></div>
       <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span id="sgSplitLabel">分裂 / 命中连招</span></div></div><div class="sg-energy"><div class="sg-dyson-status" id="sgDysonStatus" role="status" hidden></div><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><div class="sg-wave-actions"><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向波</span><kbd>E</kbd></button><button id="sgRearBlast" class="sg-blast-button sg-rear-blast" aria-label="向后发射引力波，R">${icons.bolt}<span>后向波</span><kbd>R</kbd></button></div></div></div>
       <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div><div class="sg-wave-feedback" id="sgWaveFeedback" role="status" aria-live="polite" hidden></div>
-      <div class="sg-combo-prompt" id="sgComboPrompt" role="status" hidden><span class="sg-combo-key" id="sgComboKey">空格</span><div><strong id="sgComboAction">瞬移</strong><small id="sgComboDescription">到达波前，不消耗额外能量</small></div><b class="sg-combo-time" id="sgComboTime"></b><span class="sg-combo-track"><i id="sgComboFill"></i></span></div>
+      <div class="sg-combo-prompt" id="sgComboPrompt" role="status" hidden><span class="sg-combo-key" id="sgComboKey">空格</span><div><strong id="sgComboAction">瞬移</strong><small id="sgComboDescription">瞬移后消耗冲击波</small></div><b class="sg-combo-time" id="sgComboTime"></b><span class="sg-combo-track"><i id="sgComboFill"></i></span></div>
       <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
       <div class="sg-panel-backdrop" id="sgPanelBackdrop"><section class="sg-panel" id="sgPanel" aria-live="polite"></section></div>
@@ -250,7 +252,7 @@
     active = true; joined = false; reconnecting = false; intentionalClose = false; retries = 0;
     resetRenderQuality(true); applyCanvasResolution();
     resetHeldInputs(false);
-    resetWaveFeedback(); resetWaveClashes(); resetMeteors();
+    resetWaveFeedback(); resetWaveClashes(); resetMeteors(); resetBlinkConsumption();
     renderTimeline = null;
     predictionPaused = false;
     room = null; myId = null; token = null; previousStatus = ''; previousRound = -1;
@@ -324,14 +326,14 @@
   function attemptReconnect() {
     if (!active) return;
     if (!token || retries >= 4) { showConnectionError('与星际网络的连接已中断。请返回大厅重新出发。'); return; }
-    reconnecting = true; retries += 1; resetHeldInputs(false); resetWaveFeedback(); resetWaveClashes(); resetMeteors();
+    reconnecting = true; retries += 1; resetHeldInputs(false); resetWaveFeedback(); resetWaveClashes(); resetMeteors(); resetBlinkConsumption();
     predictedCells.clear(); remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); inputHistory.length = 0; waveVisuals.clear(); renderTimeline = null;
     $('sgStatus').hidden = false; $('sgStatus').textContent = `网络暂时中断，正在重连… ${retries}/4`;
     clearTimeout(retryTimer); retryTimer = setTimeout(() => { if (active) openSocket(true); }, retries * 750);
   }
 
   function showConnectionError(message) {
-    reconnecting = false; clearTimeout(retryTimer); resetWaveFeedback(); resetWaveClashes(); resetMeteors();
+    reconnecting = false; clearTimeout(retryTimer); resetWaveFeedback(); resetWaveClashes(); resetMeteors(); resetBlinkConsumption();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); renderTimeline = null;
     resetHeldInputs(false);
@@ -351,7 +353,7 @@
 
   function send(data) { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); }
   function closeSession(notify = true) {
-    intentionalClose = true; active = false; resetWaveFeedback(); resetWaveClashes(); resetMeteors();
+    intentionalClose = true; active = false; resetWaveFeedback(); resetWaveClashes(); resetMeteors(); resetBlinkConsumption();
     waveVisuals.clear();
     remotePhysics.clear(); contactEpisodes.clear(); predictedContactEffects.clear(); remoteContactPositions.clear(); renderTimeline = null;
     clearTimeout(connectionTimer); clearTimeout(retryTimer); clearInterval(inputTimer); clearInterval(pingTimer); cancelAnimationFrame(raf);
@@ -371,7 +373,7 @@
   }
 
   function receiveRoom(next) {
-    const old = room;
+    const old = room, previousConsumption = blinkConsumptionRevision;
     if (!Array.isArray(next.players)) next.players = [];
     if (!next.dustDelta) materializedDust.clear();
     for (const id of next.dustRemoved || []) materializedDust.delete(id);
@@ -391,7 +393,7 @@
     receiveWaveClashes(room, old);
     cacheWaveVisuals(room, old);
     for (const blast of room.blasts) {
-      if (cancelledWaves.has(blast.id)) continue;
+      if (cancelledWaves.has(blast.id) || consumedBlinkWaves.has(blast.id)) continue;
       if (!seenBlasts.has(blast.id)) {
         seenBlasts.add(blast.id);
         if (blast.ownerId === myId && !window.StarAudio) playTone(100, .22, .04, 'sine');
@@ -407,7 +409,28 @@
       }
       previousStatus = room.status; previousRound = room.round;
     }
-    updateHud(room.status !== old?.status || room.round !== old?.round);
+    updateHud(room.status !== old?.status || room.round !== old?.round || previousConsumption !== blinkConsumptionRevision);
+  }
+
+  function resetBlinkConsumption() {
+    consumedBlinkWaves.clear(); blinkConsumptionScope = null; blinkConsumptionRevision = 0;
+  }
+  function consumeBlinkWave(id, at) {
+    if (!id) return;
+    if (!consumedBlinkWaves.has(id)) { consumedBlinkWaves.set(id, at); blinkConsumptionRevision++; }
+    waveVisuals.delete(id); seenBlasts.delete(id);
+    while (consumedBlinkWaves.size > 512) consumedBlinkWaves.delete(consumedBlinkWaves.keys().next().value);
+  }
+  function receiveBlinkConsumption(current) {
+    const scope = `${current.code}:${current.round}`;
+    if (scope !== blinkConsumptionScope) { resetBlinkConsumption(); blinkConsumptionScope = scope; }
+    for (const player of current.players) {
+      if (player.lastWaveBlink?.waveId) consumeBlinkWave(player.lastWaveBlink.waveId, player.lastWaveBlink.at);
+      // A packet can coalesce several core teleports while lastWaveBlink holds
+      // only the newest event. This event ID is defined by the server contract.
+      for (const cell of player.cells || []) if (typeof cell.lastWaveBlinkId === 'string' && cell.lastWaveBlinkId.startsWith('blink:')) consumeBlinkWave(cell.lastWaveBlinkId.slice(6), current.time);
+    }
+    for (const blast of current.blasts || []) if (blast.blinkUsed) consumeBlinkWave(blast.id, current.time);
   }
 
   function resetWaveFeedback() {
@@ -436,7 +459,7 @@
       if (player.id === myId) {
         const marker = $('sgWaveFeedback');
         if (marker) {
-          marker.dataset.kind = 'blink'; marker.dataset.mode = 'blink'; marker.dataset.tone = 'shooter'; marker.textContent = '波前瞬移'; marker.hidden = false;
+          marker.dataset.kind = 'blink'; marker.dataset.mode = 'blink'; marker.dataset.tone = 'shooter'; marker.textContent = '波前瞬移 · 冲击波已消耗'; marker.hidden = false;
           clearTimeout(combatMarkerTimer); combatMarkerTimer = setTimeout(() => { marker.hidden = true; }, 1000);
         }
       }
@@ -759,19 +782,18 @@
     const me = room?.players?.find((p) => p.id === myId);
     if (room?.status !== 'playing' || !me || me.respawnIn > 0 || me.dyson || reconnecting) return;
     if (!comboReady(me) && !(me.cells || [{ mass: me.mass }]).some((cell) => cell.mass >= 48)) {
-      const usedWaveFlying = me.lastWaveBlink && room.blasts?.some(wave => wave.id === me.lastWaveBlink.waveId && wave.ownerId === me.id);
-      toast(usedWaveFlying ? '本波已瞬移 · 命中后可接戴森球' : '单颗星球质量达到 48 后即可分裂'); return;
+      toast('单颗星球质量达到 48 后即可分裂'); return;
     }
     splitPulse = true; sendInput();
   }
 
   function dysonComboRemaining(player, at = performance.now()) {
-    if (!player?.dysonReady || player.dyson || reconnecting || !renderTimeline) return 0;
+    if (!player?.dysonReady || player.dyson || reconnecting || !renderTimeline || consumedBlinkWaves.has(player.dysonReady.waveId)) return 0;
     return Math.max(0, player.dysonReady.expiresAt - (peekRenderSimulationTime(at) / 1000 + simulationLead));
   }
   function waveBlinkRemaining(player, at = performance.now()) {
     const ready = player?.waveBlinkReady;
-    if (!ready || player.dyson || reconnecting || !renderTimeline || cancelledWaves.has(ready.waveId) || player.lastWaveBlink?.waveId === ready.waveId) return 0;
+    if (!ready || player.dyson || reconnecting || !renderTimeline || cancelledWaves.has(ready.waveId) || consumedBlinkWaves.has(ready.waveId) || player.lastWaveBlink?.waveId === ready.waveId) return 0;
     if (!(player.cells || []).some(cell => cell.id === ready.sourceCellId && cell.mass > 0 && !cell.dysonId)) return 0;
     return Math.max(0, ready.expiresAt - (peekRenderSimulationTime(at) / 1000 + simulationLead));
   }
@@ -838,7 +860,7 @@
         prompt.dataset.kind = combo.kind;
         $('sgComboKey').textContent = width < 700 ? '点击' : '空格';
         $('sgComboAction').textContent = ready ? '戴森球' : '瞬移';
-        $('sgComboDescription').textContent = ready ? '包围目标 · 截获碎片' : '每道波一次 · 命中可接戴森球';
+        $('sgComboDescription').textContent = ready ? '包围目标 · 截获碎片' : '瞬移后消耗冲击波';
         $('sgComboTime').textContent = `${combo.remaining.toFixed(1)}s`;
         $('sgComboFill').style.width = `${clamp(combo.remaining / combo.duration * 100, 0, 100)}%`;
       }
@@ -1213,6 +1235,7 @@
   }
 
   function ingestSnapshot(next, at) {
+    receiveBlinkConsumption(next);
     if (next.arena?.width > 0) WORLD.width = next.arena.width;
     if (next.arena?.height > 0) WORLD.height = next.arena.height;
     motionSettings = { ...defaultMotion, ...next.motion };
@@ -1990,7 +2013,7 @@
     const visibleWaves = [...current.blasts];
     if (candidate && !visibleWaves.some(blast => blast.id === candidate.waveId)) visibleWaves.push({ ...candidate, id: candidate.waveId, ownerId: myId, color: own.color });
     for (const blast of visibleWaves) {
-      if (cancelledWaves.has(blast.id)) { waveVisuals.delete(blast.id); continue; }
+      if (cancelledWaves.has(blast.id) || consumedBlinkWaves.has(blast.id)) { waveVisuals.delete(blast.id); continue; }
       present.add(blast.id);
       const previousVisual = waveVisuals.get(blast.id);
       const travel = blast.travel ?? (blast.distance || 420) * (blast.progress || 0), speed = Math.max(1, blast.speed || 600);
@@ -2018,7 +2041,7 @@
     const renderedTravel = speed * (sampleAt - launchAt) / 1000, front = clamp(renderedTravel, 0, distance);
     const originX = blast.originX ?? blast.x - directionX * travel, originY = blast.originY ?? blast.y - directionY * travel;
     if (visual && renderedTravel >= distance) visual.completed = true;
-    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: !cancelledWaves.has(blast.id) && !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
+    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(64, front), active: !cancelledWaves.has(blast.id) && !consumedBlinkWaves.has(blast.id) && !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
   }
   function drawBlast(blast, time, pose = wavePose(blast, time)) {
     if (!pose.active) return;
