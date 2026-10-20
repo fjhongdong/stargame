@@ -45,7 +45,8 @@ test('a wave knocks the actual body, sheds twelve percent, and conserves the pos
 });
 
 test('one hit produces real coasting displacement and cannot repeatedly add impulse during subsequent overlap', () => {
-  const { arena, player, fire } = fixture(), target = player('target', 1070), before = target.cells[0].x;
+  const { arena, player, owner, fire } = fixture();
+  const target = player('target', owner.x + owner.radius * 2 + 4), before = target.cells[0].x;
   const wave = fire(), revision = target.collisionRevision, event = target.lastWaveHit;
   near(target.cells[0].vx, WAVE.knockback);
   const massAfter = target.mass, looseAfter = fragments(arena, target.id).length;
@@ -60,9 +61,14 @@ test('one hit produces real coasting displacement and cannot repeatedly add impu
 });
 
 test('a multi-cell victim receives impulse only on the cells actually intersected by the arc', () => {
-  const { arena, player, fire } = fixture(), target = player('target', 1058, 3970);
+  const { arena, player, owner, fire } = fixture();
+  const side = (WAVE.width + WAVE.thickness) / 2;
+  const front = owner.x + owner.radius + WAVE.thickness / 2 + 4;
+  const target = player('target', front + owner.radius / 2, owner.y - side);
   target.cells[0].mergeIn = SIBLING.launchGrace;
-  target.cells.push({ ...target.cells[0], id: 'second-hit', y: 4030, mass: 16, radius: 16 });
+  target.cells.push({ ...target.cells[0], id: 'second-hit', y: owner.y + side, mass: 16, radius: 16 });
+  assert.ok(Math.hypot(target.x - owner.x, target.y - owner.y) > target.radius + owner.radius);
+  assert.ok(target.cells[1].y - target.cells[0].y > target.radius + target.cells[1].radius);
   target.cells.push({ ...target.cells[0], id: 'outside-wave', y: 4240 });
   target.mass = 88;
   fire();
@@ -89,11 +95,12 @@ test('spawn protection, rear position and wave ownership prevent both mass loss 
 });
 
 test('wave feedback identifies the impacted cell and is copied safely, retained after the wave and reset with a new round', () => {
-  const { arena, player, owner, fire } = fixture(), target = player('target', 1070);
+  const { arena, player, owner, fire } = fixture();
+  const target = player('target', owner.x + owner.radius * 2 + 4), surfaceX = target.x - target.radius;
   assert.equal(snapshotArena(arena).players.find(p => p.id === target.id).lastWaveHit, null);
   const wave = fire(), event = target.lastWaveHit;
   assert.equal(event.ownerId, owner.id); assert.equal(event.waveId, wave.id); assert.equal(event.cellId, target.cells[0].id);
-  near(event.x, 1070 - 24); near(event.y, 4000); near(event.directionX, 1); near(event.directionY, 0);
+  near(event.x, surfaceX); near(event.y, 4000); near(event.directionX, 1); near(event.directionY, 0);
   for (const key of ['at', 'x', 'y', 'directionX', 'directionY', 'impulse', 'hitCells', 'lostMass']) assert.ok(Number.isFinite(event[key]));
   assert.equal(event.mode, 'forward');
   for (const key of ['damage', 'hpAfter', 'maxHp', 'killed']) assert.ok(!(key in event), `wave feedback must not retain removed ${key}`);
@@ -103,7 +110,7 @@ test('wave feedback identifies the impacted cell and is copied safely, retained 
     assert.ok(!(key in p.stats), `stat snapshot must not retain removed ${key}`);
   }
   assert.deepEqual(wire, event); wire.hitCellIds.push('tampered'); wire.x = -1;
-  assert.deepEqual(event.hitCellIds, [target.cells[0].id]); near(event.x, 1046);
+  assert.deepEqual(event.hitCellIds, [target.cells[0].id]); near(event.x, surfaceX);
   advance(arena, .8);
   assert.equal(arena.blasts.length, 0); assert.equal(target.lastWaveHit.id, event.id);
   startRound(arena);
@@ -136,8 +143,11 @@ test('small cores shed only the available mass above one, with no duplicate mass
     near(target.mass, mass - lost); assert.ok(target.mass >= 1); near(totalMass(arena), 36 + mass);
     fragments(arena, target.id).forEach(piece => near(piece.value, lost / 3));
   }
-  const { arena, player, owner, fire } = fixture(), target = player('target', 1060);
+  const { arena, player, owner, fire } = fixture(), target = player('target', owner.x + owner.radius * 2 + 4);
   for (let hit = 0; hit < 5; hit++) {
+    // Stay genuinely adjacent as the hit body shrinks, so every independent
+    // wave reaches it at launch without relying on the old oversized front.
+    target.cells[0].x = target.x = owner.x + owner.radius + target.cells[0].radius + 4;
     owner.cooldown = 0; owner.energy = 100; setPlayerInput(arena, owner.id, { fire: false }); fire();
     assert.equal(target.cells.length, 1, 'repeated hits change motion and mass rather than triggering a removed health/death system');
     assert.ok(target.mass >= 1);

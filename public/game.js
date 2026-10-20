@@ -847,7 +847,8 @@
       const pose = wavePose(blast, at);
       if (!pose.active) return null;
       const source = player.cells.find(cell => cell.id === ready.sourceCellId), model = predictedCells.get(ready.sourceCellId)?.model;
-      return { ...pose, kind: 'blink', radius: (model?.radius ?? source?.radius ?? 24) + 10 };
+      return { ...pose, kind: 'blink', sourceRadius: blast.sourceRadius ?? model?.radius ?? source?.radius ?? 24,
+        radius: (model?.radius ?? source?.radius ?? 24) + 10 };
     }
     const target = room.players.find(other => other.id === combo.ready.targetId);
     const cell = target?.cells?.find(cell => cell.id === combo.ready.targetCellId && !cell.dysonId);
@@ -1879,7 +1880,8 @@
         const blast = entry.blast;
         const pose = wavePose(blast, time);
         if (!pose.active) continue;
-        const extent = Math.hypot((blast.width || 160) / 2, (blast.curvature || 30) + pose.tail) + (blast.thickness || 20) + 10;
+        const geometry = waveGeometry(blast);
+        const extent = Math.hypot(geometry.width / 2, geometry.curvature + pose.tail) + geometry.thickness + 10;
         if (visible(pose.x, pose.y, extent, view)) drawBlast(blast, time, pose);
       }
       drawnPlayers.clear();
@@ -2116,8 +2118,9 @@
       // A directional cue belongs to a travelling wave; a large circular
       // target made each launch look like another planet or a shield.
       ctx.save(); ctx.translate(target.x, target.y); ctx.rotate(Math.atan2(target.directionY, target.directionX));
-      ctx.strokeStyle = '#c2f7ff'; ctx.lineWidth = 1.5 / view.scale; ctx.globalAlpha = .85;
-      ctx.beginPath(); ctx.moveTo(10, -5); ctx.lineTo(16, 0); ctx.lineTo(10, 5); ctx.stroke();
+      const radius = target.sourceRadius || 24;
+      ctx.strokeStyle = '#c2f7ff'; ctx.lineWidth = Math.min(radius * .06, 1.2 / view.scale); ctx.globalAlpha = .85;
+      ctx.beginPath(); ctx.moveTo(radius * .1, -radius * .16); ctx.lineTo(radius * .3, 0); ctx.lineTo(radius * .1, radius * .16); ctx.stroke();
       ctx.restore(); return;
     }
     const pulse = (Math.sin(time * .009) + 1) * .5, radius = target.radius + pulse * 3;
@@ -2168,6 +2171,11 @@
     }
     while (waveVisuals.size > 128) waveVisuals.delete(waveVisuals.keys().next().value);
   }
+  function waveGeometry(blast) {
+    const sourceRadius = blast.sourceRadius > 0 ? blast.sourceRadius : 24;
+    return { sourceRadius, width: blast.width ?? sourceRadius * 1.75,
+      thickness: blast.thickness ?? sourceRadius * .25, curvature: blast.curvature ?? sourceRadius / 6 };
+  }
   function wavePose(blast, time) {
     const dx = Number.isFinite(blast.directionX) ? blast.directionX : 1, dy = Number.isFinite(blast.directionY) ? blast.directionY : 0, length = Math.hypot(dx, dy) || 1;
     const directionX = dx / length, directionY = dy / length, speed = Math.max(0, blast.speed || 600);
@@ -2181,11 +2189,12 @@
     const renderedTravel = speed * (sampleAt - launchAt) / 1000, front = clamp(renderedTravel, 0, distance);
     const originX = blast.originX ?? blast.x - directionX * travel, originY = blast.originY ?? blast.y - directionY * travel;
     if (visual && renderedTravel >= distance) visual.completed = true;
-    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(Math.max(34, (blast.sourceRadius || 24) * 2), front), active: !cancelledWaves.has(blast.id) && !consumedBlinkWaves.has(blast.id) && !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
+    return { x: originX + directionX * front, y: originY + directionY * front, directionX, directionY, progress: front / distance, tail: Math.min(waveGeometry(blast).sourceRadius * .6, front), active: !cancelledWaves.has(blast.id) && !consumedBlinkWaves.has(blast.id) && !visual?.completed && renderedTravel >= 0 && renderedTravel < distance };
   }
   function drawBlast(blast, time, pose = wavePose(blast, time)) {
     if (!pose.active) return;
-    const color = safeColor(blast.color || room.players.find((p) => p.id === blast.ownerId)?.color), halfWidth = (blast.width || 160) / 2, thickness = blast.thickness || 20, curve = blast.curvature || 30;
+    const geometry = waveGeometry(blast);
+    const color = safeColor(blast.color || room.players.find((p) => p.id === blast.ownerId)?.color), halfWidth = geometry.width / 2, thickness = geometry.thickness, curve = geometry.curvature;
     const opacity = Math.min(1, (1 - pose.progress) * 5);
     ctx.save(); ctx.translate(pose.x, pose.y); ctx.rotate(Math.atan2(pose.directionY, pose.directionX)); ctx.lineCap = 'round';
     if (pose.tail > 1) {
@@ -2199,8 +2208,8 @@
     // This curve is the server's swept wave front: (x,y) + perp*u*width/2 - direction*curvature*u².
     ctx.beginPath(); ctx.moveTo(-curve, -halfWidth); ctx.quadraticCurveTo(curve, 0, -curve, halfWidth);
     ctx.globalAlpha = opacity * .1; ctx.strokeStyle = color; ctx.lineWidth = thickness; ctx.stroke();
-    ctx.globalAlpha = opacity * .7; ctx.lineWidth = Math.max(1.5 / camera.scale, thickness * .12); ctx.stroke();
-    ctx.globalAlpha = opacity * .95; ctx.strokeStyle = '#e6fbff'; ctx.lineWidth = 1.05 / camera.scale; ctx.stroke(); ctx.restore();
+    ctx.globalAlpha = opacity * .7; ctx.lineWidth = Math.min(thickness, Math.max(1.5 / camera.scale, thickness * .12)); ctx.stroke();
+    ctx.globalAlpha = opacity * .95; ctx.strokeStyle = '#e6fbff'; ctx.lineWidth = Math.min(thickness, 1.05 / camera.scale); ctx.stroke(); ctx.restore();
   }
   function drawPlanet(player, cell, position, time, primary, decoration = false) {
     const color = safeColor(player.color), radius = cell.fusionRole === 'donor' ? Math.max(.01, cell.radius) : Math.max(4, cell.radius || 24), me = player.id === myId, sprite = cachedPlanet(color, radius), scale = radius / sprite.radius;

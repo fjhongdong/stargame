@@ -214,7 +214,9 @@ test('activating a previously launched wave source safely detaches its in-progre
   const source = attacker.cells[0], donor = { ...source, id: 'source-fusion-donor', mass: 12, radius: 4 * Math.sqrt(12),
     x: source.x - source.radius - 4 * Math.sqrt(12) };
   attacker.cells.push(donor); advanceSiblingFusion(attacker.cells, 0);
-  assert.ok(source.fusionId); advance(arena, .35); assert.ok(target.lastWaveHit);
+  assert.ok(source.fusionId);
+  for (let i = 0; i < 72 && !target.lastWaveHit; i++) stepArena(arena, 1 / 120);
+  assert.ok(target.lastWaveHit); assert.ok(source.fusionId, 'the real hit must arrive while the source is still fusing');
   const before = conservedMass(arena); activate();
   assert.equal(source.fusionId, null); assert.equal(donor.fusionId, null); assert.ok(donor.mergeIn > 0);
   near(conservedMass(arena), before);

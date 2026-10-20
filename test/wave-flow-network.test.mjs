@@ -76,7 +76,8 @@ test('both delta clients remove swept stardust and see mass credit on the origin
     const launched = await ack(a, source.id, command(a, { fire: true }));
     const front = launched.room.blasts.find(w => w.ownerId === source.id);
     assert.ok(front); assert.equal(front.sourceRadius, 48);
-    assert.equal(front.width, 320); assert.equal(front.thickness, 40); assert.equal(front.curvature, 60);
+    assert.equal(front.width, 84); assert.equal(front.thickness, 12); assert.equal(front.curvature, 8);
+    assert.equal(front.width + front.thickness, front.sourceRadius * 2);
     const collected = await a.wait(m => m.type === 'state' && own(m, source.id)?.mass >= 147.6
       && m.room.dustRemoved?.includes('wave-natural'));
     const sameTick = await b.wait(m => m.type === 'state' && m.room.tick === collected.room.tick);

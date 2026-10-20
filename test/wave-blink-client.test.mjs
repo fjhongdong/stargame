@@ -31,7 +31,7 @@ function state({ time = 0, mass = 36, extraCore = false, blink = true, dyson = f
     dyson: null, dysonReady: null, dysonCooldown: 0, dysonRevision: 0, lastDysonEnd: null });
   const blast = { id: 'wave-one', ownerId: 'pilot', sourceCellId: 'source', x: originX + directionX * travel, y: 4000,
     originX, originY: 4000, directionX, directionY: 0, speed: 600, travel, distance: 420,
-    width: 160, curvature: 30, thickness: 20, mode: rear ? 'rear' : 'forward', color: '#83d9ff', blinkUsed: false };
+    width: 42, curvature: 4, thickness: 6, sourceRadius: 24, mode: rear ? 'rear' : 'forward', color: '#83d9ff', blinkUsed: false };
   result.blasts = [blast];
   if (blink) own.waveBlinkReady = { waveId: blast.id, sourceCellId: 'source', x: blast.x, y: blast.y,
     originX, originY: 4000, directionX, directionY: 0, speed: 600, travel, distance: 420,
@@ -147,11 +147,12 @@ test('front and rear wave combos accept fresh Space or touch below split mass wi
 
 test('the offscreen blink-candidate fallback preserves source-scaled wave geometry', () => {
   const initial = state(), own = player(initial), wave = initial.blasts[0];
-  Object.assign(wave, { sourceRadius: 96, width: 640, thickness: 80, curvature: 120, radius: 340, originOffset: 140 });
+  Object.assign(wave, { sourceRadius: 96, width: 168, thickness: 24, curvature: 16, radius: 112, originOffset: 112 });
   Object.assign(own.waveBlinkReady, wave, { waveId: wave.id }); initial.blasts = [];
   const c = client(initial), visual = c.api.wave();
   assert.ok(visual, 'own candidate remains visible even when ordinary viewport culling omits the blast');
   for (const field of ['sourceRadius', 'width', 'thickness', 'curvature', 'radius', 'originOffset']) assert.equal(visual.blast[field], wave[field]);
+  assert.ok(visual.blast.width + visual.blast.thickness <= visual.blast.sourceRadius * 2);
   assert.equal(c.api.combo().kind, 'blink');
 });
 

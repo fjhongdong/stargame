@@ -30,12 +30,14 @@ function fixture(mass = 36) {
 }
 
 test('wave geometry scales with the firing planet radius at launch without changing speed or upgraded range', () => {
-  for (const mass of [9, 36, 144, 900]) for (const rear of [false, true]) {
+  for (const mass of [1, 9, 36, 144, 900]) for (const rear of [false, true]) {
     const { arena, owner, fire } = fixture(mass), radius = owner.cells[0].radius, scale = radius / 24;
     owner.stats.blastRange = 1.36;
     const wave = fire(owner, rear), wire = snapshotArena(arena).blasts.find(b => b.id === wave.id);
     near(wave.width, WAVE.width * scale); near(wave.thickness, WAVE.thickness * scale);
     near(wave.curvature, WAVE.curvature * scale);
+    near(wave.width + wave.thickness, radius * 2);
+    assert.ok(wave.width + wave.thickness <= radius * 2 + 1e-6, 'the full capsule front must be no wider than its firing planet');
     near(wave.radius, wave.width / 2 + wave.curvature + wave.thickness / 2);
     near(wave.sourceRadius, radius); near(wire.sourceRadius, radius, .01);
     near(wire.width, wave.width); near(wire.thickness, wave.thickness); near(wire.curvature, wave.curvature);
@@ -103,7 +105,7 @@ test('two same-owner waves cannot credit the same swept star twice', () => {
 
 test('a moving natural star crossing a curved tip is collected even when its final position is outside the wave lane', () => {
   const { arena, owner, fire, put } = fixture(), wave = fire();
-  const dust = put('moving-through-tip', wave.x, wave.y + 70, 2, { vy: 420 }), mass = owner.mass;
+  const dust = put('moving-through-tip', wave.x, wave.y + wave.width / 2 - 3, 2, { vy: 420 }), mass = owner.mass;
   stepArena(arena, .1);
   assert.ok(dust.y > wave.y + wave.width / 2 + wave.thickness / 2 + 1.5,
     'the star should finish outside the finite front, so final-position testing would miss its crossing');

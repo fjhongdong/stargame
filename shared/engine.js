@@ -10,7 +10,7 @@ export const SIBLING = Object.freeze({ launchGrace: 0.9, rangeBase: 600, rangeSc
   attraction: 900, radialDamping: 12, maxAcceleration: 4000, fusionDuration: 1.2 });
 export const DYSON = Object.freeze({ window: 0.9, duration: 2.4, cooldown: 8, minActive: 0.6, exitWindup: 0.3,
   returnClearance: 16, returnProtection: 0.3 });
-export const WAVE = Object.freeze({ speed: 600, distance: 420, referenceRadius: 24, width: 160, thickness: 20, curvature: 30, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, clashRetention: 1.5, clashLimit: 64 });
+export const WAVE = Object.freeze({ speed: 600, distance: 420, referenceRadius: 24, width: 42, thickness: 6, curvature: 4, segments: 8, knockback: 240, minKnockback: 80, maxKnockback: 320, chipFraction: 0.12, fragmentCount: 3, fragmentSpeed: 55, clashRetention: 1.5, clashLimit: 64 });
 export const METEOR = Object.freeze({ count: 72, minSpeed: 180, maxSpeed: 300, minRadius: 3, maxRadius: 5,
   mass: 4, interaction: 'impact', nearPlayerCount: 3, nearRadius: 1200, nearSpawnMinDistance: 450,
   nearSpawnMaxDistance: 900, spawnClearance: 80, tailScale: 0.22, minTail: 40, maxTail: 75,

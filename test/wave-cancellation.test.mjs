@@ -20,7 +20,8 @@ function wave(id, x, y, dx, dy, options = {}) {
   return { id, ownerId: `owner-${id}`, kind: 'wave', mode: 'forward', sourceCellId: `source-${id}`,
     x, y, originX: x, originY: y, directionX: dx, directionY: dy,
     width: WAVE.width, thickness: WAVE.thickness, curvature: WAVE.curvature,
-    speed: WAVE.speed, distance: WAVE.distance, travel: 0, color: '#5eefa8', radius: 120,
+    speed: WAVE.speed, distance: WAVE.distance, travel: 0, color: '#5eefa8',
+    radius: WAVE.width / 2 + WAVE.curvature + WAVE.thickness / 2,
     hit: new Set(), ...options };
 }
 
@@ -51,26 +52,28 @@ test('a 100ms step detects opposite fast fronts even when neither endpoint inter
   arena.blasts = [wave('a', 1000, 2000, 1, 0), wave('b', 1030, 2000, -1, 0)];
   stepArena(arena, .1);
   assert.equal(arena.blasts.length, 0); assert.equal(arena.waveClashes.length, 1);
-  near(arena.waveClashes[0].at, 1 / 120, .00001);
+  near(arena.waveClashes[0].at, (30 - WAVE.thickness) / (2 * WAVE.speed), .00001);
   near(arena.waveClashes[0].x, 1015, .02); near(arena.waveClashes[0].y, 2000, .02);
 });
 
 test('finite curved tips can glance but separated wave bounding circles cannot cause a false cancellation', () => {
-  for (const offset of [179, 181]) {
+  const touchingOffset = WAVE.width + WAVE.thickness - 1;
+  for (const offset of [touchingOffset, touchingOffset + 2]) {
     const { arena } = fixture();
     arena.blasts = [wave('a', 1000, 2000, 1, 0), wave('b', 1120, 2000 + offset, -1, 0)];
     advance(arena, .25, .1);
-    if (offset === 179) { assert.equal(arena.blasts.length, 0); assert.equal(arena.waveClashes.length, 1); }
+    if (offset === touchingOffset) { assert.equal(arena.blasts.length, 0); assert.equal(arena.waveClashes.length, 1); }
     else { assert.equal(arena.blasts.length, 2); assert.equal(arena.waveClashes.length, 0); }
   }
 });
 
 test('parallel fronts cancel only on a real simultaneous touch, never on overlap of their swept areas at different times', () => {
-  for (const gap of [10, 45]) {
+  const touchingGap = WAVE.thickness / 2;
+  for (const gap of [touchingGap, 45]) {
     const { arena } = fixture();
     arena.blasts = [wave('a', 1000, 2000, 1, 0), wave('b', 1000 + gap, 2000, 1, 0)];
     stepArena(arena, .1);
-    if (gap === 10) { assert.equal(arena.blasts.length, 0); assert.equal(arena.waveClashes.length, 1); }
+    if (gap === touchingGap) { assert.equal(arena.blasts.length, 0); assert.equal(arena.waveClashes.length, 1); }
     else {
       assert.equal(arena.blasts.length, 2); assert.equal(arena.waveClashes.length, 0);
       near(arena.blasts[0].x, 1060); near(arena.blasts[1].x, 1105);
@@ -121,7 +124,7 @@ test('expiry truncates the active trajectory rather than leaving a stationary fr
   for (const beforeExpiry of [true, false]) {
     const other = fixture();
     other.arena.blasts = [wave('short', 1000, 2000, 1, 0, { originX: 592, travel: 408 }),
-      wave('incoming', beforeExpiry ? 1042 : 1046, 2000, -1, 0)];
+      wave('incoming', 1000 + 2 * 12 + WAVE.thickness + (beforeExpiry ? -2 : 2), 2000, -1, 0)];
     stepArena(other.arena, .1);
     assert.equal(other.arena.waveClashes.length, beforeExpiry ? 1 : 0);
     assert.equal(other.arena.blasts.length, beforeExpiry ? 0 : 1);
@@ -150,7 +153,7 @@ test('an exactly simultaneous counter-wave takes priority over the attack reachi
   arena.blasts = [wave('attack', 1000, 2000, 1, 0), wave('counter', 1120, 2000, -1, 0, { ownerId: target.id })];
   stepArena(arena, .1);
   assert.equal(arena.blasts.length, 0); assert.equal(arena.waveClashes.length, 1);
-  near(arena.waveClashes[0].at, 1 / 12, .00001);
+  near(arena.waveClashes[0].at, (120 - WAVE.thickness) / (2 * WAVE.speed), .00001);
   assert.equal(target.lastWaveHit, null); near(target.mass, 9); near(target.vx, 0); near(target.vy, 0);
 });
 

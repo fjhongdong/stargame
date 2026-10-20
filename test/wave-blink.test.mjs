@@ -43,7 +43,7 @@ function counterWave(id, x, y) {
   return { id, ownerId: 'counter-owner', kind: 'wave', mode: 'forward', sourceCellId: 'counter-source',
     x, y, originX: x, originY: y, directionX: -1, directionY: 0, width: WAVE.width,
     thickness: WAVE.thickness, curvature: WAVE.curvature, speed: WAVE.speed,
-    distance: WAVE.distance, travel: 0, color: '#ffe787', radius: 120, hit: new Set() };
+    distance: WAVE.distance, travel: 0, color: '#ffe787', radius: WAVE.width / 2 + WAVE.curvature + WAVE.thickness / 2, hit: new Set() };
 }
 
 test('a fresh Space on either directional wave blinks a small source to the current front without altering its identity, mass or momentum', () => {
@@ -119,7 +119,7 @@ test('a consumed wave cannot hit later or arm a late Dyson combo, while an other
   assert.equal(owner.cells.length, 1); assert.equal(owner.cells[0].id, sourceId); near(owner.mass, 36);
 
   const control = fixture(), controlTarget = control.player('target', 4300), liveWave = control.fire();
-  advance(control.arena, .4);
+  advance(control.arena, .45);
   assert.equal(controlTarget.lastWaveHit.waveId, liveWave.id); assert.ok(control.owner.dysonReady);
   control.space(); assert.ok(control.owner.dyson, 'real hits still retain the higher-priority Dyson combo');
 });
@@ -149,7 +149,7 @@ test('the latest launched wave is authoritative and used, hit, cancelled or expi
     const older = fire(); advance(arena, .45); owner.stats.blastRange = 1;
     if (blocked === 'hit') {
       owner._dysonCooldownUntil = arena.time + 8;
-      player('late-target', owner.cells[0].x + owner.cells[0].radius + 54);
+      player('late-target', owner.cells[0].x + owner.cells[0].radius + 24 + 4);
     }
     const latest = fire();
     assert.notEqual(latest.id, older.id); assert.ok(arena.blasts.includes(older)); assert.equal(older.hit.size, 0);
@@ -159,7 +159,7 @@ test('the latest launched wave is authoritative and used, hit, cancelled or expi
     } else if (blocked === 'hit') {
       assert.ok(latest.hit.size > 0); assert.equal(owner.dysonReady, null);
     } else if (blocked === 'cancelled') {
-      arena.blasts.push(counterWave('latest-counter', latest.x + 20, latest.y)); stepArena(arena, 0);
+      arena.blasts.push(counterWave('latest-counter', latest.x + (latest.thickness + WAVE.thickness) / 2, latest.y)); stepArena(arena, 0);
       assert.ok(!arena.blasts.includes(latest)); assert.ok(arena.waveClashes.length > 0);
     } else {
       advance(arena, .705);
