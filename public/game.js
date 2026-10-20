@@ -74,12 +74,13 @@
     `;
     document.head.appendChild(style);
     style.textContent += `.sg-wave-actions{display:flex;gap:7px}.sg-wave-actions .sg-blast-button{min-width:0;font-size:10px;letter-spacing:0;padding:11px 7px;gap:5px}.sg-rear-blast svg{transform:rotate(180deg)}.sg-rear-blast:disabled{opacity:.4}@media(max-width:700px){.sg-wave-actions{display:block}.sg-wave-actions .sg-blast-button{font-size:10px;padding:13px;gap:6px}.sg-wave-actions .sg-rear-blast{position:fixed;right:128px;bottom:96px;width:46px;height:46px;padding:5px;margin:0;gap:3px;font-size:8px}#sgRearBlast{padding:5px;gap:3px;font-size:9px;line-height:1.1}#sgRearBlast svg{width:14px;height:14px;flex-shrink:0}#sgRearBlast span{white-space:nowrap;font-size:9px;line-height:1.1}}.sg-wave-feedback{position:absolute;top:153px;left:50%;transform:translateX(-50%);max-width:calc(100% - 40px);padding:10px 17px;border:1px solid #d4b5ff77;border-radius:9px;background:#151c2fed;color:#eadfff;font-size:12px;white-space:nowrap;pointer-events:none}.sg-wave-feedback[hidden]{display:none}.sg-wave-feedback[data-tone=victim]{border-color:#ffb69e88;color:#ffd2bd}@media(max-width:700px){.sg-wave-feedback{top:141px;font-size:10px;padding:8px 12px}}`;
+    style.textContent += `.sg-dyson-status{margin-bottom:12px;padding:10px 11px;border:1px solid #b9f6ca44;border-radius:8px;background:#122626e8;color:#c7ffe1;font-size:10px;line-height:1.65;letter-spacing:.2px}.sg-dyson-status[hidden]{display:none}.sg-dyson-status[data-phase=ready]{border-color:#ddc1ff99;color:#eddbff;background:#241e35ed}.sg-dyson-status[data-phase=cooldown]{color:#94a7b7;border-color:#9db6cb22;background:#101923dc}.sg-dyson-status strong{display:block;font-weight:600}.sg-dyson-status small{color:#91bba8;font-size:9px}#sgTouchSplit[data-combo=ready]{background:#352643;border-color:#dec1ff;color:#f0dcff;box-shadow:0 0 18px #d4b5ff22}@media(max-width:700px){.sg-dyson-status{position:fixed;left:50%;bottom:186px;transform:translateX(-50%);width:max-content;max-width:calc(100% - 32px);padding:7px 12px;font-size:10px;text-align:center}.sg-dyson-status small{font-size:9px}#sgTouchSplit{font-size:9px;padding:3px;line-height:1.2}}`;
     root.innerHTML = `
       <canvas id="gameCanvas" aria-label="星球大爆炸实时竞技场"></canvas>
       <div class="sg-top"><div class="sg-brand"><div class="sg-symbol">✳</div><div><div class="sg-title">星球大爆炸</div><div class="sg-subtitle">PLANET BOOM / LIVE ARENA</div></div></div><div class="sg-round"><i class="sg-live-dot"></i><span class="sg-round-label" id="sgRoundLabel">准备起航</span><span class="sg-timer" id="sgTimer">03:00</span></div><div class="sg-actions"><button class="sg-icon-btn" id="sgFullscreen" aria-label="进入全屏" aria-pressed="false" title="进入全屏">${icons.fullscreen}</button><button class="sg-icon-btn" id="sgSound" aria-label="开启游戏音效" aria-pressed="false" title="游戏音效">${icons.audio}</button><button class="sg-icon-btn" id="sgExit" aria-label="返回星际大厅" title="返回大厅">${icons.exit}</button></div></div>
       <div class="sg-rank"><div class="sg-rank-title"><span class="sg-eyebrow">实时排行榜</span><span class="sg-rank-count" id="sgPlayerCount">00 PLAYERS</span></div><div id="sgRanking"></div></div>
       <div class="sg-stat"><div class="sg-eyebrow">星球总质量</div><div class="sg-score" id="sgScore">036</div><div class="sg-score-label">引力吸收 · 碰撞碎裂</div><div class="sg-mass-label" id="sgLevel">LV. 1 / 初生星球</div><div class="sg-growth"><i id="sgGrowthFill"></i></div><div class="sg-growth-caption" id="sgGrowthText">成长后解锁随机强化</div></div>
-      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span>分裂</span></div></div><div class="sg-energy"><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><div class="sg-wave-actions"><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向波</span><kbd>E</kbd></button><button id="sgRearBlast" class="sg-blast-button sg-rear-blast" aria-label="向后发射引力波，R">${icons.bolt}<span>后向波</span><kbd>R</kbd></button></div></div></div>
+      <div class="sg-bottom"><div class="sg-controls"><div class="sg-control"><span class="sg-key">方向键 / WASD</span><span>推进 · 松键滑行</span></div><div class="sg-control"><span class="sg-key">SPACE</span><span id="sgSplitLabel">分裂 / 命中连招</span></div></div><div class="sg-energy"><div class="sg-dyson-status" id="sgDysonStatus" role="status" hidden></div><div class="sg-energy-caption"><span>引力能量</span><span id="sgEnergyText">60 / 100</span></div><div class="sg-energy-track"><div class="sg-energy-fill" id="sgEnergyFill"></div></div><div class="sg-wave-actions"><button id="sgBlast" class="sg-blast-button">${icons.bolt}<span>前向波</span><kbd>E</kbd></button><button id="sgRearBlast" class="sg-blast-button sg-rear-blast" aria-label="向后发射引力波，R">${icons.bolt}<span>后向波</span><kbd>R</kbd></button></div></div></div>
       <div class="sg-diagnostics" id="sgDiagnostics">— FPS / — ms</div><div class="sg-room-code" id="sgRoomFooter"></div><div class="sg-status" id="sgStatus" hidden></div><div class="sg-toast" id="sgToast" role="status"></div><div class="sg-respawn" id="sgRespawn" hidden></div><div class="sg-wave-feedback" id="sgWaveFeedback" role="status" aria-live="polite" hidden></div>
       <div class="sg-touch" id="sgTouch"><div class="sg-joystick" id="sgJoystick" aria-label="拖动摇杆移动"><div class="sg-joystick-knob" id="sgJoystickKnob"></div></div><div class="sg-touch-utility"><button id="sgTouchSplit">分裂</button></div></div>
       <div class="sg-upgrade-active" id="sgUpgradeActive"></div><section class="sg-upgrades" id="sgUpgrades" hidden aria-label="选择星球强化"><div class="sg-upgrade-head"><span class="sg-upgrade-title" id="sgUpgradeTitle">星球进化 · 选择强化</span><span class="sg-upgrade-hint">选择强化 · 对局继续进行 · 按 1 / 2 / 3</span></div><div class="sg-upgrade-cards" id="sgUpgradeCards"></div></section>
@@ -680,8 +681,8 @@
     $('sgPlayerCount').textContent = `${String(players.length).padStart(2, '0')} PLAYERS`;
     setMarkup('sgRanking', players.slice(0, 6).map((p, i) => `<div class="sg-rank-row${p.id === myId ? ' me' : ''}"><span class="sg-rank-num">${i + 1}</span><span class="sg-player-dot" style="--planet:${safeColor(p.color)}"></span><span class="sg-rank-name">${esc(p.name)}${p.id === myId ? ' · 你' : ''}</span><span class="sg-rank-score">${Math.floor(p.mass ?? p.score ?? 0)}</span></div>`).join(''));
     $('sgScore').textContent = String(Math.floor(me?.mass ?? 36)).padStart(3, '0');
-    const ownCells = (me?.cells || []).filter(cell => (predictedCells.get(cell.id)?.model.mass ?? cell.mass) > 0);
-    $('sgLevel').textContent = `LV. ${me?.level || 1} / ${ownCells.length || 1} 颗星球`;
+    const ownCells = (me?.cells || []).filter(cell => !cell.dysonId && (predictedCells.get(cell.id)?.model.mass ?? cell.mass) > 0);
+    $('sgLevel').textContent = me?.dyson ? `LV. ${me.level || 1} / 戴森球${ownCells.length ? ` + ${ownCells.length} 颗核心` : ''}` : `LV. ${me?.level || 1} / ${ownCells.length || 1} 颗星球`;
     const peak = me?.peakMass ?? me?.mass ?? 36, next = me ? me.nextUpgradeMass : 60;
     $('sgGrowthFill').style.width = `${next ? clamp(peak / next * 100, 0, 100) : 100}%`;
     const gravity = Math.max(0, ...ownCells.map((cell) => effectiveCell(me, cell)?.gravityRadius || 0));
@@ -689,10 +690,12 @@
     const energy = clamp(me?.energy ?? 60, 0, 100);
     $('sgEnergyText').textContent = `${Math.floor(energy)} / 100`;
     $('sgEnergyFill').style.width = `${energy}%`;
-    const waveDisabled = !room || room.status !== 'playing' || energy < (me?.stats?.blastCost || 30) || (me?.respawnIn || 0) > 0 || reconnecting || (me?.cooldown || 0) > 0;
+    const multipleCores = (me?.cells || []).filter(cell => cell.mass > 0).length > 1;
+    const waveDisabled = Boolean(me?.dyson) || multipleCores || !room || room.status !== 'playing' || energy < (me?.stats?.blastCost || 30) || (me?.respawnIn || 0) > 0 || reconnecting || (me?.cooldown || 0) > 0;
     $('sgBlast').disabled = waveDisabled; $('sgRearBlast').disabled = waveDisabled;
-    $('sgBlast').title = `沿前进方向发射 · 消耗 ${me?.stats?.blastCost || 30} 能量${me?.cooldown > 0 ? ` · 冷却 ${me.cooldown.toFixed(1)} 秒` : ''}`;
-    $('sgRearBlast').title = `向后反击，不改变移动方向 · 与前向波共用能量和冷却`;
+    $('sgBlast').title = multipleCores ? '分身融合为单颗后可释放冲击波' : `沿前进方向发射 · 消耗 ${me?.stats?.blastCost || 30} 能量${me?.cooldown > 0 ? ` · 冷却 ${me.cooldown.toFixed(1)} 秒` : ''}`;
+    $('sgRearBlast').title = multipleCores ? '分身融合为单颗后可释放冲击波' : '向后反击，不改变移动方向 · 与前向波共用能量和冷却';
+    updateDysonHud(me, now);
     $('sgRoomFooter').textContent = room ? `${endless ? 'ENDLESS TRAINING / 无尽训练' : `ROOM / ${room.code}`}  ·  STAY CURIOUS, KEEP EXPLODING` : 'CONNECTING TO YOUR UNIVERSE';
     $('sgDiagnostics').textContent = `${fps > 0 ? fps : '—'} FPS / ${rtt === null ? '—' : Math.round(rtt)} ms`;
     const respawn = me?.respawnIn || 0;
@@ -710,7 +713,8 @@
   }
   function blast(rear = false) {
     const me = room?.players?.find((p) => p.id === myId);
-    if (room?.status !== 'playing' || !me || me.respawnIn > 0) return;
+    if (room?.status !== 'playing' || !me || me.respawnIn > 0 || me.dyson || reconnecting) return;
+    if ((me.cells || []).filter(cell => cell.mass > 0).length > 1) { toast('分身融合为单颗后可释放冲击波'); return; }
     if (me.energy < (me.stats?.blastCost || 30)) { toast('能量不足 · 收集星尘补充能量'); return; }
     if (me.cooldown > 0) return;
     inputPulse = !rear; rearPulse = rear; sendInput();
@@ -718,9 +722,46 @@
   }
   function split() {
     const me = room?.players?.find((p) => p.id === myId);
-    if (room?.status !== 'playing' || !me || me.respawnIn > 0 || reconnecting) return;
-    if (!(me.cells || [{ mass: me.mass }]).some((cell) => cell.mass >= 48)) { toast('单颗星球质量达到 48 后即可分裂'); return; }
+    if (room?.status !== 'playing' || !me || me.respawnIn > 0 || me.dyson || reconnecting) return;
+    if (dysonComboRemaining(me) <= 0 && !(me.cells || [{ mass: me.mass }]).some((cell) => cell.mass >= 48)) { toast('单颗星球质量达到 48 后即可分裂'); return; }
     splitPulse = true; sendInput();
+  }
+
+  function dysonComboRemaining(player, at = performance.now()) {
+    if (!player?.dysonReady || player.dyson || reconnecting || !renderTimeline) return 0;
+    return Math.max(0, player.dysonReady.expiresAt - (peekRenderSimulationTime(at) / 1000 + simulationLead));
+  }
+  function dysonPose(player, at = lastFrame || performance.now()) {
+    const shell = player?.dyson;
+    if (!shell || reconnecting || !renderTimeline) return null;
+    const target = room?.players?.find(p => p.id === shell.targetId);
+    const cell = target?.cells?.find(c => c.id === shell.targetCellId && !c.dysonId);
+    const ref = cell && (target.id === myId ? predictedCells.get(cell.id) : remotePhysics.get(`${target.id}:${cell.id}`));
+    const position = target?.id === myId ? ref : ref?.presented ? ref.visual : ref?.model;
+    const seconds = peekRenderSimulationTime(at) / 1000 + simulationLead;
+    return { ...shell, x: position?.x ?? shell.x, y: position?.y ?? shell.y,
+      radius: ref?.model?.mass > 0 ? ref.model.radius + (room?.dysonRules?.returnClearance ?? 16) : shell.radius || (cell?.radius ?? 24) + (room?.dysonRules?.returnClearance ?? 16),
+      elapsed: Math.max(0, seconds - shell.startedAt), remaining: Math.max(0, shell.endsAt - seconds) };
+  }
+  function updateDysonHud(player, at) {
+    const status = $('sgDysonStatus'), button = $('sgTouchSplit'), label = $('sgSplitLabel');
+    if (!status || !button) return;
+    const shell = dysonPose(player, at), ready = dysonComboRemaining(player, at);
+    const cooldown = Math.max(0, (player?.dysonCooldown || 0) - Math.max(0, at - (room?._receivedAt ?? at)) / 1000);
+    status.hidden = room?.status !== 'playing' || reconnecting || !shell && !ready && !cooldown;
+    status.dataset.phase = shell ? 'active' : ready ? 'ready' : 'cooldown';
+    if (shell) setMarkup('sgDysonStatus', `<strong>戴森球 · ${shell.remaining.toFixed(1)} 秒</strong><small>已截获 ${Math.floor(shell.capturedMass || 0)} 质量 · 方向键 / 摇杆选择回归侧</small>`);
+    else if (ready) setMarkup('sgDysonStatus', `<strong>命中连招 · ${ready.toFixed(1)} 秒</strong><small>按空格 / 点击分裂 → 戴森球</small>`);
+    else if (cooldown) setMarkup('sgDysonStatus', `<strong>戴森球恢复 · ${cooldown.toFixed(1)} 秒</strong>`);
+    button.disabled = Boolean(shell) || reconnecting;
+    button.dataset.combo = shell ? 'active' : ready ? 'ready' : '';
+    button.textContent = shell ? '环绕中' : ready ? '戴森球' : '分裂';
+    button.setAttribute('aria-label', shell ? '戴森球正在环绕' : ready ? '发动戴森球连招' : '主动分裂');
+    if (label) label.textContent = shell ? '戴森球环绕中' : ready ? '戴森球连招' : '分裂 / 命中连招';
+  }
+  function clearDysonSourceContacts(key) {
+    for (const pair of contactEpisodes.keys()) if (pair.split('|').includes(key)) contactEpisodes.delete(pair);
+    remoteContactPositions.delete(key); drawnPlayers.delete(key);
   }
   function sendInput() {
     if (!active || !room || room.status !== 'playing' || reconnecting) return;
@@ -757,7 +798,9 @@
     const me = room?.players?.find((p) => p.id === myId);
     if (!me) return null;
     let x = 0, y = 0, mass = 0;
-    for (const cell of me.cells || []) { const p = predictedCells.get(cell.id); if (p) { const m = p.model?.mass ?? cell.mass; if (m <= 0) continue; x += p.x * m; y += p.y * m; mass += m; } }
+    const shell = dysonPose(me, lastFrame || performance.now());
+    if (shell) return { x: shell.x, y: shell.y };
+    for (const cell of me.cells || []) { if (cell.dysonId) continue; const p = predictedCells.get(cell.id); if (p) { const m = p.model?.mass ?? cell.mass; if (m <= 0) continue; x += p.x * m; y += p.y * m; mass += m; } }
     return mass ? { x: x / mass, y: y / mass } : { x: me.x, y: me.y };
   }
 
@@ -839,6 +882,7 @@
     const elapsed = Math.max(0, (pose.time - previous.time) / 1000);
     let contact;
     for (const player of room?.players || []) for (const cell of player.cells || []) {
+      if (cell.dysonId) continue;
       const key = `${player.id}:${cell.id}`, own = player.id === myId, proxy = own ? predictedCells.get(cell.id) : remotePhysics.get(key);
       if (!proxy || proxy.model?._consumed) continue;
       const position = own ? proxy : remoteContactFrame === at ? remoteContactPositions.get(key) || proxy.visual : proxy.visual;
@@ -1041,7 +1085,7 @@
     for (const cell of cells) if (cell.mass > 0) advanceOwnCell(cell, cell, player, input, 0);
   }
   function replayPlayerCells(player, acknowledged, at, own) {
-    const cells = (player.cells || []).map(cellState), snapshotAt = at - simulationLead * 1000;
+    const cells = (player.cells || []).filter(cell => !cell.dysonId).map(cellState), snapshotAt = at - simulationLead * 1000;
     let command = player.steering || { x: 0, y: 0 };
     if (own) for (const input of inputHistory) if (input.t <= snapshotAt) command = input;
     const pending = own ? inputHistory.filter(input => input.t > snapshotAt && input.t <= at) : [];
@@ -1071,6 +1115,7 @@
     model.radius = 4 * Math.sqrt(Math.max(0, model.mass));
   }
   function effectiveCell(player, cell, at = lastFrame) {
+    if (cell.dysonId) return null;
     const own = player.id === myId, proxy = own ? predictedCells.get(cell.id) : remotePhysics.get(`${player.id}:${cell.id}`), model = proxy?.model;
     const mass = model?.mass ?? cell.mass;
     if (model?._consumed || mass <= 0) return null;
@@ -1105,8 +1150,23 @@
       const previousPlayer = room?.players?.find((p) => p.id === player.id);
       const authorityCells = replayPlayerCells(player, acknowledged, at, player.id === myId);
       for (const cell of player.cells || []) {
-        const key = `${player.id}:${cell.id}`; cellsPresent.add(key); addTrack(cellTracks, key, cell, snapshotAt);
+        const key = `${player.id}:${cell.id}`; cellsPresent.add(key);
+        if (cell.dysonId) {
+          // The source keeps its mass and ID while orbiting, but is not a body.
+          // Its presentation comes from the target's current-time proxy.
+          const model = cellState(cell), ownCell = player.id === myId;
+          const oldRef = ownCell ? predictedCells.get(cell.id) : remotePhysics.get(key);
+          const ref = oldRef || { visual: { x: cell.x, y: cell.y }, presented: false };
+          Object.assign(ref, { model, authority: { ...model }, modelAt: at, authorityAt: at, cell, player, offsetX: 0, offsetY: 0, correctionX: 0, correctionY: 0, contactUntil: 0, normals: [] });
+          if (ownCell) { ref.x = cell.x; ref.y = cell.y; predictedCells.set(cell.id, ref); } else remotePhysics.set(key, ref);
+          const previousShell = room?.players?.find(p => p.id === player.id)?.cells?.find(c => c.id === cell.id)?.dysonId;
+          if (previousShell !== cell.dysonId) clearDysonSourceContacts(key);
+          continue;
+        }
+        addTrack(cellTracks, key, cell, snapshotAt);
         const previousCell = previousPlayer?.cells?.find((c) => c.id === cell.id);
+        const dysonReturned = Boolean(previousCell?.dysonId) || Boolean(player.lastDysonEnd?.id && player.lastDysonEnd.id !== previousPlayer?.lastDysonEnd?.id && player.lastDysonEnd.sourceCellId === cell.id);
+        if (dysonReturned) clearDysonSourceContacts(key);
         const relocated = previousCell && Math.hypot(cell.x - previousCell.x, cell.y - previousCell.y) > 350;
         const fractured = previousCell && !cell.fusionId && !previousCell.fusionId && cell.mass < previousCell.mass * .8;
         const waveHit = player.lastWaveHit;
@@ -1119,7 +1179,7 @@
         if (player.id === myId) {
           const model = authorityCells.get(cell.id);
           let p = predictedCells.get(cell.id);
-          const structural = !p || player.respawnIn > 0 || next.round !== room?.round || (relocated && !predictionPaused);
+          const structural = !p || dysonReturned || player.respawnIn > 0 || next.round !== room?.round || (relocated && !predictionPaused);
           if (structural) {
             p = { x: model.x, y: model.y, vx: model.vx, vy: model.vy, offsetX: 0, offsetY: 0, model, normals: [], contactUntil: 0 };
             predictedCells.set(cell.id, p);
@@ -1128,7 +1188,7 @@
             // hiding the replacement in a fading offset creates speed pulses.
             if (fractured) { p.model.vx = cell.vx || 0; p.model.vy = cell.vy || 0; }
             const newImpact = player.lastImpact?.id && player.lastImpact.id !== previousPlayer?.lastImpact?.id;
-            const revised = player.collisionRevision !== previousPlayer?.collisionRevision;
+            const revised = player.collisionRevision !== previousPlayer?.collisionRevision && player.dysonRevision === previousPlayer?.dysonRevision;
             const velocityError = Math.hypot(model.vx - p.model.vx, model.vy - p.model.vy);
             if ((newHitImpulse && velocityError > 1) || (newImpact && velocityError > 1) || (p.contactUntil <= at && revised && velocityError > motionSettings.restingThreshold)) {
               // A server-only impact is real momentum, unlike ordinary ACK
@@ -1146,7 +1206,7 @@
           const steering = player.steering || { x: 0, y: 0 };
           const target = authorityCells.get(cell.id);
           let proxy = remotePhysics.get(key);
-          if (!proxy || (relocated && !predictionPaused) || next.round !== room?.round) {
+          if (!proxy || dysonReturned || (relocated && !predictionPaused) || next.round !== room?.round) {
             proxy = { model: { ...target }, authority: { ...target }, visual: { x: target.x, y: target.y }, presented: false, offsetX: 0, offsetY: 0, island: false, islandUntil: 0, contactUntil: 0, normals: [] };
             remotePhysics.set(key, proxy);
           } else {
@@ -1160,7 +1220,7 @@
         }
       }
       const refs = (player.cells || []).map(cell => player.id === myId ? predictedCells.get(cell.id) : remotePhysics.get(`${player.id}:${cell.id}`)).filter(Boolean);
-      for (const ref of refs) if (ref.modelAt === at && ref.model.fusionId) {
+      for (const ref of refs) if (!ref.cell.dysonId && ref.modelAt === at && ref.model.fusionId) {
         const partner = refs.find(other => other.model.id === ref.model.fusionPartnerId && other.model.fusionId === ref.model.fusionId);
         if (!partner || partner.modelAt >= at) continue;
         // A real impulse is received between frames. Keep its coupled fusion
@@ -1240,6 +1300,7 @@
     for (const player of room?.players || []) {
       if (player.respawnIn > 0) continue;
       for (const cell of player.cells || []) {
+        if (cell.dysonId) continue;
         const key = `${player.id}:${cell.id}`, own = player.id === myId;
         let ref = own ? predictedCells.get(cell.id) : remotePhysics.get(key);
         if (!ref) {
@@ -1546,9 +1607,16 @@
     const mobile = width < 700;
     let targetX = center?.x ?? WORLD.width / 2, targetY = center?.y ?? WORLD.height / 2;
     let targetScale = (mobile ? .8 : .95) / Math.pow(Math.max(36, me?.mass || 36) / 36, .1);
-    if (me?.cells?.length > 1) {
+    const shell = dysonPose(me, lastFrame || performance.now());
+    const focusId = shell?.id || null;
+    if (camera.dysonId !== focusId) {
+      // A deliberate transformation changes the focus, not its physical speed.
+      camera.targetX = targetX; camera.targetY = targetY; camera.dysonId = focusId;
+    }
+    if (shell) targetScale = Math.min(targetScale, width * .72 / (shell.radius * 2 + 160), height * .62 / (shell.radius * 2 + 160));
+    if (!shell && me?.cells?.length > 1) {
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-      for (const c of me.cells) { const p = predictedCells.get(c.id) || c, model = p.model || c; if (model.mass <= 0) continue; const r = model.radius ?? c.radius; minX = Math.min(minX, p.x - r); maxX = Math.max(maxX, p.x + r); minY = Math.min(minY, p.y - r); maxY = Math.max(maxY, p.y + r); }
+      for (const c of me.cells) { if (c.dysonId) continue; const p = predictedCells.get(c.id) || c, model = p.model || c; if (model.mass <= 0) continue; const r = model.radius ?? c.radius; minX = Math.min(minX, p.x - r); maxX = Math.max(maxX, p.x + r); minY = Math.min(minY, p.y - r); maxY = Math.max(maxY, p.y + r); }
       targetScale = Math.min(targetScale, width * .7 / Math.max(250, maxX - minX + 180), height * .65 / Math.max(200, maxY - minY + 180));
     }
     const minScale = Math.max(width / 3200, height / 2300, mobile ? .3 : .35);
@@ -1626,6 +1694,7 @@
           drawPlanet(player, cell, position, time, primary === cell); renderedCells++;
         }
       }
+      for (const player of room.players) { const shell = dysonPose(player, time); if (shell && visible(shell.x, shell.y, shell.radius + 45, view)) drawDyson(player, shell, time); }
       drawWaveFeedback(time, view);
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i], particleDt = p.updatedAt === undefined ? dt : Math.max(0, (time - p.updatedAt) / 1000);
@@ -1762,6 +1831,29 @@
     color = safeColor(color); ctx.save(); ctx.translate(x, y); ctx.strokeStyle = `${color}${primary ? '25' : '17'}`; ctx.lineWidth = primary ? .7 : .5; ctx.setLineDash([2, 10]); ctx.beginPath(); ctx.arc(0, 0, radius, time * .00012, Math.PI * 2 + time * .00012); ctx.stroke(); ctx.setLineDash([]);
     const pulse = 1 - ((time * .00017) % 1); ctx.globalAlpha = (1 - pulse) * (primary ? .12 : .06); ctx.strokeStyle = color; ctx.beginPath(); ctx.arc(0, 0, radius * (.55 + pulse * .45), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
   }
+  function drawDyson(player, shell, time) {
+    const color = safeColor(player.color), radius = shell.radius, phase = shell.elapsed * 1.15;
+    ctx.save(); ctx.translate(shell.x, shell.y);
+    // A sparse orbital cage leaves the target visible; it has no solid body.
+    ctx.strokeStyle = color; ctx.lineWidth = 1.3 / camera.scale;
+    ctx.globalAlpha = .45; ctx.beginPath(); ctx.arc(0, 0, radius, 0, Math.PI * 2); ctx.stroke();
+    for (let plane = 0; plane < 3; plane++) {
+      const rotation = plane * Math.PI / 3 + .2, flatten = .4 + plane * .08;
+      ctx.save(); ctx.rotate(rotation);
+      ctx.globalAlpha = .6; ctx.beginPath(); ctx.ellipse(0, 0, radius, radius * flatten, 0, 0, Math.PI * 2); ctx.stroke();
+      for (let panel = 0; panel < 6; panel++) {
+        const angle = phase * (plane === 1 ? -1 : 1) + panel * Math.PI / 3;
+        const x = Math.cos(angle) * radius, y = Math.sin(angle) * radius * flatten;
+        ctx.save(); ctx.translate(x, y); ctx.rotate(Math.atan2(Math.cos(angle) * flatten, -Math.sin(angle)));
+        ctx.globalAlpha = .9; ctx.fillStyle = color; ctx.fillRect(-4.5, -1.8, 9, 3.6);
+        ctx.globalAlpha = .85; ctx.fillStyle = '#f3fff8'; ctx.fillRect(-2.7, -.5, 5.4, 1); ctx.restore();
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = .9; ctx.fillStyle = color; ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(`${player.name || '星球'} · 戴森球`, 0, -radius - 12);
+    ctx.restore();
+  }
   function cacheWaveVisuals(current, previous) {
     if (previous?.code !== current.code || previous?.round !== current.round) waveVisuals.clear();
     const present = new Set();
@@ -1859,7 +1951,7 @@
     ctx.save(); roundRect(x, y, w, h, 7); ctx.fillStyle = '#0c1622d9'; ctx.fill(); ctx.strokeStyle = '#a6c0d32b'; ctx.lineWidth = 1; ctx.stroke();
     ctx.save(); roundRect(x + 2, y + 2, w - 4, h - 4, 5); ctx.clip();
     ctx.strokeStyle = '#b9f6ca3a'; ctx.fillStyle = '#b9f6ca08'; const vx = x + (view.x - view.width / 2) / WORLD.width * w, vy = y + (view.y - view.height / 2) / WORLD.height * h, vw = view.width / WORLD.width * w, vh = view.height / WORLD.height * h; ctx.fillRect(vx, vy, vw, vh); ctx.strokeRect(vx, vy, vw, vh);
-    for (const p of room.players) { if (p.respawnIn > 0) continue; const own = p.id === myId, center = own ? getOwnCenter() || p : p; ctx.fillStyle = own ? '#d2ffe0' : safeColor(p.color); ctx.globalAlpha = own ? 1 : .65; ctx.beginPath(); ctx.arc(x + center.x / WORLD.width * w, y + center.y / WORLD.height * h, own ? 2.5 : 1.5, 0, Math.PI * 2); ctx.fill(); }
+    for (const p of room.players) { if (p.respawnIn > 0) continue; const own = p.id === myId, center = own ? getOwnCenter() || p : dysonPose(p) || p; ctx.fillStyle = own ? '#d2ffe0' : safeColor(p.color); ctx.globalAlpha = own ? 1 : .65; ctx.beginPath(); ctx.arc(x + center.x / WORLD.width * w, y + center.y / WORLD.height * h, own ? 2.5 : 1.5, 0, Math.PI * 2); ctx.fill(); }
     ctx.restore(); ctx.globalAlpha = 1; ctx.fillStyle = '#78909d'; ctx.font = `${mobile ? 7 : 8}px ui-monospace,monospace`; ctx.textAlign = 'left'; ctx.fillText(`${WORLD.width} × ${WORLD.height} / 宇宙导航`, x, y - 7); ctx.restore();
   }
 

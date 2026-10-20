@@ -158,11 +158,20 @@ test('physics substeps do not repeat a single split or wave action, energy recha
   stepArena(arena, 0.1);
   assert.equal(player.cells.length, 2);
   assert.equal(player.mass, 200);
-  assert.equal(arena.blasts.filter(wave => wave.ownerId === player.id).length, 1);
-  assert.ok(Math.abs(player.energy - 30.3) < 1e-9);
+  assert.equal(arena.blasts.filter(wave => wave.ownerId === player.id).length, 0);
+  assert.ok(Math.abs(player.energy - 60.3) < 1e-9, 'a split takes priority and blocks the simultaneous wave without a cost');
   assert.equal(player.lastInputSeq, 11);
   assert.equal(player.inputAge, 0.1);
-  assert.equal(arena.blasts[0].travel, 60);
+
+  const single = fixture([[1000, 1000]], 200);
+  setPlayerInput(single.arena, single.player.id, { x: 1, y: 0, fire: true, seq: 11 });
+  stepArena(single.arena, 0.1);
+  assert.equal(single.player.cells.length, 1);
+  assert.equal(single.arena.blasts.filter(wave => wave.ownerId === single.player.id).length, 1);
+  assert.ok(Math.abs(single.player.energy - 30.3) < 1e-9);
+  assert.equal(single.player.lastInputSeq, 11);
+  assert.equal(single.player.inputAge, 0.1);
+  assert.equal(single.arena.blasts[0].travel, 60);
 });
 
 test('snapshots retain precise simulation time, accepted steering and shared motion and sibling parameters', () => {

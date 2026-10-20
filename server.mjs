@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import { ARENA, createArena, addPlayer, startRound, stepArena, snapshotArena, setPlayerInput, normalizeInput, chooseUpgrade } from './shared/engine.js';
+import { ARENA, createArena, addPlayer, startRound, stepArena, snapshotArena, setPlayerInput, normalizeInput, chooseUpgrade, cancelDysonLinks } from './shared/engine.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const RECONNECT_GRACE = 30_000;
@@ -84,6 +84,7 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, broadc
   function leave(id) {
     const room = find(id);
     if (!room) return;
+    cancelDysonLinks(room.arena, id, 'leave');
     room.arena.players.delete(id);
     playerRooms.delete(id);
     viewports.delete(id);
@@ -147,6 +148,7 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, broadc
     const room = find(id);
     const player = room?.arena.players.get(id);
     if (!player) return;
+    cancelDysonLinks(room.arena, id, 'disconnect');
     player.connected = false;
     player.disconnectedAt = now();
     player.input = normalizeInput();

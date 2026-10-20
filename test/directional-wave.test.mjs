@@ -88,10 +88,9 @@ test('launch direction follows actual motion while opposite thrust is still brak
   near(wave.x, origin.x + wave.travel); near(wave.y, origin.y);
 });
 
-test('stationary waves use the retained facing and spawn the whole arc ahead of the largest cell', () => {
+test('a stationary one-core wave uses the retained facing and spawns the whole arc ahead of its source', () => {
   const { arena, player } = fixture(), owner = player('owner', 1000, 1000, 100);
   owner.direction = { x: 0, y: -1 };
-  owner.cells.push({ ...owner.cells[0], id: 'small-owner-cell', x: 1200, mass: 36, radius: 24 }); owner.mass = 136;
   const main = owner.cells[0], wave = fire(arena, owner);
   assert.equal(wave.sourceCellId, main.id); near(wave.directionX, 0); near(wave.directionY, -1);
   near(wave.originX, main.x); near(wave.originY, main.y - wave.originOffset);
