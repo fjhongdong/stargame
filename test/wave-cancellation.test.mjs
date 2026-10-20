@@ -10,7 +10,7 @@ function fixture() {
   function player(id, x, y = 2000, mass = 36) {
     const p = addPlayer(arena, { id, name: id });
     Object.assign(p.cells[0], { x, y, mass, radius: 4 * Math.sqrt(mass), vx: 0, vy: 0 });
-    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), energy: 100, invulnerable: 0 });
+    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), invulnerable: 0 });
     return p;
   }
   return { arena, player };
@@ -94,7 +94,7 @@ test('same-owner waves pass through one another, while different owners also can
 test('larger mass and range upgrades do not let one wave survive an opposing weaker planet wave', () => {
   const { arena, player } = fixture(), light = player('light', 1000, 2000, 4), heavy = player('heavy', 1600, 2000, 900);
   light.direction = { x: 1, y: 0 }; heavy.direction = { x: -1, y: 0 };
-  heavy.stats.blastRange = 1.72; heavy.stats.blastCost = 10; heavy.stats.blastCooldown = .2;
+  heavy.stats.blastRange = 1.72; heavy.stats.blastCooldown = .2;
   setPlayerInput(arena, light.id, { fire: true }); setPlayerInput(arena, heavy.id, { fire: true }); stepArena(arena, 0);
   assert.equal(arena.blasts.length, 2); assert.ok(arena.blasts.find(b => b.ownerId === heavy.id).distance > WAVE.distance);
   advance(arena, .5);

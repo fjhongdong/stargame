@@ -152,14 +152,15 @@ test('different-mass unmerged siblings conserve normal momentum and retain tange
   assert.equal(player.collisionRevision, 1, 'a sibling response increments its owner revision once');
 });
 
-test('physics substeps do not repeat a single split or wave action, energy recharge or acknowledged time', () => {
+test('physics substeps do not repeat a single split or wave action, cooldown or acknowledged time', () => {
   const { arena, player } = fixture([[1000, 1000]], 200);
   setPlayerInput(arena, player.id, { x: 1, y: 0, split: true, fire: true, seq: 11 });
   stepArena(arena, 0.1);
   assert.equal(player.cells.length, 2);
   assert.equal(player.mass, 200);
   assert.equal(arena.blasts.filter(wave => wave.ownerId === player.id).length, 0);
-  assert.ok(Math.abs(player.energy - 60.3) < 1e-9, 'a split takes priority and blocks the simultaneous wave without a cost');
+  assert.equal(player.cooldown, 0, 'a split takes priority and blocks the simultaneous wave without starting cooldown');
+  assert.ok(!('energy' in player));
   assert.equal(player.lastInputSeq, 11);
   assert.equal(player.inputAge, 0.1);
 
@@ -168,7 +169,8 @@ test('physics substeps do not repeat a single split or wave action, energy recha
   stepArena(single.arena, 0.1);
   assert.equal(single.player.cells.length, 1);
   assert.equal(single.arena.blasts.filter(wave => wave.ownerId === single.player.id).length, 1);
-  assert.ok(Math.abs(single.player.energy - 30.3) < 1e-9);
+  assert.equal(single.player.cooldown, single.player.stats.blastCooldown, 'one wave starts cooldown only once despite physical substeps');
+  assert.ok(!('energy' in single.player));
   assert.equal(single.player.lastInputSeq, 11);
   assert.equal(single.player.inputAge, 0.1);
   assert.equal(single.arena.blasts[0].travel, 60);

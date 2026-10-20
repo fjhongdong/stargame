@@ -49,7 +49,7 @@ async function fixture(mass, targetX, targetY = 4000) {
     y: 1000, vx: 180, vy: 0, radius: 3, tailLength: 40, color: '#ffbd68', bornAt: arena.time }));
   arena.meteorsInitialized = true;
   for (const [p, x, y, value] of [[source, 6000, 4000, mass], [target, targetX, targetY, 36]]) {
-    Object.assign(p, { x, y, mass: value, radius: 4 * Math.sqrt(value), energy: 100, score: 0,
+    Object.assign(p, { x, y, mass: value, radius: 4 * Math.sqrt(value), score: 0,
       invulnerable: 0, cooldown: 0, direction: { x: 1, y: 0 } });
     Object.assign(p.cells[0], { x, y, mass: value, radius: p.radius, vx: 0, vy: 0,
       protectedFor: 0, shatterCooldown: 0, mergeIn: 0 });

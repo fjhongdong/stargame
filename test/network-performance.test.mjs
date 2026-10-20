@@ -117,7 +117,7 @@ test('WebSocket states acknowledge applied input and keep distant dust off the w
       sentTypes.push(JSON.parse(payload).type);
       return originalSend.call(this, payload, ...options);
     };
-    Object.defineProperty(serverSocket, 'bufferedAmount', { configurable: true, get: () => 200_000 });
+    Object.defineProperty(serverSocket, 'bufferedAmount', { configurable: true, get: () => 16 * 1024 });
     game.manager.tick();
     game.manager.tick();
     connection.send({ type: 'ping', time: 'backpressure-control-reply' });
@@ -170,7 +170,7 @@ test('opt-in dust deltas transmit changes and removals, then reconnect with a co
     assert.equal(delta.room.dust.length, 2);
 
     const serverSocket = [...game.sockets.clients][0];
-    Object.defineProperty(serverSocket, 'bufferedAmount', { configurable: true, get: () => 200_000 });
+    Object.defineProperty(serverSocket, 'bufferedAmount', { configurable: true, get: () => 16 * 1024 });
     room.arena.dust = room.arena.dust.filter(dust => dust.id !== 'delta-new');
     game.manager.ready(welcome.id, false); // This publication is skipped, including its delta cache update.
     delete serverSocket.bufferedAmount;

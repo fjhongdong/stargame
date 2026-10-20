@@ -28,15 +28,15 @@ test('inputs reject non-finite data and normalize diagonal movement', () => {
   assert.equal([...cleanName('🌍'.repeat(30))].length, 14);
 });
 
-test('dust collection increases mass, energy and score once', () => {
+test('dust collection increases mass and score once without an energy resource', () => {
   const { arena, player } = fixture();
   const p = player('a');
-  p.energy = 10;
   arena.dust = [{ id: 'known', x: 300, y: 300, value: 2 }];
   stepArena(arena, 0.01);
   assert.equal(p.mass, 38);
   assert.equal(p.score, 4);
-  assert.ok(p.energy >= 18);
+  assert.ok(!('energy' in p));
+  assert.ok(!('energy' in snapshotArena(arena).players[0]));
   assert.ok(!arena.dust.some(d => d.id === 'known'));
 });
 
@@ -92,7 +92,6 @@ test('equal-sized cells and spawn protection prevent absorption', () => {
 test('legacy eject input is ignored without spending mass or creating loose fragments', () => {
   const { arena, player } = fixture();
   const p = player('a', 300, 60);
-  p.energy = 10;
   assert.ok(!('eject' in normalizeInput({ eject: true })));
   for (let i = 0; i < 20; i++) {
     setPlayerInput(arena, p.id, { eject: i % 2 === 0 });
@@ -101,7 +100,7 @@ test('legacy eject input is ignored without spending mass or creating loose frag
   assert.equal(p.mass, 60);
   assert.equal(p.cells.length, 1);
   assert.equal(p.score, 0);
-  assert.ok(Math.abs(p.energy - 10.6) < 1e-8);
+  assert.ok(!('energy' in p));
   assert.ok(!('ejectQueued' in p));
   assert.ok(arena.dust.every(dust => !dust.fragment && !('ejected' in dust)));
   assert.ok(snapshotArena(arena).dust.every(dust => !('ejected' in dust)));
@@ -193,7 +192,7 @@ test('successive waves shed mass without killing a live core or awarding kill sc
   for (let i = 0; i < 4; i++) stepArena(arena, 0.05);
   assert.ok(Math.abs(b.mass - 36 * .88) < 1e-8);
   const firstEvent = b.lastWaveHit;
-  assert.ok(a.energy < 40);
+  assert.ok(a.cooldown > 0);
   // Keep the next hit inside the fragment pickup grace period. Cooldown rules
   // have separate coverage; this fixture isolates the repeated-hit outcome.
   a.cooldown = 0;
@@ -254,7 +253,7 @@ test('growth offers three unique upgrades once per peak milestone and rejects in
   assert.deepEqual(p.upgrades, {});
 });
 
-test('selected growth and gravity upgrades modify gameplay while removed shield choices are rejected', () => {
+test('selected growth and gravity upgrades modify gameplay while removed shield and energy choices are rejected', () => {
   const { arena, player } = fixture();
   const p = player('a');
   p.upgradePending = 2;
@@ -275,6 +274,13 @@ test('selected growth and gravity upgrades modify gameplay while removed shield 
   assert.ok(!('hp' in snapshotArena(arena).players[0]));
   assert.ok(!('shield' in p.upgrades));
   assert.ok(!('shield' in snapshotArena(arena).players[0]));
+  for (const removed of ['efficiency', 'recovery']) {
+    assert.ok(!UPGRADE_POOL.some(option => option.id === removed));
+    p.upgradeChoices = [{ id: removed }];
+    assert.throws(() => chooseUpgrade(arena, 'a', removed), /失效/);
+    assert.ok(!(removed in p.upgrades));
+  }
+  for (const removed of ['blastCost', 'energyRegen']) assert.ok(!(removed in p.stats));
 });
 
 test('room lifecycle enforces readiness, host authority and host succession', () => {

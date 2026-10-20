@@ -87,7 +87,7 @@ test('real clients observe one authoritative meteor trajectory independent of du
     restored.send({ type: 'input', seq: 103, dustDeltas: true, viewport });
     await restored.wait(m => m.type === 'state' && m.room.players.find(p => p.id === welcomeA.id)?.lastInputSeq === 103);
     const target = room.arena.players.get(welcomeA.id);
-    Object.assign(target, { mass: 36, radius: 24, energy: 40, score: 0, invulnerable: 0 });
+    Object.assign(target, { mass: 36, radius: 24, score: 0, invulnerable: 0 });
     Object.assign(target.cells[0], { mass: 36, radius: 24, vx: 0, vy: 0, impulseX: 0, impulseY: 0,
       protectedFor: 0, shatterCooldown: 0 });
     room.arena.meteors = [{ id: 'impact-meteor', x: target.cells[0].x - 30, y: target.cells[0].y,
@@ -105,7 +105,7 @@ test('real clients observe one authoritative meteor trajectory independent of du
     assert.ok(neutral.every(dust => dust.ownerId === null && dust.sourceKind === 'meteor'));
     assert.ok(Math.abs(owned.reduce((sum, dust) => sum + dust.value, 0) - hit.lostMass) < 1e-7);
     assert.ok(Math.abs(neutral.reduce((sum, dust) => sum + dust.value, 0) - 4) < 1e-7, 'the meteor itself becomes four units of collectible mass');
-    assert.equal(hitPlayer.score, 0); assert.ok(hitPlayer.energy < 42, 'impact does not grant a direct pickup reward');
+    assert.equal(hitPlayer.score, 0, 'impact does not grant a direct pickup reward'); assert.ok(!('energy' in hitPlayer));
     const later = await restored.wait(m => m.type === 'state' && m.room.tick >= impacted.room.tick + 4);
     assert.equal(later.room.players.find(p => p.id === welcomeA.id).lastMeteorHit.id, hit.id, 'one consumed meteor produces one impact event');
     assert.ok(!meteor(later, 'impact-meteor')); assert.equal(later.room.meteorTotal, METEOR.count);

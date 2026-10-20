@@ -2,7 +2,6 @@
 export const ARENA = Object.freeze({ width: 12000, height: 8000 });
 export const ROUND_DURATION = 180;
 export const COLORS = ['#5eefa8', '#d4b5ff', '#ffbd68', '#83d9ff', '#ff8eaf', '#9da8ff', '#ffe787', '#70f0e4'];
-export const BLAST_COST = 30;
 export const MOTION = Object.freeze({ response: 6, drag: 2, stopSpeed: 0.5, restitution: 0.2,
   restingThreshold: 60, contactSlop: 0.01, physicsStep: 1 / 120,
   baseSpeed: 210, referenceMass: 36, speedExponent: 0.22 });
@@ -21,9 +20,7 @@ export const UPGRADE_POOL = [
   { id: 'speed', title: '光速引擎', description: '移动速度提升 10%', icon: '⚡' },
   { id: 'growth', title: '星尘滋养', description: '吞食星尘获得的质量增加 20%', icon: '✦' },
   { id: 'range', title: '超新星回响', description: '引力波射程增加 18%', icon: '◎' },
-  { id: 'efficiency', title: '能量核心', description: '释放星爆的能量消耗降低 15%', icon: '◈' },
   { id: 'magnet', title: '引力透镜', description: '引力吸引范围增加 25', icon: '🧲' },
-  { id: 'recovery', title: '恒星充能', description: '能量自然恢复速度提升 30%', icon: '☀' },
   { id: 'cooldown', title: '星波调谐', description: '星爆冷却时间缩短 15%', icon: '⟳' },
 ];
 const START_MASS = 36;
@@ -42,8 +39,8 @@ function resetProgress(player) {
   player.upgradePending = 0;
   player.upgradeChoices = [];
   player.upgrades = {};
-  player.stats = { speed: 1, growth: 1, blastRange: 1, blastCost: BLAST_COST,
-    magnet: 0, energyRegen: 3, blastCooldown: 0.85 };
+  player.stats = { speed: 1, growth: 1, blastRange: 1,
+    magnet: 0, blastCooldown: 0.85 };
 }
 
 function offerUpgrade(arena, player) {
@@ -78,9 +75,7 @@ export function chooseUpgrade(arena, id, upgradeId) {
     case 'speed': player.stats.speed = 1 + count * 0.1; break;
     case 'growth': player.stats.growth = 1 + count * 0.2; break;
     case 'range': player.stats.blastRange = 1 + count * 0.18; break;
-    case 'efficiency': player.stats.blastCost = BLAST_COST * Math.pow(0.85, count); break;
     case 'magnet': player.stats.magnet = count * 25; break;
-    case 'recovery': player.stats.energyRegen = 3 * (1 + count * 0.3); break;
     case 'cooldown': player.stats.blastCooldown = 0.85 * Math.pow(0.85, count); break;
   }
   player.upgradePending--;
@@ -132,7 +127,7 @@ export function addPlayer(arena, { id, name, skin, bot = false, ready = false })
   if (arena.players.size >= 8) throw new Error('房间已满，最多容纳 8 人');
   const position = spawnPosition(arena);
   const player = { id, name: cleanName(name), color: skinColor(skin, arena.players.size), bot, ready,
-    connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [], energy: 60,
+    connected: true, ...position, vx: 0, vy: 0, radius: 24, mass: START_MASS, cells: [],
     score: 0, kills: 0, respawnIn: 0, invulnerable: 1.5, cooldown: 0,
     input: normalizeInput(), fireQueued: false, rearFireQueued: false, splitQueued: false, splitQueuedAsExit: false, shatteredAt: -10,
     pendingInputSeq: 0, lastInputSeq: 0, inputAge: 0, collisionRevision: 0, lastImpact: null, lastWaveHit: null, lastMeteorHit: null,
@@ -834,7 +829,7 @@ export function startRound(arena) {
   arena.fractureContacts = new Map();
   arena.impactSerial = 0;
   for (const player of arena.players.values()) {
-    Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, energy: 60, score: 0, kills: 0,
+    Object.assign(player, spawnPosition(arena), { vx: 0, vy: 0, score: 0, kills: 0,
       respawnIn: 0, invulnerable: 1.5, cooldown: 0, fireQueued: false, rearFireQueued: false, splitQueued: false, splitQueuedAsExit: false,
       shatteredAt: -10, collisionRevision: 0, lastImpact: null, lastWaveHit: null, lastMeteorHit: null,
       dysonReady: null, dyson: null, dysonCooldown: 0, dysonRevision: 0, lastDysonEnd: null, lastWaveHarvest: null, _dysonCooldownUntil: 0, botState: null,
@@ -889,7 +884,7 @@ function botInput(arena, player) {
     return { x: length > 1e-6 ? dx / length : player.direction.x,
       y: length > 1e-6 ? dy / length : player.direction.y, fire: false, split: false,
       rearFire: arena.time - state.fleeSince >= 0.2 && threatDistance < 260 && behind &&
-        player.cooldown <= 0 && player.energy >= player.stats.blastCost };
+        player.cooldown <= 0 };
   }
   state.threatId = null;
   if (state.mode === 'chase' && state.enemyId) {
@@ -939,7 +934,7 @@ function botInput(arena, player) {
     (enemy.cell.y - source.y) * player.direction.y) / enemyDistance : -1;
   return { x: distance > 1 ? dx / distance * scale : 0, y: distance > 1 ? dy / distance * scale : 0,
     split, fire: state.mode === 'chase' && enemyDistance < 260 && facing > 0.8 &&
-      player.cooldown <= 0 && player.energy >= player.stats.blastCost };
+      player.cooldown <= 0 };
 }
 
 function splitPlayer(arena, player, direction = player.direction) {
@@ -1492,7 +1487,6 @@ function awardDust(arena, player, cell, dust, shells, at = arena.time) {
   if (capture) { capture.shell.capturedMass += gain; syncPlayer(receiver); }
   if (!dust.fragment) {
     receiver.score += 2 * dust.value;
-    receiver.energy = Math.min(100, receiver.energy + 4 * dust.value);
     arena.naturalDustCount--;
   }
   dust._consumed = true;
@@ -1546,7 +1540,7 @@ function updateFacing(player, input) {
 function launchWave(arena, player, mode = 'forward', at = arena.time) {
   const source = mainCell(player);
   if (!source || player.dyson || player.cells.filter(cell => cell.mass > 0).length > 1 ||
-      player.respawnIn > 0 || player.energy < player.stats.blastCost || player.cooldown > 0) return;
+      player.respawnIn > 0 || player.cooldown > 0) return;
   const speed = Math.hypot(source.vx, source.vy);
   const facing = speed >= 5 ? { x: source.vx / speed, y: source.vy / speed } : player.direction;
   const sign = mode === 'rear' ? -1 : 1;
@@ -1558,7 +1552,6 @@ function launchWave(arena, player, mode = 'forward', at = arena.time) {
   // directly in front of a large planet; start at the surface instead.
   const originOffset = source.radius + thickness / 2 + 4;
   const x = source.x + direction.x * originOffset, y = source.y + direction.y * originOffset;
-  player.energy -= player.stats.blastCost;
   player.cooldown = player.stats.blastCooldown;
   arena.blasts.push({ id: `b${++arena.serial}`, ownerId: player.id, kind: 'wave', mode, sourceCellId: source.id,
     x, y, originX: x, originY: y, originOffset, directionX: direction.x, directionY: direction.y,
@@ -1894,7 +1887,7 @@ export function stepArena(arena, elapsed) {
       player.respawnIn = Math.max(0, player.respawnIn - dt);
       player.fireQueued = player.rearFireQueued = player.splitQueued = player.splitQueuedAsExit = false;
       if (player.respawnIn === 0) {
-        Object.assign(player, spawnPosition(arena), { energy: 45, invulnerable: 2 });
+        Object.assign(player, spawnPosition(arena), { invulnerable: 2 });
         player.cells = [newCell(arena, player.x, player.y, START_MASS)];
         syncPlayer(player);
       }
@@ -1903,7 +1896,6 @@ export function stepArena(arena, elapsed) {
     const input = player.connected ? player.input : normalizeInput();
     const moving = Math.hypot(input.x, input.y) > 0;
     const actionDirection = moving ? { x: input.x / Math.hypot(input.x, input.y), y: input.y / Math.hypot(input.x, input.y) } : player.direction;
-    player.energy = clamp(player.energy + dt * player.stats.energyRegen, 0, 100);
     if (player.dyson) {
       player.fireQueued = player.rearFireQueued = false;
       if (player.splitQueued) requestDysonExit(arena, player, arena.time - dt);
@@ -2027,7 +2019,7 @@ export function snapshotArena(arena, view) {
         fusionTargetId: c.fusionTargetId ?? null, fusionDonorId: c.fusionDonorId ?? null,
         fusionProgress: c.fusionProgress ?? 0, fusionTime: c.fusionTime ?? 0,
         protectedFor: round(Math.max(c.protectedFor, c.shatterCooldown, p.invulnerable)) })),
-      energy: round(p.energy), score: p.score, kills: p.kills, ready: p.ready,
+      score: p.score, kills: p.kills, ready: p.ready,
       bot: p.bot, connected: p.connected, respawnIn: round(p.respawnIn),
       level: p.level, peakMass: round(p.peakMass), nextUpgradeMass: UPGRADE_THRESHOLDS[p.upgradeMilestones] ?? null,
       upgradePending: p.upgradePending, upgradeChoices: p.upgradeChoices.map(option => ({ ...option })),

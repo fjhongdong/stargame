@@ -20,7 +20,7 @@ function probe(arena, fields) {
   return meteor;
 }
 function place(player, x, y, mass = 36) {
-  Object.assign(player, { x, y, mass, radius: 4 * Math.sqrt(mass), energy: 10, score: 0, invulnerable: 0 });
+  Object.assign(player, { x, y, mass, radius: 4 * Math.sqrt(mass), score: 0, invulnerable: 0 });
   Object.assign(player.cells[0], { x, y, mass, radius: player.radius, vx: 0, vy: 0 });
 }
 function isolateDust(arena) {
@@ -162,7 +162,7 @@ test('a fast meteor crossing a planet between 100ms endpoints hits once, knocks 
   const px = player.mass * player.vx + free(arena).reduce((p, piece) => p + piece.value * piece.vx, 0);
   const py = player.mass * player.vy + free(arena).reduce((p, piece) => p + piece.value * piece.vy, 0);
   near(px, 4 * 750); near(py, 0);
-  assert.equal(player.score, 0); near(player.energy, 10.3);
+  assert.equal(player.score, 0); assert.ok(!('energy' in player));
   assert.equal(player.kills, 0); assert.equal(player.respawnIn, 0);
   const revision = player.collisionRevision;
   arena.meteors = [];
@@ -243,7 +243,7 @@ test('the shattered meteor creates warm neutral absorbable mass without inflatin
     assert.ok(piece.collectAfter > arena.time, 'the meteor must shatter visibly before its fragments can be absorbed');
   }
   assert.equal(arena.dust.filter(dust => !dust.fragment).length, DUST_COUNT);
-  const beforeMass = player.mass, beforeEnergy = player.energy;
+  const beforeMass = player.mass;
   // Put just the neutral debris in the pickup path after its grace; the
   // planet's own debris remains a separately tested conservation account.
   const natural = arena.dust.filter(dust => !dust.fragment);
@@ -251,7 +251,7 @@ test('the shattered meteor creates warm neutral absorbable mass without inflatin
   arena.dust = [...natural, ...pieces];
   arena.time = Math.max(...pieces.map(piece => piece.collectAfter)) + 1e-6;
   stepArena(arena, 0);
-  near(player.mass, beforeMass + 4); near(player.energy, beforeEnergy); assert.equal(player.score, 0);
+  near(player.mass, beforeMass + 4); assert.ok(!('energy' in player)); assert.equal(player.score, 0);
   assert.equal(free(arena).length, 0);
   assert.equal(arena.dust.filter(dust => !dust.fragment).length, DUST_COUNT);
 });
@@ -264,7 +264,7 @@ test('spawn protection prevents planetary damage and impulse but the meteor stil
   assert.equal(arena.meteors.length, 0); near(player.mass, 36); near(player.vx, 0); near(player.vy, 0);
   assert.equal(ownedFragments(arena, player).length, 0); assert.equal(neutralFragments(arena).length, 3);
   near(neutralFragments(arena).reduce((sum, piece) => sum + piece.value, 0), 4);
-  assert.equal(player.score, 0); near(player.energy, 10);
+  assert.equal(player.score, 0); assert.ok(!('energy' in player));
 });
 
 test('meteor contact after the map-exit time is ignored even when the full 100ms trajectory crosses a legal wall-side planet', () => {

@@ -10,9 +10,9 @@ function fixture({ keepSecondWave = false } = {}) {
   arena.dust = Array.from({ length: DUST_COUNT }, (_, i) => ({ id: `far-${i}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
   function player(id, x, mass) {
     const p = addPlayer(arena, { id });
-    Object.assign(p, { x, y: 4000, mass, radius: 4 * Math.sqrt(mass), energy: 100, invulnerable: 0 });
+    Object.assign(p, { x, y: 4000, mass, radius: 4 * Math.sqrt(mass), invulnerable: 0 });
     Object.assign(p.cells[0], { x, y: 4000, mass, radius: p.radius, vx: 0, vy: 0 });
-    p.stats.energyRegen = 0; return p;
+    return p;
   }
   const owner = player('owner', 4000, 72), target = player('target', 4100, 36);
   if (keepSecondWave) {
@@ -91,11 +91,11 @@ test('early restoration preserves intercepted mass and full cooldown and needs a
   const { arena, owner, target, press } = fixture();
   const dust = { id: 'captured-before-exit', x: target.cells[0].x, y: target.cells[0].y, value: 3,
     fragment: true, ownerId: null, vx: 0, vy: 0 }; arena.dust.push(dust); stepArena(arena, 0);
-  near(owner.dyson.capturedMass, 3); const mass = owner.mass, energy = owner.energy;
+  near(owner.dyson.capturedMass, 3); const mass = owner.mass;
   advance(arena, DYSON.minActive); press({ y: -1 }); const startedAt = owner.dyson.startedAt;
   advance(arena, DYSON.exitWindup);
   assert.equal(owner.dyson, null); assert.equal(owner.cells.length, 1); near(owner.mass, mass);
-  near(owner.lastDysonEnd.capturedMass, 3); near(owner.energy, energy);
+  near(owner.lastDysonEnd.capturedMass, 3);
   near(owner.dysonCooldown, DYSON.cooldown - (arena.time - startedAt));
   setPlayerInput(arena, owner.id, { y: -1, split: true }); stepArena(arena, .1);
   assert.equal(owner.cells.length, 1, 'held exit input must not become an ordinary split');

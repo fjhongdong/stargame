@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BLAST_COST, createArena, addPlayer, normalizeInput, setPlayerInput, stepArena, snapshotArena, movementSpeed } from '../shared/engine.js';
+import { createArena, addPlayer, normalizeInput, setPlayerInput, stepArena, snapshotArena, movementSpeed } from '../shared/engine.js';
 
 const near = (actual, expected, tolerance = 1e-7) => assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} should equal ${expected}`);
 function fixture() {
   const arena = createArena({ random: () => .99 }); arena.status = 'playing';
   function player(id, x = 1000, y = 4000, mass = 36) {
     const p = addPlayer(arena, { id, name: id });
-    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), energy: 100, invulnerable: 0 });
+    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), invulnerable: 0 });
     Object.assign(p.cells[0], { x, y, mass, radius: p.radius, vx: 0, vy: 0 });
     return p;
   }
@@ -30,7 +30,7 @@ test('rear fire accepts only boolean input and launches opposite actual motion w
   assert.equal(wave.mode, 'rear'); near(wave.directionX, -.6); near(wave.directionY, -.8);
   near(wave.originX, owner.x - .6 * wave.originOffset); near(wave.originY, owner.y - .8 * wave.originOffset);
   near(owner.cells[0].vx, 120); near(owner.cells[0].vy, 160);
-  near(owner.energy, 100 - BLAST_COST); near(owner.cooldown, .85);
+  assert.ok(!('energy' in owner)); near(owner.cooldown, .85);
   assert.equal(snapshotArena(arena).blasts[0].mode, 'rear');
   advance(arena, .2);
   near(wave.directionX, -.6); near(wave.directionY, -.8);
@@ -67,31 +67,53 @@ test('forward and rear waves cover opposite sides, push the hit target once and 
   }
 });
 
-test('both wave keys share energy and cooldown, with forward taking a simultaneous edge', () => {
+test('both wave keys share cooldown, with forward taking a simultaneous edge', () => {
   const { arena, player } = fixture(), owner = player('owner');
   setPlayerInput(arena, owner.id, { fire: true, rearFire: true }); stepArena(arena, 0);
   assert.equal(arena.blasts.length, 1); assert.equal(arena.blasts[0].mode, 'forward');
-  near(owner.energy, 70); near(owner.cooldown, .85);
+  near(owner.cooldown, .85);
   assert.equal(owner.fireQueued, false); assert.equal(owner.rearFireQueued, false);
   advance(arena, 1);
   assert.equal(arena.blasts.length, 0, 'holding either key does not repeat after cooldown expires');
-  near(owner.energy, 73);
+  assert.ok(!('energy' in owner));
   setPlayerInput(arena, owner.id, {}); setPlayerInput(arena, owner.id, { rearFire: true }); stepArena(arena, 0);
-  assert.equal(arena.blasts.length, 1); assert.equal(arena.blasts[0].mode, 'rear'); near(owner.energy, 43);
+  assert.equal(arena.blasts.length, 1); assert.equal(arena.blasts[0].mode, 'rear'); near(owner.cooldown, .85);
   setPlayerInput(arena, owner.id, { fire: true, rearFire: true }); stepArena(arena, 0);
-  assert.equal(arena.blasts.length, 1, 'forward cannot bypass a rear wave cooldown'); near(owner.energy, 43);
+  assert.equal(arena.blasts.length, 1, 'forward cannot bypass a rear wave cooldown'); near(owner.cooldown, .85);
   advance(arena, 1); assert.equal(arena.blasts.length, 0, 'a blocked edge is not queued for a delayed automatic shot');
 });
 
-test('a rear wave honors the same upgraded cost and requires a new edge after insufficient energy', () => {
+test('a rear wave honors upgraded cooldown and requires a new edge after a blocked attempt', () => {
   const { arena, player } = fixture(), owner = player('owner');
-  Object.assign(owner.stats, { blastCost: 20, blastCooldown: .4, energyRegen: 0 }); owner.energy = 19;
+  owner.stats.blastCooldown = .4; owner.cooldown = .1;
   setPlayerInput(arena, owner.id, { rearFire: true }); stepArena(arena, 0);
-  assert.equal(arena.blasts.length, 0); near(owner.cooldown, 0);
-  owner.energy = 20; setPlayerInput(arena, owner.id, { rearFire: true }); stepArena(arena, 0);
-  assert.equal(arena.blasts.length, 0, 'holding an initially unaffordable shot does not fire later');
+  assert.equal(arena.blasts.length, 0); near(owner.cooldown, .1);
+  advance(arena, .11);
+  setPlayerInput(arena, owner.id, { rearFire: true }); stepArena(arena, 0);
+  assert.equal(arena.blasts.length, 0, 'holding an initially blocked shot does not fire after cooldown');
   setPlayerInput(arena, owner.id, {}); setPlayerInput(arena, owner.id, { rearFire: true }); stepArena(arena, 0);
-  assert.equal(arena.blasts.length, 1); near(owner.energy, 0); near(owner.cooldown, .4);
+  assert.equal(arena.blasts.length, 1); near(owner.cooldown, .4);
+  assert.ok(!('energy' in owner)); assert.ok(!('energyRegen' in owner.stats));
+});
+
+test('one core can sustain alternating waves beyond the former energy capacity using only the shared cooldown', () => {
+  const { arena, player } = fixture(), owner = player('owner');
+  const launches = new Set();
+  for (let shot = 0; shot < 12; shot++) {
+    const key = shot % 2 ? 'rearFire' : 'fire';
+    setPlayerInput(arena, owner.id, {});
+    setPlayerInput(arena, owner.id, { [key]: true, energy: -999 });
+    stepArena(arena, 0);
+    const wave = arena.blasts.find(blast => blast.id === owner._latestWaveId);
+    assert.ok(wave); assert.ok(!launches.has(wave.id)); launches.add(wave.id);
+    assert.equal(wave.mode, shot % 2 ? 'rear' : 'forward'); near(owner.cooldown, .85);
+    assert.ok(!('energy' in owner)); assert.ok(!('energy' in owner.input));
+    advance(arena, 1);
+    assert.equal(arena.blasts.length, 0, 'holding through cooldown cannot repeat a shot');
+  }
+  assert.equal(launches.size, 12);
+  const wire = snapshotArena(arena).players.find(p => p.id === owner.id);
+  assert.ok(!('energy' in wire)); assert.ok(!('blastCost' in wire.stats)); assert.ok(!('energyRegen' in wire.stats));
 });
 
 function chase(rearAt, dt) {

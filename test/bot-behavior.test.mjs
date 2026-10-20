@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createArena, addPlayer, startRound, stepArena, DUST_COUNT, snapshotArena } from '../shared/engine.js';
 
-function fixture({ enemy = false, energy = 60 } = {}) {
+function fixture({ enemy = false, cooldown = 0 } = {}) {
   const arena = createArena({ random: () => 0.99 });
   arena.status = 'playing';
   const bot = addPlayer(arena, { id: 'bot', bot: true });
-  Object.assign(bot, { x: 6210, y: 4000, invulnerable: 100, energy });
+  Object.assign(bot, { x: 6210, y: 4000, invulnerable: 100, cooldown });
   Object.assign(bot.cells[0], { x: bot.x, y: bot.y });
   if (enemy) {
     const p = addPlayer(arena, { id: 'strong-opponent' });
@@ -25,7 +25,7 @@ function seeded(seed = 78237) {
   };
 }
 
-test('an energized weaker bot escapes a stronger opponent instead of oscillating across the chase/flee boundary', () => {
+test('a weaker bot escapes a stronger opponent instead of oscillating across the chase/flee boundary', () => {
   const { arena, bot } = fixture({ enemy: true });
   let minimumDistance = Infinity;
   for (let i = 0; i < 600; i++) {
@@ -39,8 +39,8 @@ test('an energized weaker bot escapes a stronger opponent instead of oscillating
   assert.equal(bot.mass, 36);
 });
 
-test('an unarmed bot flees the enemy vector independently of the nearest food direction', () => {
-  const { arena, bot } = fixture({ enemy: true, energy: 0 });
+test('a bot with its wave on cooldown flees the enemy vector independently of the nearest food direction', () => {
+  const { arena, bot } = fixture({ enemy: true, cooldown: 10 });
   bot.x = 6190; bot.cells[0].x = 6190;
   arena.dust.push({ id: 'tempting-food', x: 6190, y: 4150, value: 1 });
   stepArena(arena, 1 / 30);

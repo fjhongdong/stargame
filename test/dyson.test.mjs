@@ -16,9 +16,8 @@ function fixture({ sourceMass = 36, distance = 78, rear = false } = {}) {
     x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
   function player(id, x, y = 4000, mass = 36) {
     const p = addPlayer(arena, { id });
-    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), energy: 100, invulnerable: 0 });
+    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), invulnerable: 0 });
     Object.assign(p.cells[0], { x, y, mass, radius: p.radius, vx: 0, vy: 0 });
-    p.stats.energyRegen = 0;
     return p;
   }
   const attacker = player('attacker', 4000, 4000, sourceMass);
@@ -73,7 +72,7 @@ test('a real forward or rear hit arms only its firing core and a fresh Space tra
     assert.equal(attacker.cells.length, 1); assert.equal(shell.id, id); near(shell.mass, 36);
     assert.equal(shell.dysonId, attacker.dyson.id); assert.equal(attacker.dysonReady, null);
     near(attacker.dyson.endsAt - attacker.dyson.startedAt, DYSON.duration);
-    near(attacker.dysonCooldown, DYSON.cooldown); near(attacker.energy, 100 - attacker.stats.blastCost);
+    near(attacker.dysonCooldown, DYSON.cooldown);
     near(conservedMass(arena), before);
     assert.ok(attacker.dysonRevision > 0);
   }
@@ -116,7 +115,7 @@ test('interception transfers only actual target pickups, applying attacker growt
   const { arena, attacker, target, fire, activate } = fixture(); fire(); activate();
   attacker.stats.growth = 1.6; target.stats.growth = 1.2;
   const core = attacker.cells[0], victim = target.cells[0], mass = core.mass, targetMass = victim.mass;
-  const score = attacker.score, energy = attacker.energy;
+  const score = attacker.score;
   const natural = putDust(arena, victim, { id: 'target-natural', value: 2 });
   const debris = putDust(arena, victim, { id: 'target-debris', value: 3, fragment: true,
     ownerId: null, collectAfter: 0, availableAt: 0 });
@@ -124,7 +123,7 @@ test('interception transfers only actual target pickups, applying attacker growt
   stepArena(arena, 0);
   near(core.mass - mass, 2 * 1.6 + 3); near(victim.mass, targetMass);
   near(attacker.dyson.capturedMass, 2 * 1.6 + 3);
-  near(attacker.score - score, 4); near(attacker.energy - energy, 8);
+  near(attacker.score - score, 4); assert.ok(!('energy' in attacker));
   assert.ok(!arena.dust.includes(natural) && !arena.dust.includes(debris));
   assert.ok(arena.dust.includes(distant));
   assert.equal(arena.dust.filter(dust => !dust.fragment).length, DUST_COUNT);
@@ -199,11 +198,11 @@ test('a genuine hit converts only its firing source while a second controlled co
   attacker.mass += 36;
   const shell = activate(), ordinary = attacker.cells.find(cell => cell.id !== sourceId);
   assert.equal(shell.id, sourceId); assert.ok(!ordinary.dysonId);
-  const x = ordinary.x, energy = attacker.energy, ids = attacker.cells.map(cell => cell.id);
+  const x = ordinary.x, ids = attacker.cells.map(cell => cell.id);
   setPlayerInput(arena, attacker.id, {});
   setPlayerInput(arena, attacker.id, { x: 1, fire: true, rearFire: true, split: true });
   advance(arena, .1);
-  assert.deepEqual(attacker.cells.map(cell => cell.id), ids); near(attacker.energy, energy);
+  assert.deepEqual(attacker.cells.map(cell => cell.id), ids);
   assert.ok(ordinary.x > x + 1, 'the non-shell core must continue ordinary physics');
   assert.equal(arena.blasts.filter(blast => blast.ownerId === attacker.id && blast.id !== wave.id).length, 0);
 });
@@ -318,15 +317,15 @@ test('both wave directions reject multiple controlled cores without a cost, then
     const { arena, attacker } = fixture({ distance: 1200 });
     const source = attacker.cells[0], donor = { ...source, id: 'wave-block-donor', x: source.x - 48 };
     attacker.cells.push(donor); attacker.mass = 72;
-    const key = rear ? 'rearFire' : 'fire', energy = attacker.energy;
+    const key = rear ? 'rearFire' : 'fire';
     setPlayerInput(arena, attacker.id, { [key]: true }); stepArena(arena, 0);
-    assert.equal(arena.blasts.length, 0); near(attacker.energy, energy); near(attacker.cooldown, 0);
+    assert.equal(arena.blasts.length, 0); near(attacker.cooldown, 0);
     advanceSiblingFusion(attacker.cells, 0); advanceSiblingFusion(attacker.cells, 1.2);
     assert.equal(attacker.cells.length, 1);
     setPlayerInput(arena, attacker.id, { [key]: true }); stepArena(arena, 0);
     assert.equal(arena.blasts.length, 0, 'a blocked held key does not automatically fire on fusion');
     setPlayerInput(arena, attacker.id, {}); setPlayerInput(arena, attacker.id, { [key]: true }); stepArena(arena, 0);
     assert.equal(arena.blasts.length, 1); assert.equal(arena.blasts[0].mode, rear ? 'rear' : 'forward');
-    near(attacker.energy, energy - attacker.stats.blastCost); assert.ok(attacker.cooldown > 0);
+    assert.ok(attacker.cooldown > 0);
   }
 });

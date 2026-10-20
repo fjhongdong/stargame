@@ -9,7 +9,7 @@ function fixture() {
   const arena = createArena({ random: () => .99 }); arena.status = 'playing';
   function player(id, x = 1000, y = 4000, mass = 36) {
     const p = addPlayer(arena, { id, name: id });
-    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), energy: 100, invulnerable: 0 });
+    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), invulnerable: 0 });
     Object.assign(p.cells[0], { x, y, mass, radius: p.radius, vx: 0, vy: 0 });
     return p;
   }
@@ -148,7 +148,7 @@ test('small cores shed only the available mass above one, with no duplicate mass
     // Stay genuinely adjacent as the hit body shrinks, so every independent
     // wave reaches it at launch without relying on the old oversized front.
     target.cells[0].x = target.x = owner.x + owner.radius + target.cells[0].radius + 4;
-    owner.cooldown = 0; owner.energy = 100; setPlayerInput(arena, owner.id, { fire: false }); fire();
+    owner.cooldown = 0; setPlayerInput(arena, owner.id, { fire: false }); fire();
     assert.equal(target.cells.length, 1, 'repeated hits change motion and mass rather than triggering a removed health/death system');
     assert.ok(target.mass >= 1);
   }

@@ -38,7 +38,7 @@ test('real WebSocket cancellation removes both waves together and survives skipp
     room.arena.dust = Array.from({ length: 6000 }, (_, id) => ({ id: `far-${id}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
     for (const [id, x] of [[welcomeA.id, 1000], [welcomeB.id, 1400]]) {
       const p = room.arena.players.get(id);
-      Object.assign(p, { x, y: 4000, mass: 36, radius: 24, energy: 100, invulnerable: 0, direction: { x: 1, y: 0 } });
+      Object.assign(p, { x, y: 4000, mass: 36, radius: 24, invulnerable: 0, direction: { x: 1, y: 0 } });
       Object.assign(p.cells[0], { x, y: 4000, mass: 36, radius: 24, vx: 0, vy: 0 });
     }
     a.send({ type: 'input', seq: 101, fire: true }); b.send({ type: 'input', seq: 101, rearFire: true });

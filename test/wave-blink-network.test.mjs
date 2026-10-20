@@ -43,7 +43,7 @@ async function fixture(targetX = 10000, sourceMass = 36) {
   room.arena.meteorsInitialized = true;
   for (const [p, x] of [[source, 6000], [target, targetX]]) {
     const mass = p === source ? sourceMass : 36, radius = 4 * Math.sqrt(mass);
-    Object.assign(p, { x, y: 4000, mass, radius, score: 0, energy: 100, invulnerable: 0, cooldown: 0, direction: { x: 1, y: 0 } });
+    Object.assign(p, { x, y: 4000, mass, radius, score: 0, invulnerable: 0, cooldown: 0, direction: { x: 1, y: 0 } });
     Object.assign(p.cells[0], { x, y: 4000, mass, radius, vx: 0, vy: 0, protectedFor: 0, shatterCooldown: 0 });
   }
   let sequence = 0;
@@ -92,7 +92,7 @@ test('a 36-mass source blinks once, consumes only its selected front and cannot 
     near(event.x, ready.x + ready.directionX * ready.speed * age, .03);
     near(event.y, ready.y + ready.directionY * ready.speed * age, .03);
     const elapsed = (blinked.room.simulationTime - launched.room.simulationTime) / 1000;
-    near(own.energy, Math.min(100, launchedSource.energy + source.stats.energyRegen * elapsed), .03);
+    assert.ok(!('energy' in own));
     near(own.cooldown, Math.max(0, launchedSource.cooldown - elapsed), .03);
     const sameTick = await b.wait(m => m.type === 'state' && m.room.tick === blinked.room.tick);
     assert.deepEqual(player(sameTick, source.id).lastWaveBlink, event);

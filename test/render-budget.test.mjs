@@ -28,7 +28,7 @@ function client() {
       socket={readyState:1,send:data=>window.onSend(JSON.parse(data))};
       const state={code:'BUDGET',round:1,status:'playing',simulationTime:0,time:0,
         arena:{width:12000,height:8000},dust:[],blasts:[],meteors:[],players:[{
-          id:'pilot',name:'pilot',color:'#83d9ff',connected:true,mass:36,radius:24,energy:60,
+          id:'pilot',name:'pilot',color:'#83d9ff',connected:true,mass:36,radius:24,
           vx:0,vy:0,stats:{speed:1},steering:{x:0,y:0},
           cells:[{id:'core',x:6000,y:4000,mass:36,radius:24,vx:0,vy:0}]
         }]};

@@ -17,7 +17,7 @@ function state({ time = 0, mass = 36, extraCore = false, armed = false, wrapped 
   Object.assign(target.cells[0], { id: 'target-core', x: 6000 + 210 * time, y: 4000, vx: 210, vy: 0 });
   target.input = { x: 1, y: 0, fire: false, rearFire: false, split: false };
   for (const p of [pilot, target]) Object.assign(p, { mass: p.cells.reduce((sum, c) => sum + c.mass, 0),
-    x: p.cells[0].x, y: p.cells[0].y, invulnerable: 100, energy: 100 });
+    x: p.cells[0].x, y: p.cells[0].y, invulnerable: 100 });
   const result = { code, ...snapshotArena(arena), dysonRules: { window: .9, duration: 2.4, cooldown: 8, returnClearance: 16 } };
   const own = result.players.find(p => p.id === 'pilot'), peer = result.players.find(p => p.id === 'target');
   Object.assign(own, { dyson: null, dysonReady: null, dysonCooldown: 0, dysonRevision: 0, lastDysonEnd: null });
@@ -287,4 +287,27 @@ test('source entry and return cannot revive a consumed unrelated donor carried b
   assert.equal(receiverRef.model._completedFusionId, completedPair);
   assert.equal(donorRef.model.mass, 0); assert.equal(c.api.effective(donor.id), null);
   assert.ok(!c.api.bodies().some(body => body.playerId === 'pilot' && body.cellId === donor.id));
+});
+
+
+test('energy-free keyboard and touch waves use only the shared cooldown and core restrictions', () => {
+  for (const [code, id, field] of [['KeyE', 'sgBlast', 'fire'], ['KeyR', 'sgRearBlast', 'rearFire']]) {
+    for (const control of ['keyboard', 'touch']) {
+      const initial = state(), own = initial.players.find(p => p.id === 'pilot');
+      assert.equal('energy' in own, false);
+      assert.equal('blastCost' in own.stats, false);
+      const c = client(initial); c.api.hud();
+      assert.equal(c.node(id).disabled, false);
+      assert.equal(c.node('sgWaveCooldown').textContent, '就绪');
+      if (control === 'keyboard') c.key(code); else c.pointer(id);
+      assert.equal(c.sent.filter(message => message[field]).length, 1, `${control} ${code} fires without an energy field`);
+      const cooling = structuredClone(initial), coolingOwn = cooling.players.find(p => p.id === 'pilot');
+      coolingOwn.cooldown = .4; c.time(50); c.api.packet(cooling); c.api.hud();
+      assert.equal(c.node('sgBlast').disabled, true); assert.equal(c.node('sgRearBlast').disabled, true);
+      assert.match(c.node('sgWaveCooldown').textContent, /共用冷却/);
+      c.release(code);
+      if (control === 'keyboard') c.key(code); else c.pointer(id);
+      assert.equal(c.sent.filter(message => message[field]).length, 1, 'cooldown still blocks both launch paths');
+    }
+  }
 });

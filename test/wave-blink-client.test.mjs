@@ -23,7 +23,7 @@ function state({ time = 0, mass = 36, extraCore = false, blink = true, dyson = f
     x: 8500 + 12 * (1 - Math.exp(-2 * time)), y: 6000 - 5.5 * (1 - Math.exp(-2 * time)),
     mass: 36, radius: 24, vx: 24 * Math.exp(-2 * time), vy: -11 * Math.exp(-2 * time) });
   for (const p of [pilot, target]) Object.assign(p, { mass: p.cells.reduce((sum, c) => sum + c.mass, 0),
-    x: p.cells[0].x, y: p.cells[0].y, invulnerable: 100, energy: 100 });
+    x: p.cells[0].x, y: p.cells[0].y, invulnerable: 100 });
   const result = { code, ...snapshotArena(arena),
     dysonRules: { window: .9, duration: 2.4, cooldown: 8, returnClearance: 16 } };
   const own = player(result), directionX = rear ? -1 : 1, originX = 2000, travel = 20 + time * 600;

@@ -13,7 +13,7 @@ function fixture(specs) {
   return arena;
 }
 
-test('legacy boost input cannot alter movement, energy or the public steering state', () => {
+test('legacy boost input cannot alter movement or the public steering state', () => {
   const normal = fixture([{ id: 'p', x: 1000 }]);
   const legacy = fixture([{ id: 'p', x: 1000 }]);
   setPlayerInput(normal, 'p', { x: 1, y: 0 });
@@ -23,8 +23,7 @@ test('legacy boost input cannot alter movement, energy or the public steering st
   assert.equal(a.x, b.x);
   assert.equal(a.vx, b.vx);
   assert.ok(a.vx < 210);
-  assert.ok(Math.abs(a.energy - 63) < 1e-8);
-  assert.equal(a.energy, b.energy);
+  assert.ok(!('energy' in a)); assert.ok(!('energy' in b));
   assert.ok(!('boost' in b.input));
   const wire = snapshotArena(legacy).players[0];
   assert.deepEqual(wire.steering, { x: 1, y: 0 });

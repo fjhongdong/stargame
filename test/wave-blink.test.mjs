@@ -13,9 +13,8 @@ function fixture(mass = 36) {
     x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
   function player(id, x = 4000, y = 4000, size = 36) {
     const p = addPlayer(arena, { id });
-    Object.assign(p, { x, y, mass: size, radius: 4 * Math.sqrt(size), invulnerable: 0, energy: 100 });
+    Object.assign(p, { x, y, mass: size, radius: 4 * Math.sqrt(size), invulnerable: 0 });
     Object.assign(p.cells[0], { x, y, mass: size, radius: p.radius, vx: 0, vy: 0 });
-    p.stats.energyRegen = 0;
     return p;
   }
   const owner = player('owner', 4000, 4000, mass);
@@ -51,7 +50,7 @@ test('a fresh Space on either directional wave blinks a small source to the curr
     const { arena, owner, fire, space } = fixture(), source = owner.cells[0];
     Object.assign(source, { vx: 60, vy: 80 });
     const wave = fire(rear); advance(arena, .15);
-    const before = { ...source }, front = { x: wave.x, y: wave.y }, energy = owner.energy, cooldown = owner.cooldown;
+    const before = { ...source }, front = { x: wave.x, y: wave.y }, cooldown = owner.cooldown;
     const event = space();
     assert.ok(event, 'a live wave which has not hit anything must offer a blink below the normal split threshold');
     assert.equal(owner.cells.length, 1); assert.equal(source.id, before.id);
@@ -61,7 +60,7 @@ test('a fresh Space on either directional wave blinks a small source to the curr
     near(event.fromX, before.x); near(event.fromY, before.y); near(event.x, front.x); near(event.y, front.y);
     near(event.vx, before.vx); near(event.vy, before.vy); near(event.at, arena.time);
     assert.equal(source.lastWaveBlinkId, event.id); assert.equal(owner.waveBlinkRevision, 1);
-    near(owner.energy, energy); near(owner.cooldown, cooldown);
+    near(owner.cooldown, cooldown);
     assert.ok(!arena.blasts.includes(wave)); assert.equal(wave.blinkUsed, true);
   }
 });
@@ -83,7 +82,7 @@ test('same-tick fire and Space cannot blink to a wave which has not yet been lau
   const split = fixture(96);
   setPlayerInput(split.arena, split.owner.id, { fire: true, split: true }); stepArena(split.arena, .1);
   assert.equal(split.owner.cells.length, 2); assert.equal(split.arena.blasts.length, 0);
-  assert.equal(split.owner.lastWaveBlink, null); near(split.owner.energy, 100);
+  assert.equal(split.owner.lastWaveBlink, null); near(split.owner.cooldown, 0);
 
   const small = fixture();
   setPlayerInput(small.arena, small.owner.id, { fire: true, split: true }); stepArena(small.arena, 0);
@@ -96,13 +95,13 @@ test('same-tick fire and Space cannot blink to a wave which has not yet been lau
 test('one wave is consumed by its only blink and a new Space falls back to ordinary splitting', () => {
   const { arena, owner, fire, space } = fixture(96), source = owner.cells[0];
   const wave = fire(); advance(arena, .1); const first = space();
-  assert.ok(first); const revision = owner.waveBlinkRevision, energy = owner.energy;
+  assert.ok(first); const revision = owner.waveBlinkRevision;
   const travel = wave.travel, id = first.id;
   space();
   assert.equal(owner.lastWaveBlink.id, id); assert.equal(owner.waveBlinkRevision, revision);
   assert.equal(owner.cells.length, 2); near(owner.cells.reduce((mass, cell) => mass + cell.mass, 0), 96);
   assert.equal(owner.cells[0].id, source.id); assert.ok(!arena.blasts.includes(wave)); near(wave.travel, travel);
-  near(owner.energy, energy);
+  assert.ok(!('energy' in owner));
 });
 
 test('a consumed wave cannot hit later or arm a late Dyson combo, while an otherwise identical unconsumed wave still hits', () => {
@@ -255,9 +254,9 @@ test('a real unfinished Dyson cooldown does not impose a second cost or cooldown
   space(); assert.ok(owner.dyson);
   advance(arena, 2.4); assert.equal(owner.dyson, null); assert.ok(owner.dysonCooldown > 0);
   Object.assign(target.cells[0], { x: 9000, y: 7000, vx: 0, vy: 0 });
-  const wave = fire(), energy = owner.energy, cooldown = owner.cooldown, dysonCooldown = owner.dysonCooldown;
+  const wave = fire(), cooldown = owner.cooldown, dysonCooldown = owner.dysonCooldown;
   const event = space();
-  assert.ok(event); assert.equal(event.waveId, wave.id); near(owner.energy, energy);
+  assert.ok(event); assert.equal(event.waveId, wave.id);
   near(owner.cooldown, cooldown); near(owner.dysonCooldown, dysonCooldown);
 });
 

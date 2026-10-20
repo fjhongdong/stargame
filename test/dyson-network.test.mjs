@@ -47,7 +47,7 @@ async function fixture() {
   function arrange(mode = 'forward') {
     room.arena.blasts = [];
     for (const [p, x] of [[source, 6000], [target, mode === 'rear' ? 5890 : 6110]]) {
-      Object.assign(p, { x, y: 4000, energy: 100, invulnerable: 0, cooldown: 0,
+      Object.assign(p, { x, y: 4000, invulnerable: 0, cooldown: 0,
         dysonCooldown: 0, _dysonCooldownUntil: 0, direction: { x: 1, y: 0 } });
       Object.assign(p.cells[0], { x, y: 4000, vx: 0, vy: 0, impulseX: 0, impulseY: 0, protectedFor: 0, shatterCooldown: 0 });
     }
@@ -134,12 +134,12 @@ test('forged forward and rear fire cannot spend resources with multiple cores, w
     source.mass = 36;
     for (const input of [{ fire: true }, { rearFire: true }]) {
       const released = command(a); await a.wait(m => m.type === 'state' && player(m, source.id)?.lastInputSeq === released);
-      const energy = source.energy, blocked = command(a, input);
+      const blocked = command(a, input);
       const state = await a.wait(m => m.type === 'state' && player(m, source.id)?.lastInputSeq === blocked);
       assert.equal(player(state, source.id).cells.filter(cell => cell.mass > 0).length, 2);
       assert.ok(!state.room.blasts.some(blast => blast.ownerId === source.id));
       assert.equal(player(state, source.id).cooldown, 0);
-      assert.ok(player(state, source.id).energy >= energy, 'a rejected shot does not consume energy');
+      assert.ok(!('energy' in player(state, source.id)), 'rejected shots do not expose a removed resource');
     }
     for (let tick = 0; tick < 18; tick++) f.game.manager.tick(.1);
     assert.equal(source.cells.length, 1, 'the sibling cores actually fuse in the authoritative simulation');
@@ -149,7 +149,7 @@ test('forged forward and rear fire cannot spend resources with multiple cores, w
       && m.room.blasts.some(blast => blast.ownerId === source.id));
     assert.ok(allowed.room.blasts.some(blast => blast.ownerId === source.id && blast.mode === 'rear'));
     assert.ok(player(allowed, source.id).cooldown > 0);
-    assert.ok(player(allowed, source.id).energy < 75);
+    assert.ok(!('energy' in player(allowed, source.id)));
   } finally { await f.close(); }
 });
 

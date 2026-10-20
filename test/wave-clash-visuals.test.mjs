@@ -10,7 +10,7 @@ function clashFixture(rear = false) {
   arena.status = 'playing'; arena.round = 1;
   for (const [id, x, direction] of [['pilot', 9000, 1], ['left', 1000, 1], ['right', 1400, rear ? 1 : -1]]) {
     const player = addPlayer(arena, { id });
-    Object.assign(player, { x, y: 4000, energy: 100, invulnerable: 0, direction: { x: direction, y: 0 } });
+    Object.assign(player, { x, y: 4000, invulnerable: 0, direction: { x: direction, y: 0 } });
     Object.assign(player.cells[0], { x, y: 4000, vx: 0, vy: 0 });
   }
   arena.dust = Array.from({ length: 6000 }, (_, id) => ({ id: `far-${id}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));

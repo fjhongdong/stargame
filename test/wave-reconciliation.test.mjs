@@ -26,7 +26,7 @@ function fixture(remote = false, ping = 0, simultaneousAttackers = false) {
   const attackers = simultaneousAttackers ? victim.cells.slice(0, 2).map((cell, i) => {
     const x = cell.x + cell.radius * 2 + 4;
     const p = addPlayer(arena, { id: `attacker-${i}` });
-    Object.assign(p, { x, y: 4000, energy: 100, invulnerable: 0, direction: { x: -1, y: 0 } });
+    Object.assign(p, { x, y: 4000, invulnerable: 0, direction: { x: -1, y: 0 } });
     Object.assign(p.cells[0], { x, y: 4000 });
     return p;
   }) : [];

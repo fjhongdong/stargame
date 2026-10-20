@@ -8,7 +8,7 @@ import { ARENA, createArena, addPlayer, startRound, stepArena, snapshotArena, se
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const RECONNECT_GRACE = 30_000;
-const MAX_STATE_BACKLOG = 128 * 1024;
+const MAX_STATE_BACKLOG = 8 * 1024;
 const VIEWPORT_LIMITS = Object.freeze({ width: 4000, height: 2600, margin: 180 });
 
 // Only the part of the world that a player can see needs to cross the network.
@@ -209,12 +209,14 @@ export function createGameServer({ port = Number(process.env.PORT) || 3001, host
   const tokens = new Map();
   const send = (session, message) => {
     if (session?.ws?.readyState !== WebSocket.OPEN) return false;
-    session.ws.send(JSON.stringify(message));
+    // Repeated scene updates benefit from stateful compression. Small control
+    // replies need no extra deflate work, as with the old size threshold.
+    session.ws.send(JSON.stringify(message), { compress: message.type === 'state' });
     return true;
   };
   const sendState = (session, room) => {
-    // Replaceable states may be skipped, so a slow link never accumulates seconds
-    // of stale movement. Control replies still use the reliable send path above.
+    // Replaceable states may be skipped to limit stale movement queued on a
+    // slow link. Control replies still use the reliable send path above.
     if (session?.ws?.readyState !== WebSocket.OPEN) return;
     if (session.ws.bufferedAmount >= MAX_STATE_BACKLOG) { session.pendingRoom = room; return; }
     const update = prepareDustUpdate(session, manager.snapshotForPlayer(room, session.id));
@@ -256,7 +258,9 @@ export function createGameServer({ port = Number(process.env.PORT) || 3001, host
     }
   });
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 4096,
-    perMessageDeflate: { threshold: 1024, serverNoContextTakeover: true, clientNoContextTakeover: true,
+    // Reuse the negotiated outgoing dictionary for repeated player metadata.
+    // Peers which request a fresh dictionary per message are still accepted.
+    perMessageDeflate: { threshold: 1024, clientNoContextTakeover: true,
       concurrencyLimit: 4, zlibDeflateOptions: { level: 1 } },
   });
   server.on('upgrade', (request, socket, head) => {

@@ -10,9 +10,8 @@ function fixture(mass = 36) {
   arena.dust = Array.from({ length: DUST_COUNT }, (_, i) => ({ id: `far-${i}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
   function player(id, x = 4000, y = 4000, size = mass) {
     const p = addPlayer(arena, { id });
-    Object.assign(p, { x, y, mass: size, radius: 4 * Math.sqrt(size), energy: 100, invulnerable: 0 });
+    Object.assign(p, { x, y, mass: size, radius: 4 * Math.sqrt(size), invulnerable: 0 });
     Object.assign(p.cells[0], { x, y, mass: size, radius: p.radius, vx: 0, vy: 0 });
-    p.stats.energyRegen = 0;
     return p;
   }
   const owner = player('owner');
@@ -81,14 +80,14 @@ test('a large planet wave hits a nearby nonoverlapping target without a source-s
   near(target.mass, 36 * (1 - WAVE.chipFraction));
 });
 
-test('a continuous wave sweep collects natural dust into its source using normal growth, score and energy, once only', () => {
+test('a continuous wave sweep collects natural dust into its source using normal growth and score, once only', () => {
   const { arena, owner, fire, put } = fixture(); owner.stats.growth = 1.6;
   const wave = fire(), natural = put('swept-natural', wave.x + 30, wave.y, 2);
   const outside = put('outside-finite-arc', wave.x + 30, wave.y + 100);
   const fragment = put('free-fragment', wave.x + 30, wave.y, 3, { fragment: true, ownerId: null });
-  const mass = owner.mass, score = owner.score, energy = owner.energy;
+  const mass = owner.mass, score = owner.score;
   stepArena(arena, .1);
-  near(owner.mass - mass, 3.2); near(owner.score - score, 4); near(owner.energy - energy, 8);
+  near(owner.mass - mass, 3.2); near(owner.score - score, 4); assert.ok(!('energy' in owner));
   assert.ok(!arena.dust.includes(natural)); assert.ok(arena.dust.includes(outside)); assert.ok(arena.dust.includes(fragment));
   assert.equal(arena.dust.filter(d => !d.fragment).length, DUST_COUNT);
   assert.equal(arena.naturalDustCount, DUST_COUNT);
@@ -155,8 +154,8 @@ test('an outgoing wave pickup by a wrapped planet is intercepted by its Dyson oc
   assert.ok(owner.dyson); arena.blasts = [];
   owner.stats.growth = 1.6; target.stats.growth = 1.2;
   const outgoing = fire(target), dust = put('target-wave-food', outgoing.x + 30, outgoing.y, 2);
-  const ownerMass = owner.mass, targetMass = target.mass, energy = owner.energy;
+  const ownerMass = owner.mass, targetMass = target.mass;
   stepArena(arena, .1);
   assert.ok(!arena.dust.includes(dust)); near(owner.mass - ownerMass, 3.2); near(target.mass, targetMass);
-  near(owner.dyson.capturedMass, 3.2); near(owner.score, 4); near(owner.energy - energy, 8);
+  near(owner.dyson.capturedMass, 3.2); near(owner.score, 4); assert.ok(!('energy' in owner));
 });

@@ -7,7 +7,7 @@ function fixture() {
   const arena = createArena({ random: () => .99 }); arena.status = 'playing';
   function player(id, x = 1000, y = 1000, mass = 36) {
     const p = addPlayer(arena, { id, name: id });
-    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), energy: 100, invulnerable: 0 });
+    Object.assign(p, { x, y, mass, radius: 4 * Math.sqrt(mass), invulnerable: 0 });
     Object.assign(p.cells[0], { x, y, mass, radius: p.radius, vx: 0, vy: 0 });
     return p;
   }
@@ -59,20 +59,19 @@ test('a wave leaves a tiny live core without a kill reward or a respawn', () => 
   near(owner.mass, 36); assert.equal(owner.lastWaveHit, null);
 });
 
-test('waves honor upgraded energy cost, cooldown and edge-triggered firing', () => {
+test('waves honor upgraded cooldown and fresh-edge firing without an energy resource', () => {
   const { arena, player } = fixture(), owner = player('owner');
-  owner.stats.blastCost = 20; owner.stats.blastCooldown = .4;
-  fire(arena, owner); assert.equal(owner.energy, 80); near(owner.cooldown, .4);
+  owner.stats.blastCooldown = .4;
+  fire(arena, owner); near(owner.cooldown, .4);
+  assert.ok(!('energy' in owner)); assert.ok(!('blastCost' in owner.stats));
   advance(arena, .1); assert.equal(arena.blasts.length, 1, 'holding fire cannot create repeated waves');
   setPlayerInput(arena, owner.id, { fire: false }); setPlayerInput(arena, owner.id, { fire: true }); stepArena(arena, .01);
   assert.equal(arena.blasts.length, 1, 'cooldown blocks a fresh fire edge');
   advance(arena, .31);
-  const before = owner.energy;
+  assert.equal(arena.blasts.length, 1, 'a blocked edge is not queued to fire automatically');
   setPlayerInput(arena, owner.id, { fire: false }); setPlayerInput(arena, owner.id, { fire: true }); stepArena(arena, .01);
-  assert.equal(arena.blasts.length, 2); near(owner.energy, before + .03 - 20);
-  const low = fixture(), poor = low.player('poor'); poor.energy = 1;
-  setPlayerInput(low.arena, poor.id, { fire: true }); stepArena(low.arena, .01);
-  assert.equal(low.arena.blasts.length, 0); assert.equal(poor.cooldown, 0);
+  assert.equal(arena.blasts.length, 2); near(owner.cooldown, .4);
+  assert.ok(!('energy' in snapshotArena(arena).players[0]));
 });
 
 test('launch direction follows actual motion while opposite thrust is still braking', () => {
@@ -161,21 +160,21 @@ test('collision divides each small planet into three or four equal parts and ret
   }
 });
 
-test('the owner may recover all equal fragments after grace without recycled growth, score or energy farming', () => {
+test('the owner may recover all equal fragments after grace without recycled growth or score farming', () => {
   for (const mass of [50, 80]) {
     const { arena, player } = fixture(), big = player('big', 1000, 1000, 200);
     const small = player('small', 1000 + big.radius + 4 * Math.sqrt(mass), 1000, mass);
-    small.stats.growth = 1.8; small.energy = 10;
+    small.stats.growth = 1.8;
     stepArena(arena, .01);
     arena.players.delete(big.id);
     arena.dust = arena.dust.filter(dust => dust.fragment && dust.ownerId === small.id);
     arena.dust.forEach(dust => Object.assign(dust, { x: small.x, y: small.y, vx: 0, vy: 0 }));
     Object.assign(small.cells[0], { vx: 0, vy: 0 });
-    const energyBefore = small.energy, coreMass = small.mass;
+    const coreMass = small.mass;
     stepArena(arena, .1); near(small.mass, coreMass, 1e-8);
     advance(arena, .95);
     near(small.mass, mass); assert.equal(small.score, 0);
-    near(small.energy - energyBefore, 3 * 1.05);
+    assert.ok(!('energy' in small));
     assert.equal(arena.dust.filter(dust => dust.fragment).length, 0);
   }
 });
