@@ -43,6 +43,7 @@ function client() {
       intent: getIntent,
       split,
       wave(blast) { return wavePose(blast, performance.now()); },
+      worldClock() { return renderSimulationTime(performance.now()); },
       lead() { return simulationLead; },
       cacheWaves(state) { cacheWaveVisuals(state, room); },
     };
@@ -200,7 +201,7 @@ test('remote contact proxies retain their simulation across snapshots and use si
   assert.equal(c.api.trackTime(key), 100, 'interpolation uses precise simulation time, independent of wall-clock stalls');
 });
 
-test('a far merging donor stays visible on its delayed render clock after the contact model has consumed it', () => {
+test('a far merging donor shrinks and disappears on the same current model clock as a nearby donor', () => {
   const arena = createArena({ random: () => .99 }); arena.status = 'playing';
   const pilot = addPlayer(arena, { id: 'pilot' }), victim = addPlayer(arena, { id: 'victim' });
   Object.assign(pilot.cells[0], { x: 9000, y: 4000 });
@@ -208,17 +209,34 @@ test('a far merging donor stays visible on its delayed render clock after the co
   victim.cells.push({ ...victim.cells[0], id: 'merging-donor', x: 2048 });
   arena.dust = Array.from({ length: 6000 }, (_, id) => ({ id: `far-${id}`, x: 11000, y: 7000, value: 1, vx: 0, vy: 0 }));
   stepArena(arena, 0);
-  for (let step = 0; step < 11; step++) stepArena(arena, .1);
+  for (let step = 0; step < 8; step++) stepArena(arena, .1);
   const donor = victim.cells.find(cell => cell.fusionRole === 'donor');
-  assert.ok(donor); assert.ok(Math.abs(donor.mass - 3) < 1e-7);
-  const c = client(); c.api.start(snapshotArena(arena), 360);
+  assert.ok(donor); assert.ok(Math.abs(donor.mass - 12) < 1e-7);
+  const initial = snapshotArena(arena), c = client(); c.api.start(initial, 360);
   const proxy = c.api.remote(`victim:${donor.id}`);
-  assert.ok(proxy.model._consumed, 'the 180ms current-time lead finishes the donor before the delayed presentation');
   const visible = c.api.effective(victim.id, donor.id);
-  assert.ok(visible, 'a far donor must still render on the interpolated timeline');
-  assert.ok(Math.abs(visible.mass - 3) < 1e-7); assert.ok(Math.abs(visible.radius - 4 * Math.sqrt(3)) < 1e-7);
+  assert.ok(visible && visible.mass > 0 && visible.mass < donor.mass, 'the far donor uses its partially completed current-time fusion');
+  assert.ok(Math.abs(visible.mass - proxy.model.mass) < 1e-7);
+  assert.ok(Math.abs(visible.radius - 4 * Math.sqrt(proxy.model.mass)) < 1e-7);
   proxy.island = true;
-  assert.equal(c.api.effective(victim.id, donor.id), null, 'the same donor is consumed on the near current-time contact timeline');
+  assert.equal(c.api.effective(victim.id, donor.id).mass, visible.mass, 'entering the contact island does not change the geometry clock');
+  proxy.island = false; proxy.islandUntil = 0;
+  let previousMass = visible.mass, visibleFrames = 0;
+  for (let frame = 1; frame <= 20; frame++) {
+    c.time(frame * 25); c.api.frame(.025);
+    const current = c.api.effective(victim.id, donor.id);
+    if (!current) break;
+    assert.ok(current.mass < previousMass && previousMass - current.mass < 1, 'the donor transfers mass continuously between snapshots');
+    assert.equal(current.mass, proxy.model.mass);
+    previousMass = current.mass; visibleFrames++;
+  }
+  assert.ok(visibleFrames >= 5, 'the fixture observes gradual shrinkage before completion');
+  assert.ok(proxy.model._consumed);
+  assert.equal(c.api.effective(victim.id, donor.id), null, 'a consumed far donor leaves no delayed visible ghost');
+  c.api.packet(structuredClone(initial));
+  assert.equal(c.api.effective(victim.id, donor.id), null, 'an older repeated snapshot cannot revive the consumed donor');
+  proxy.island = true;
+  assert.equal(c.api.effective(victim.id, donor.id), null, 'the consumed donor stays hidden when it enters the contact island');
 });
 
 test('a wall-pinned contact does not retain phantom momentum after constraints', () => {
@@ -249,9 +267,9 @@ test('a real near-field wave uses its contact proxy clock and keeps that clock f
   c.time(150 + 1000 / 60); c.api.frame(1 / 60);
   const proxy = c.api.remote(`other:${other.cells[0].id}`);
   assert.ok(proxy.island, 'the attacker must be in the current-time contact island');
-  const elapsed = c.api.lead() + 1 / 60, pose = c.api.wave(blast);
+  const elapsed = (c.api.worldClock() - state.simulationTime) / 1000 + c.api.lead(), pose = c.api.wave(blast);
   assert.ok(Math.abs(pose.x - blast.originX - blast.directionX * (blast.travel + blast.speed * elapsed)) < 1e-6,
-    'near-field wave and proxy authority advance on the same simulation horizon');
+    'the near-field wave uses the continuous shared presentation clock rather than restarting at packet arrival');
   proxy.island = false; proxy.islandUntil = 0;
   assert.equal(c.api.wave(blast).x, pose.x, 'leaving an island must not jump a wave back by 100 ms');
 });

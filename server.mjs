@@ -172,6 +172,10 @@ export function createRoomManager({ now = Date.now, broadcast = () => {}, broadc
         if (!player.bot && !player.connected && now() - player.disconnectedAt >= RECONNECT_GRACE) leave(player.id);
       }
       if (!rooms.has(room.code)) continue;
+      // Keep a disconnected world available for reconnection without spending
+      // simulation time on its bots and resources while nobody can observe it.
+      // Expiration above still runs, and one connected human keeps play live.
+      if (![...room.arena.players.values()].some(player => !player.bot && player.connected)) continue;
       const wasPlaying = room.arena.status === 'playing';
       stepArena(room.arena, dt);
       if (wasPlaying && room.arena.status === 'finished') {

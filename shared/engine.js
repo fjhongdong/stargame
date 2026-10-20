@@ -111,7 +111,8 @@ export function skinColor(skin, fallback = 0) {
 export function createArena({ random = Math.random, endless = false } = {}) {
   return { endless: endless === true, status: 'lobby', time: 0, remaining: endless === true ? null : ROUND_DURATION, round: 0, winnerId: null,
     players: new Map(), dust: [], blasts: [], meteors: [], meteorsInitialized: false, waveClashes: [], clashSerial: 0, serial: 0, random,
-    dustGrid: null, activeDust: new Set(), naturalDustCount: 0, bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0 };
+    dustGrid: null, activeDust: new Set(), naturalDustCount: 0, _dustOrderSerial: 0,
+    bodyContacts: new Set(), fractureContacts: new Map(), impactSerial: 0 };
 }
 
 function spawnPosition(arena) {
@@ -272,6 +273,8 @@ function addDust(arena, x, y, value = 1, extra = {}) {
   const dust = { id: `d${++arena.serial}`, x: x ?? (35 + arena.random() * (ARENA.width - 70)),
     y: y ?? (35 + arena.random() * (ARENA.height - 70)), value, vx: 0, vy: 0, ...extra };
   arena.dust.push(dust);
+  dust._dustOrder = ++arena._dustOrderSerial;
+  if (arena._indexedDust === arena.dust && arena._indexedItems) arena._indexedItems.push(dust);
   if (!dust.fragment) arena.naturalDustCount++;
   if (arena.dustGrid) insertDust(arena, dust);
   if (dust.vx || dust.vy) arena.activeDust.add(dust);
@@ -288,6 +291,7 @@ function insertDust(arena, dust) {
   let bucket = arena.dustGrid.get(key);
   if (!bucket) arena.dustGrid.set(key, bucket = []);
   bucket.push(dust);
+  arena._dirtyDustBuckets?.add(bucket);
   dust._gridKey = key;
 }
 
@@ -296,20 +300,54 @@ function removeDustFromGrid(arena, dust) {
   if (!bucket) return;
   const index = bucket.indexOf(dust);
   if (index >= 0) { bucket[index] = bucket[bucket.length - 1]; bucket.pop(); }
+  arena._dirtyDustBuckets?.add(bucket);
   if (!bucket.length) arena.dustGrid.delete(dust._gridKey);
 }
 
 function rebuildDustGrid(arena) {
   arena.dustGrid = new Map();
   arena.activeDust = new Set();
+  arena._dirtyDustBuckets = new Set();
+  arena._dustOrderSerial = 0;
   arena.naturalDustCount = 0;
   for (const dust of arena.dust) {
+    dust._dustOrder = ++arena._dustOrderSerial;
     insertDust(arena, dust);
     if (Math.abs(finite(dust.vx)) + Math.abs(finite(dust.vy)) > 0.05) arena.activeDust.add(dust);
     if (!dust.fragment) arena.naturalDustCount++;
   }
   arena._indexedDust = arena.dust;
   arena._indexedCount = arena.dust.length;
+  arena._indexedItems = arena.dust.slice();
+  arena._dirtyDustBuckets.clear();
+}
+
+function updateDustGrid(arena) {
+  if (!arena.dustGrid || arena._indexedDust !== arena.dust || arena._indexedCount !== arena.dust.length) {
+    rebuildDustGrid(arena);
+    return;
+  }
+  // Most natural dust stays still. Keep its buckets instead of allocating and
+  // inserting all 6,000 particles every tick, while accepting direct fixture
+  // edits to coordinates, velocity, membership and the natural/fragment flag.
+  arena.activeDust.clear();
+  arena.naturalDustCount = 0;
+  for (let i = 0; i < arena.dust.length; i++) {
+    const dust = arena.dust[i];
+    if (arena._indexedItems[i] !== dust) { rebuildDustGrid(arena); return; }
+    if (gridKey(dust.x, dust.y) !== dust._gridKey) {
+      removeDustFromGrid(arena, dust);
+      insertDust(arena, dust);
+    }
+    if (Math.abs(finite(dust.vx)) + Math.abs(finite(dust.vy)) > 0.05) arena.activeDust.add(dust);
+    if (!dust.fragment) arena.naturalDustCount++;
+  }
+  // Collection grows a cell during iteration, so particle order is physical
+  // behavior. Restore array order only in buckets changed since the last tick.
+  for (const bucket of arena._dirtyDustBuckets) if (bucket.length > 1) {
+    bucket.sort((a, b) => a._dustOrder - b._dustOrder);
+  }
+  arena._dirtyDustBuckets.clear();
 }
 
 function ensureDustGrid(arena) {
@@ -1200,6 +1238,7 @@ function collectDust(arena) {
     arena.dust = arena.dust.filter(dust => !dust._consumed);
     arena._indexedDust = arena.dust;
     arena._indexedCount = arena.dust.length;
+    arena._indexedItems = arena.dust.slice();
   }
   return consumed.length;
 }
@@ -1493,9 +1532,8 @@ export function stepArena(arena, elapsed) {
   const dt = clamp(finite(elapsed), 0, 0.1);
   arena.time += dt;
   arena.remaining = arena.endless ? null : Math.max(0, ROUND_DURATION - arena.time);
-  // One linear grid rebuild replaces repeated all-particle scans for bots,
-  // gravity and pickups. Moving particles update only their changed buckets.
-  rebuildDustGrid(arena);
+  // Retain stationary particles' buckets; moving dust updates its own index.
+  updateDustGrid(arena);
   const movers = [];
   for (const player of arena.players.values()) {
     if (player.bot) setPlayerInput(arena, player.id, botInput(arena, player));
